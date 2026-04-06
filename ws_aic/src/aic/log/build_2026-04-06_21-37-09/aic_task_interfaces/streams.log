@@ -1,0 +1,32 @@
+[0.039s] Invoking command in '/home/swlinux/aic_sejong/ws_aic/src/aic/build/aic_task_interfaces': DEBUGINFOD_URLS=https://debuginfod.ubuntu.com /usr/bin/cmake /home/swlinux/aic_sejong/ws_aic/src/aic/aic_interfaces/aic_task_interfaces -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/swlinux/aic_sejong/ws_aic/src/aic/install
+[0.080s] -- The C compiler identification is GNU 13.3.0
+[0.121s] -- The CXX compiler identification is GNU 13.3.0
+[0.133s] -- Detecting C compiler ABI info
+[0.197s] -- Detecting C compiler ABI info - done
+[0.203s] -- Check for working C compiler: /usr/bin/cc - skipped
+[0.204s] -- Detecting C compile features
+[0.204s] -- Detecting C compile features - done
+[0.211s] -- Detecting CXX compiler ABI info
+[0.280s] -- Detecting CXX compiler ABI info - done
+[0.287s] -- Check for working CXX compiler: /usr/bin/c++ - skipped
+[0.287s] -- Detecting CXX compile features
+[0.288s] -- Detecting CXX compile features - done
+[0.293s] [31mCMake Error at CMakeLists.txt:19 (find_package):
+[0.294s]   By not providing "Findament_cmake.cmake" in CMAKE_MODULE_PATH this project
+[0.294s]   has asked CMake to find a package configuration file provided by
+[0.294s]   "ament_cmake", but CMake did not find one.
+[0.294s] 
+[0.294s]   Could not find a package configuration file provided by "ament_cmake" with
+[0.294s]   any of the following names:
+[0.294s] 
+[0.294s]     ament_cmakeConfig.cmake
+[0.294s]     ament_cmake-config.cmake
+[0.294s] 
+[0.294s]   Add the installation prefix of "ament_cmake" to CMAKE_PREFIX_PATH or set
+[0.294s]   "ament_cmake_DIR" to a directory containing one of the above files.  If
+[0.294s]   "ament_cmake" provides a separate development package or SDK, be sure it
+[0.294s]   has been installed.
+[0.294s] 
+[0.294s] [0m
+[0.295s] -- Configuring incomplete, errors occurred!
+[0.299s] Invoked command in '/home/swlinux/aic_sejong/ws_aic/src/aic/build/aic_task_interfaces' returned '1': DEBUGINFOD_URLS=https://debuginfod.ubuntu.com /usr/bin/cmake /home/swlinux/aic_sejong/ws_aic/src/aic/aic_interfaces/aic_task_interfaces -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=1 -DCMAKE_INSTALL_PREFIX=/home/swlinux/aic_sejong/ws_aic/src/aic/install
