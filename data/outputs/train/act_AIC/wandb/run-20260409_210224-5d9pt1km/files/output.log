@@ -1,0 +1,74 @@
+INFO 2026-04-09 21:02:26 db_utils.py:117 [1m[34mLogs will be synced with wandb.[0m
+INFO 2026-04-09 21:02:26 db_utils.py:118 Track this run --> [1m[33mhttps://wandb.ai/uailab-unist_/lerobot/runs/5d9pt1km[0m
+INFO 2026-04-09 21:02:26 ot_train.py:221 Creating dataset
+INFO 2026-04-09 21:02:26 eo_utils.py:108 Using video codec: libsvtav1
+INFO 2026-04-09 21:02:26 ot_train.py:239 Creating policy
+INFO 2026-04-09 21:02:27 ot_train.py:306 Creating optimizer and scheduler
+INFO 2026-04-09 21:02:27 ot_train.py:341 [1m[33mOutput dir:[0m ~/aic_sejong/data/outputs/train/act_AIC
+INFO 2026-04-09 21:02:27 ot_train.py:348 cfg.steps=100000 (100K)
+INFO 2026-04-09 21:02:27 ot_train.py:349 dataset.num_frames=952 (952)
+INFO 2026-04-09 21:02:27 ot_train.py:350 dataset.num_episodes=1
+INFO 2026-04-09 21:02:27 ot_train.py:353 Effective batch size: 8 x 1 = 8
+INFO 2026-04-09 21:02:27 ot_train.py:354 num_learnable_params=51617670 (52M)
+INFO 2026-04-09 21:02:27 ot_train.py:355 num_total_params=51617670 (52M)
+Training:   0%|                                                                         | 0/100000 [00:00<?, ?step/s]INFO 2026-04-09 21:02:27 ot_train.py:419 Start offline training on a fixed dataset, with effective batch size: 8
+Training:   0%|                                                             | 200/100000 [00:58<6:18:27,  4.39step/s]INFO 2026-04-09 21:03:25 ot_train.py:451 step:200 smpl:2K ep:2 epch:1.68 loss:5.709 grdn:158.087 lr:1.0e-05 updt_s:0.273 data_s:0.015
+Training:   0%|▏                                                            | 400/100000 [01:55<7:52:14,  3.52step/s]INFO 2026-04-09 21:04:23 ot_train.py:451 step:400 smpl:3K ep:3 epch:3.36 loss:2.423 grdn:81.536 lr:1.0e-05 updt_s:0.270 data_s:0.016
+Training:   1%|▎                                                            | 523/100000 [02:31<8:03:14,  3.43step/s]Traceback (most recent call last):
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/bin/lerobot-train", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/scripts/lerobot_train.py", line 563, in main
+    train()
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/configs/parser.py", line 233, in wrapper_inner
+    response = fn(cfg, *args, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/scripts/lerobot_train.py", line 429, in train
+    train_tracker, output_dict = update_policy(
+                                 ^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/scripts/lerobot_train.py", line 117, in update_policy
+    loss, output_dict = policy.forward(batch)
+                        ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/policies/act/modeling_act.py", line 142, in forward
+    actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
+                                              ^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/policies/act/modeling_act.py", line 473, in forward
+    cam_features = self.backbone(img)["feature_map"]
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torchvision/models/_utils.py", line 69, in forward
+    x = module(x)
+        ^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+            ^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torchvision/models/resnet.py", line 103, in forward
+    out = self.relu(out)
+          ^^^^^^^^^
+  File "/home/swlinux/aic_sejong/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1952, in __getattr__
+    def __getattr__(self, name: str) -> Union[Tensor, "Module"]:
+
+KeyboardInterrupt
