@@ -124,7 +124,7 @@ curl -fsSL https://pixi.sh/install.sh | sh
 ```bash
 cd ~
 git clone https://github.com/JungSeong/AIC_Sejong.git
-cd ~/aic_sejong/ws_aic/src/aic
+cd ~/AIC_Sejong/ws_aic/src/aic
 pixi install
 ```
 
@@ -142,7 +142,7 @@ distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_ev
 
 ---
 
-### 7. 환경변수 설정 (`~/.bashrc` 추가 권장)
+### 7. 환경변수 설정 (`~/.bashrc`에 등록해서 관리하시는 것을 권장합니다)
 
 ```bash
 # HuggingFace 토큰 (lerobot-record push / snapshot_download 에 필요)
@@ -205,14 +205,13 @@ pixi run ros2 run aic_model aic_model \
 ```bash
 cd ~/aic_sejong/ws_aic/src/aic
 
-# F/T 센서 tare (매 에피소드 전 필수)
+# [중요!!] F/T 센서 tare (매 에피소드 전 필수)
 pixi run ros2 service call /aic_controller/tare_force_torque_sensor std_srvs/srv/Trigger
-
 pixi run lerobot-record \
   --robot.type=aic_controller --robot.id=aic \
   --teleop.type=aic_keyboard_ee --teleop.id=aic \
   --robot.teleop_target_mode=cartesian --robot.teleop_frame_id=base_link \
-  --dataset.repo_id=JungSeong2/AIC \
+  --dataset.repo_id=aic-sejong-team/AIC \
   --dataset.single_task="Cable insertion" \
   --dataset.push_to_hub=true \
   --dataset.private=true \
@@ -232,7 +231,6 @@ pixi run lerobot-record \
 
 ```bash
 cd ~/aic_sejong/ws_aic/src/aic
-
 pixi run lerobot-train \
   --dataset.repo_id=JungSeong2/AIC \
   --policy.type=act \
@@ -240,7 +238,7 @@ pixi run lerobot-train \
   --job_name=act_AIC \
   --policy.device=cuda \
   --wandb.enable=true \
-  --policy.repo_id=JungSeong2/act_AIC
+  --policy.repo_id=aic-sejong-team/act_AIC
 ```
 
 ---
@@ -266,7 +264,8 @@ docker compose -f docker/docker-compose.yaml up
 | 공식 시작 가이드 | `ws_aic/src/aic/docs/getting_started.md` |
 | 스코어링 규칙 | `ws_aic/src/aic/docs/scoring.md` |
 | 정책 통합 가이드 | `ws_aic/src/aic/docs/policy.md` |
-| LeRobot 연동 | `ws_aic/src/aic/aic_utils/lerobot_robot_aic/README.md` |
 | Docker 실행 가이드 | `CLAUDE-OUTPUTS/summaries/0413/summary_docker-eval-run-guide_v1.md` |
-| 정책 노드 생성 가이드 | `CLAUDE-OUTPUTS/summaries/0412/summary_trained-model-to-policy_v1.md` |
+| 훈련 모델 기반 정책 노드 생성 가이드 | `CLAUDE-OUTPUTS/summaries/0412/summary_trained-model-to-policy_v1.md` |
+| LeRobot 연동 | `ws_aic/src/aic/aic_utils/lerobot_robot_aic/README.md` |
 | LeRobot 녹화·훈련 가이드 | `CLAUDE-OUTPUTS/summaries/0409/summary_lerobot-record-and-train_v2.md` |
+| LeRobot 녹화·훈련 파라미터 | `CLAUDE-OUTPUTS/summaries/0412/summary_lerobot-train-params_v1.md` |
