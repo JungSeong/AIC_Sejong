@@ -1,7 +1,7 @@
 FROM docker.io/library/ros:kilted-ros-core AS build
 
 # Install pixi
-RUN apt update && apt install -y git build-essential && curl -fsSL https://pixi.sh/install.sh | bash
+RUN apt update && apt install -y git && curl -fsSL https://pixi.sh/install.sh | bash
 ENV PATH="/root/.pixi/bin:$PATH"
 
 # Add base dependencies
@@ -18,14 +18,7 @@ COPY my_policy_node /ws_aic/src/aic/my_policy_node
 
 SHELL ["/bin/bash", "-c"]
 RUN --mount=type=cache,target=/root/.cache/rattler/cache --mount=type=cache,target=/ws_aic/src/aic/.pixi/build \
-  cd /ws_aic/src/aic && pixi install --locked
-
-# Patch groot_n1.py for Python 3.12 compatibility (lerobot 0.5.1 bug)
-RUN GROOT=/ws_aic/src/aic/.pixi/envs/default/lib/python3.12/site-packages/lerobot/policies/groot/groot_n1.py && \
-    sed -i 's/backbone_cfg: dict = field(init=False,/backbone_cfg: dict = field(default=None, init=False,/' $GROOT && \
-    sed -i 's/action_head_cfg: dict = field(init=False,/action_head_cfg: dict = field(default=None, init=False,/' $GROOT && \
-    sed -i 's/action_horizon: int = field(init=False,/action_horizon: int = field(default=None, init=False,/' $GROOT && \
-    sed -i 's/action_dim: int = field(init=False,/action_dim: int = field(default=None, init=False,/' $GROOT
+    cd /ws_aic/src/aic && pixi install --locked
 
 WORKDIR /ws_aic/src/aic
 COPY --chmod=755 <<"EOF" /entrypoint.sh

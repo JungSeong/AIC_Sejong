@@ -487,6 +487,21 @@ pixi install   # pixi.lock 갱신됨
 
 > **주의:** `my_policy_node`가 루트 `pixi.toml`의 `[dependencies]`에 이미 등록되어 있어야 한다.
 
+```bash
+cd ~/LLM_TUNE/AIC_Sejong/ws_aic/src/aic
+pixi install   # pixi.lock 갱신됨
+
+```bash
+[dependencies]
+isort = "==5.13.2"                                                                     # version bundled by the vscode extension
+json5 = ">=0.13.0,<0.14"                                                               # version bundled by the vscode extension
+numpy = "<2.3.0"
+packaging = ">=24.2,<26.0"                                                             # required by lerobot==0.4.3
+pyright = "==1.1.408"
+ros-kilted-aic-control-interfaces = { path = "aic_interfaces/aic_control_interfaces" }
+ros-kilted-aic-example-policies = { path = "aic_example_policies" }
+ros-kilted-my-policy-node = { path = "my_policy_node" } # 여기!!
+```
 ---
 
 ### 10-5. 로컬 검증 (필수)
@@ -533,9 +548,11 @@ docker push 973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name>:v1
 1. 포털 로그인 → `AI for Industry Challenge` → `Submit`
 2. `Qualification` 단계 선택
 3. `OCI Image` 필드에 전체 URI 입력:
+
    ```
    973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name>:v1
    ```
+
 4. `Submit` 클릭
 
 ---

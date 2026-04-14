@@ -33,10 +33,10 @@ class Baseline(Policy):
 
         # ── 1. 파일 경로 ──────────────────────────────────────────
         # (A) HuggingFace에서 다운로드
-        # policy_path = Path(snapshot_download(repo_id="JungSeong2/act_AIC"))
+        policy_path = Path(snapshot_download(repo_id="JungSeong2/act_AIC"))
 
         # (B) 로컬 체크포인트 사용 시
-        policy_path = Path("/home/vsc/LLM_TUNE/AIC_Sejong/aic_data/outputs/train/act_cnn_test/checkpoints/last/pretrained_model")
+        # policy_path = Path("/home/vsc/LLM_TUNE/AIC_Sejong/aic_data/outputs/train/act_cnn_test/checkpoints/last/pretrained_model")
 
         # ── 2. config.json 로드 ───────────────────────────────────
         with open(policy_path / "config.json") as f:
