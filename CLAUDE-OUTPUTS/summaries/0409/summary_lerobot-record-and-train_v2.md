@@ -16,7 +16,7 @@ pixi run lerobot-record \
   --robot.type=aic_controller --robot.id=aic \
   --teleop.type=aic_keyboard_ee --teleop.id=aic \
   --robot.teleop_target_mode=cartesian --robot.teleop_frame_id=base_link \
-  --dataset.repo_id=JungSeong2/AIC \
+  --dataset.repo_id=aic-sejong-team/AIC \
   --dataset.single_task="Simple Test with LeRobot" \
   --dataset.push_to_hub=false \
   --dataset.private=true \
@@ -72,7 +72,6 @@ HF_HOME (기본: ~/.cache/huggingface)
 |----------|------|------|
 | `HF_LEROBOT_HOME` | **데이터셋 저장 루트 경로** 변경 | `export HF_LEROBOT_HOME=/data/lerobot` |
 | `HF_HOME` | HuggingFace 전체 캐시 루트 변경 | `export HF_HOME=/data/huggingface` |
-| ~~`LEROBOT_HOME`~~ | deprecated → `HF_LEROBOT_HOME` 사용 | |
 
 적용 예시:
 
@@ -140,13 +139,13 @@ pixi run lerobot-record ...
 ```bash
 cd ~/ws_aic/src/aic
 pixi run lerobot-train \
-  --dataset.repo_id=JungSeong2/AIC \
+  --dataset.repo_id=aic-sejong-team/AIC \
   --policy.type=act \
   --output_dir=outputs/train/act_AIC \
   --job_name=act_AIC \
   --policy.device=cuda \
   --wandb.enable=true \
-  --policy.repo_id=JungSeong2/act_AIC
+  --policy.repo_id=aic-sejong-team/act_AIC
 ```
 
 ### 훈련 출력 위치 (기본값)

@@ -5,6 +5,48 @@
 
 ---
 
+## 0. 제어 공간 개념
+
+### 관절 공간 (Joint Space)
+
+로봇의 **각 관절 각도**를 직접 제어하는 방식.
+
+```
+명령 → [shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3]
+        각 관절에 속도/위치값을 직접 지정
+```
+
+- 로봇이 어떤 자세를 취하는지를 관절 단위로 생각해야 함
+- 손끝(TCP)이 어디로 가는지는 **직관적으로 파악하기 어려움**
+- 정밀한 자세 제어나 특정 구성을 재현할 때 유리
+
+### Cartesian 공간 (Cartesian Space / 작업 공간)
+
+로봇 손끝(TCP, Tool Center Point)의 **위치(x, y, z)와 자세(roll, pitch, yaw)** 를 제어하는 방식.
+
+```
+명령 → [linear.x, linear.y, linear.z, angular.x, angular.y, angular.z]
+        손끝이 공간에서 어떻게 움직일지를 직접 지정
+```
+
+- "손끝을 앞으로 5cm 이동" 같은 직관적인 조작이 가능
+- 내부적으로 **역기구학(IK)** 이 자동으로 관절 각도를 계산
+- 데이터 수집 시 사람이 조작하기 훨씬 편하므로 **텔레오퍼레이션·모방학습에 주로 사용**
+
+### 기준 프레임 (Frame)
+
+Cartesian 제어 시 어느 좌표계 기준으로 움직일지 선택 가능:
+
+| 프레임 | 설명 | 키/파라미터 |
+|--------|------|-------------|
+| `base_link` | 로봇 베이스(바닥) 기준. `w`를 누르면 항상 같은 방향으로 이동 | `m` 키 / `--robot.teleop_frame_id=base_link` |
+| `gripper/tcp` | 손끝 기준. `w`를 누르면 **손끝이 바라보는 방향**으로 이동 | `n` 키 / `--robot.teleop_frame_id=gripper/tcp` |
+
+> 케이블 삽입처럼 손끝 방향이 중요한 작업은 `gripper/tcp` 프레임이 직관적.
+> 전체 작업 공간에서 큰 이동은 `base_link` 프레임이 편리.
+
+---
+
 ## 1. aic_teleoperation (단순 키보드 조종)
 
 데이터 녹화 없이 로봇만 직접 움직일 때 사용.
