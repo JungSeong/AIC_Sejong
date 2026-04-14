@@ -122,10 +122,8 @@ curl -fsSL https://pixi.sh/install.sh | sh
 ### 5. 저장소 클론 및 의존성 설치
 
 ```bash
-mkdir -p ~/aic_sejong/ws_aic/src
-cd ~/aic_sejong/ws_aic/src
-git clone https://github.com/intrinsic-dev/aic
-
+cd ~
+git clone https://github.com/JungSeong/AIC_Sejong.git
 cd ~/aic_sejong/ws_aic/src/aic
 pixi install
 ```
