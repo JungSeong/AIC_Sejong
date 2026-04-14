@@ -268,4 +268,5 @@ docker compose -f docker/docker-compose.yaml up
 | 훈련 모델 기반 정책 노드 생성 가이드 | `CLAUDE-OUTPUTS/summaries/0412/summary_trained-model-to-policy_v1.md` |
 | LeRobot 연동 | `ws_aic/src/aic/aic_utils/lerobot_robot_aic/README.md` |
 | LeRobot 녹화·훈련 가이드 | `CLAUDE-OUTPUTS/summaries/0409/summary_lerobot-record-and-train_v2.md` |
-| LeRobot 녹화·훈련 파라미터 | `CLAUDE-OUTPUTS/summaries/0412/summary_lerobot-train-params_v1.md` |
+| LeRobot 녹화 파라미터 | `CLAUDE-OUTPUTS/summaries/0413/summary_teleop-params_v1.md` |
+| LeRobot 훈련 파라미터 | `CLAUDE-OUTPUTS/summaries/0412/summary_lerobot-train-params_v1.md` |
