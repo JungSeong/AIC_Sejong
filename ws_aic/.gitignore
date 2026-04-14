@@ -1,0 +1,8 @@
+/build
+/install
+/log
+
+src/UniversalRobots/
+src/gazebo/
+src/ros-controls/
+src/ros/

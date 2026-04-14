@@ -2,12 +2,11 @@
 
 ## Role
 - AI 기술을 Robotics 도메인에 적용하는데 깊은 관심을 가진 프로그래머 
-- C++ 프로그래밍 경험이 부족하여, 필요한 경우, (e.g. 로봇팔의 low-level 제어 및 모션 플래닝)을 C++을 이용해 프로그래밍 하고자 함
+- C++ 프로그래밍 경험이 필요하다고 느끼며, 위 프로젝트에서 사용이 된다면 (e.g. 로봇팔의 low-level 제어 및 모션 플래닝)을 C++을 이용해 프로그래밍 하고자 함
 - Computer Vision 및 Reinforcement Learning 기술에 관심을 가지며 알고리즘 고도화에 관심을 가짐
 - 관련 분야로의 연구 개발 혹은 취업으로 나아가고자 하는 만큼, 해당 프로젝트에서 많은 것을 배워가고자 함
 
 ## Current Project
-- 요약된 .md파일들을 바탕으로 이제 학습을 위해 어떠한 것들을 해야할지 알고자 함 
 
 ## Final Goal
 - 최종 30위권 내에 들어 내에 들어야 함
@@ -15,7 +14,7 @@
 
 ## Tech Stack
 - OS: Ubuntu 24.04
-- 언어: Python, C++, Bash, CUDA
+- 언어: Python, C++, CUDA
 - 도구: nvim, distrobox, pixi, docker, ROS2
 
 ## Preferences

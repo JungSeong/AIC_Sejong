@@ -12,7 +12,7 @@
 - 기존 파일 덮어쓰기 전 확인
 - 폴더 없으면 자동 생성
 
-## Output Folder Structure
+## Output Folder Structure & Naming Rule
 
 | 폴더 | 용도 |
 |------|------|
@@ -20,6 +20,8 @@
 | `CLAUDE-OUTPUTS/reviews/<오늘_날짜>` | 코드 리뷰 |
 | `CLAUDE-OUTPUTS/debug/<오늘_날짜>` | 디버깅 분석 |
 | `CLAUDE-OUTPUTS/notes/<오늘_날짜>` | 자유 메모 |
+
+- 오늘 날짜 디렉토리는 'mmdd'의 형식으로 작성
 
 ## File Naming Rule
 
