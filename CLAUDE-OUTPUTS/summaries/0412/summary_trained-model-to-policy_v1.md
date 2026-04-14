@@ -361,21 +361,20 @@ class MyPolicy(Policy):
 
 ---
 
-## 8. 실행 순서
+## 8. 실행 순서 (Docker eval 워크플로우)
+
+> **`source ~/ws_aic/install/setup.bash` 불필요** — `pixi run`이 ROS 2 환경을 자동 구성.
+> 자세한 내용은 `CLAUDE-OUTPUTS/summaries/0413/summary_docker-eval-run-guide_v1.md` 참고.
 
 ```bash
-# Terminal 1 - Zenoh 라우터
-ros2 run rmw_zenoh_cpp rmw_zenohd
+# Terminal 1 — eval 컨테이너 (Zenoh + Gazebo + aic_engine 포함)
+distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=false start_aic_engine:=true
 
-# Terminal 2 - 나의 정책 (먼저 실행!)
-source ~/ws_aic/install/setup.bash
+# Terminal 2 — 내 정책 (30초 이내 실행)
+cd ~/aic_sejong/ws_aic/src/aic
 pixi run ros2 run aic_model aic_model \
   --ros-args -p use_sim_time:=true \
-  -p policy:=my_policy_node.my_policy.MyPolicy
-
-# Terminal 3 - 시뮬레이션 + 엔진 (30초 이내에 실행)
-ros2 launch aic_bringup aic_gz_bringup.launch.py \
-  ground_truth:=false start_aic_engine:=true
+  -p policy:=my_policy_node.Baseline
 ```
 
 ---
@@ -396,183 +395,3 @@ ros2 launch aic_bringup aic_gz_bringup.launch.py \
 | **정규화 파일명** | `policy_preprocessor_step_3_normalizer_processor.safetensors` (버전마다 다를 수 있음) |
 | **실행 순서** | 정책 노드 → 시뮬레이션 (30초 이내) |
 
----
-
-## 10. 제출용 Docker 이미지 빌드 및 업로드
-
-### 10-1. 제출 흐름
-
-```
-① Dockerfile 수정  →  ② pixi.lock 갱신  →  ③ 로컬 검증  →  ④ ECR 업로드  →  ⑤ 포털 등록
-```
-
----
-
-### 10-2. Dockerfile 수정
-
-기존 `docker/aic_model/Dockerfile`을 복사해서 내 패키지용으로 만든다:
-
-```bash
-mkdir -p docker/my_policy_node
-cp docker/aic_model/Dockerfile docker/my_policy_node/Dockerfile
-```
-
-`docker/my_policy_node/Dockerfile`에서 두 부분 수정:
-
-```dockerfile
-FROM docker.io/library/ros:kilted-ros-core AS build
-
-RUN apt update && apt install -y git && curl -fsSL https://pixi.sh/install.sh | bash
-ENV PATH="/root/.pixi/bin:$PATH"
-
-# 기존 패키지들
-COPY aic_example_policies /ws_aic/src/aic/aic_example_policies
-COPY aic_model /ws_aic/src/aic/aic_model
-COPY aic_interfaces /ws_aic/src/aic/aic_interfaces
-COPY aic_utils /ws_aic/src/aic/aic_utils
-COPY pixi.toml pixi.lock /ws_aic/src/aic/
-COPY pixi_env_setup.sh /ws_aic/src/aic/
-
-# ★ 내 패키지 추가 (이 줄 추가)
-COPY my_policy_node /ws_aic/src/aic/my_policy_node
-
-SHELL ["/bin/bash", "-c"]
-RUN --mount=type=cache,target=/root/.cache/rattler/cache --mount=type=cache,target=/ws_aic/src/aic/.pixi/build \
-    cd /ws_aic/src/aic && pixi install --locked
-
-WORKDIR /ws_aic/src/aic
-COPY --chmod=755 <<"EOF" /entrypoint.sh
-# ... (entrypoint 내용은 그대로 유지)
-EOF
-
-ENTRYPOINT ["/entrypoint.sh"]
-# ★ CMD를 내 정책으로 변경
-CMD ["--ros-args", "-p", "policy:=my_policy_node.Baseline"]
-```
-
----
-
-### 10-3. `docker-compose.yaml` 수정
-
-`docker/docker-compose.yaml`에서 `model` 서비스의 두 부분 수정:
-
-```yaml
-services:
-  model:
-    image: my-solution:v1                          # 이미지 이름 (ECR 태그와 별개)
-    build:
-      dockerfile: docker/my_policy_node/Dockerfile  # ★ 내 Dockerfile 경로
-      context: ..
-    gpus: all
-    networks:
-      - default
-    command: --ros-args -p policy:=my_policy_node.Baseline  # ★ 내 정책 클래스
-    environment:
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
-      ZENOH_ROUTER_CHECK_ATTEMPTS: -1
-      AIC_ROUTER_ADDR: eval:7447
-      AIC_MODEL_PASSWD: CHANGE_IN_PROD
-```
-
----
-
-### 10-4. `pixi.lock` 갱신
-
-Dockerfile은 `pixi install --locked`로 빌드하므로 lock 파일이 최신이어야 한다:
-
-```bash
-cd ~/LLM_TUNE/AIC_Sejong/ws_aic/src/aic
-pixi install   # pixi.lock 갱신됨
-```
-
-> **주의:** `my_policy_node`가 루트 `pixi.toml`의 `[dependencies]`에 이미 등록되어 있어야 한다.
-
-```bash
-cd ~/LLM_TUNE/AIC_Sejong/ws_aic/src/aic
-pixi install   # pixi.lock 갱신됨
-
-```bash
-[dependencies]
-isort = "==5.13.2"                                                                     # version bundled by the vscode extension
-json5 = ">=0.13.0,<0.14"                                                               # version bundled by the vscode extension
-numpy = "<2.3.0"
-packaging = ">=24.2,<26.0"                                                             # required by lerobot==0.4.3
-pyright = "==1.1.408"
-ros-kilted-aic-control-interfaces = { path = "aic_interfaces/aic_control_interfaces" }
-ros-kilted-aic-example-policies = { path = "aic_example_policies" }
-ros-kilted-my-policy-node = { path = "my_policy_node" } # 여기!!
-```
----
-
-### 10-5. 로컬 검증 (필수)
-
-제출 전 반드시 로컬에서 검증한다. 실패하면 포털 제출 시 자동 거부되며 일일 제출 횟수(1회)가 소모된다.
-
-```bash
-cd ~/LLM_TUNE/AIC_Sejong/ws_aic/src/aic
-
-# 이미지 빌드
-docker compose -f docker/docker-compose.yaml build model
-
-# 전체 스택 실행 (eval + model)
-docker compose -f docker/docker-compose.yaml up
-```
-
----
-
-### 10-6. ECR 업로드
-
-```bash
-# ① AWS 인증 (최초 1회, 12시간 유효)
-aws configure --profile <team_name>
-export AWS_PROFILE=<team_name>
-
-aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin \
-  973918476471.dkr.ecr.us-east-1.amazonaws.com
-
-# ② 이미지 태그
-docker tag my-solution:v1 \
-  973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name>:v1
-
-# ③ 푸시
-docker push 973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name>:v1
-```
-
-> **주의:** ECR 태그는 **불변** — 동일 태그 덮어쓰기 불가. 새 제출마다 `:v2`, `:v3` 등으로 올려야 한다.
-
----
-
-### 10-7. 포털 등록
-
-1. 포털 로그인 → `AI for Industry Challenge` → `Submit`
-2. `Qualification` 단계 선택
-3. `OCI Image` 필드에 전체 URI 입력:
-
-   ```
-   973918476471.dkr.ecr.us-east-1.amazonaws.com/aic-team/<team_name>:v1
-   ```
-
-4. `Submit` 클릭
-
----
-
-### 10-8. 평가 상태 모니터링
-
-| 상태 | 의미 |
-|------|------|
-| **Submitted** | URI 수신 완료 |
-| **Queued** | 평가 노드 대기 중 |
-| **Running** | 시뮬레이션 평가 진행 중 (보통 5~15분) |
-| **Finished** | 평가 완료, 리더보드 반영 |
-| **Failed** | 런타임 오류 또는 타임아웃 |
-
----
-
-### 10-9. 제출 제한 사항
-
-| 항목 | 내용 |
-|------|------|
-| 하루 제출 횟수 | **팀당 1회** |
-| 총 제출 횟수 | 무제한 |
-| ECR 로그인 유효시간 | 12시간 (만료 시 재인증 필요) |
