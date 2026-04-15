@@ -33,7 +33,12 @@ class Baseline(Policy):
 
         # ── 1. 파일 경로 ──────────────────────────────────────────
         # (A) HuggingFace에서 다운로드
-        policy_path = Path(snapshot_download(repo_id="JungSeong2/act_AIC"))
+        policy_path = Path(
+            snapshot_download(
+                repo_id="aic-sejong-team/act_AIC",
+                allow_patterns=["config.json", "model.safetensors", "*.safetensors"],
+            )
+        )
 
         # (B) 로컬 체크포인트 사용 시
         # policy_path = Path("/home/vsc/LLM_TUNE/AIC_Sejong/aic_data/outputs/train/act_cnn_test/checkpoints/last/pretrained_model")
@@ -46,8 +51,10 @@ class Baseline(Policy):
 
         # ── 3. 가중치 로드 ────────────────────────────────────────
         self.policy = ACTPolicy(config)
-        self.policy.load_state_dict(load_file(policy_path / "model.safetensors"))
+        model_weights_path = policy_path / "model.safetensors"
+        self.policy.load_state_dict(load_file(model_weights_path))
         self.policy.eval().to(self.device)
+        self.policy.to(self.device)
 
         # ── 4. 정규화 통계 로드 ───────────────────────────────────
         stats = load_file(

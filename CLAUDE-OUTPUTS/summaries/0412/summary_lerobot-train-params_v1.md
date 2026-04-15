@@ -1,6 +1,64 @@
 # lerobot-train 파라미터 정리
 
-> **요약 (2-3줄):** `lerobot-train`의 파라미터는 훈련 공통(dataset/training), ACT 정책, Diffusion 정책 세 범주로 나뉜다. ACT는 기본적으로 ResNet18(CNN) backbone을 사용하며 ViT가 아니다. Diffusion은 UNet CNN 기반으로 별도의 노이즈 스케줄러 파라미터가 추가된다.
+> **요약 (2-3줄):** `lerobot-train`의 파라미터는 훈련 공통(dataset/training), 정책별 파라미터로 나뉜다. 지원하는 `policy.type`은 14종이며 모방학습(ACT, Diffusion, VQ-BeT), VLA(pi0, SmolVLA, xVLA), 모델 기반 RL(TD-MPC), 온라인 RL(SAC) 등 크게 4가지 패러다임으로 분류된다. AIC 태스크에는 **ACT** 가 기본 선택이며 데이터가 충분하면 **Diffusion** 또는 **pi0** 계열 고려 가능.
+
+---
+
+## 0. policy.type 전체 종류 및 특징
+
+`lerobot/policies/factory.py` 기준 지원 타입 14종.
+
+### 패러다임별 분류
+
+#### 모방학습 (Imitation Learning) — 오프라인 데이터셋 기반
+
+| type | 풀네임 | 특징 | AIC 적합도 |
+|------|--------|------|-----------|
+| **`act`** | Action Chunking with Transformers | ResNet18 + Transformer + VAE. chunk 단위 action 예측으로 떨림 감소. 빠른 inference. | ★★★ **기본 선택** |
+| **`diffusion`** | Diffusion Policy | UNet + DDPM/DDIM. 복잡한 멀티모달 행동 분포 표현 가능. inference 느림. | ★★ 데이터 많을 때 |
+| **`vqbet`** | Vector Quantized BeT | VQ-VAE로 action을 이산화 후 Transformer로 예측. 연속 action 공간에 약간 불리. | ★ |
+
+#### VLA (Vision-Language-Action) — 대형 사전학습 모델 기반
+
+| type | 풀네임 | 특징 | AIC 적합도 |
+|------|--------|------|-----------|
+| **`pi0`** | π₀ | PaliGemma(3B) 기반 VLA. 언어 지시 + 비전 + action 통합. VRAM 24GB+ 필요. | ★★ VRAM 충분 시 |
+| **`pi05`** | π₀.5 | π₀ 업그레이드. 더 강한 범용성. | ★★ |
+| **`pi0_fast`** | π₀ Fast | π₀의 inference 최적화 버전. | ★★ |
+| **`smolvla`** | SmolVLA | SmolLM 기반 소형 VLA. pi0보다 VRAM 적게 필요. | ★★ |
+| **`xvla`** | xVLA | 또 다른 VLA 계열. | ★ |
+| **`groot`** | GR00T | NVIDIA 제작 범용 로봇 학습 모델. VRAM 요구량 높음. | ★ (버그 있음) |
+
+#### 모델 기반 RL (Model-Based RL)
+
+| type | 풀네임 | 특징 | AIC 적합도 |
+|------|--------|------|-----------|
+| **`tdmpc`** | TD-MPC | 환경 모델 학습 + MPC로 계획. 오프라인 데이터로도 사용 가능. | ★ |
+
+#### 온라인 RL (Online Reinforcement Learning)
+
+| type | 풀네임 | 특징 | AIC 적합도 |
+|------|--------|------|-----------|
+| **`sac`** | Soft Actor-Critic | 환경과 실시간 상호작용 필요. 오프라인 데이터셋만으로는 사용 불가. | ✗ (시뮬 연동 필요) |
+
+#### 기타 (내부/보조 모델)
+
+| type | 설명 |
+|------|------|
+| `sarm` | Reward Model (보상 함수 학습용) |
+| `reward_classifier` | 보상 분류기 |
+| `wall_x` | 특수 실험용 정책 |
+
+---
+
+### AIC 태스크 기준 선택 가이드
+
+```
+데이터 수십 에피소드   → act  (빠르고 안정적)
+데이터 수백 에피소드   → diffusion 또는 act
+VRAM 24GB+, 고성능    → pi0 / smolvla (언어 지시 활용 가능)
+온라인 RL 원할 때      → sac (Gazebo 환경 직접 연동 필요, 별도 구현 필요)
+```
 
 ---
 
@@ -10,7 +68,7 @@
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
-| `dataset.repo_id` | 필수 | HuggingFace 데이터셋 ID (e.g. `JungSeong2/AIC`) |
+| `dataset.repo_id` | 필수 | HuggingFace 데이터셋 ID (e.g. `aic-sejong-team/AIC`) |
 | `dataset.root` | `None` | 로컬 데이터셋 경로 (HF 대신 사용) |
 
 ### 훈련 설정
@@ -208,14 +266,17 @@ pixi run lerobot-train \
 
 ---
 
-## 5. ACT vs Diffusion 비교
+## 5. 주요 정책 비교
 
-| 항목 | ACT | Diffusion |
-|------|-----|-----------|
-| backbone | ResNet (CNN) | ResNet (CNN) |
-| 훈련 속도 | 빠름 | 보통 |
-| Inference 속도 | 빠름 (단일 forward) | 느림 (denoising 반복) |
-| 메모리 | 보통 | 많음 (UNet) |
-| 특징 | Action chunking, VAE | 확률 분포 모델링 |
-| 기본 LR | `1e-5` | `1e-4` |
-| 빠른 Inference | `temporal_ensemble_coeff` | `DDIM` + 적은 steps |
+| 항목 | ACT | Diffusion | pi0 / SmolVLA |
+|------|-----|-----------|---------------|
+| **패러다임** | 모방학습 | 모방학습 | VLA (모방학습) |
+| **backbone** | ResNet18 (CNN) | ResNet18 (CNN) | PaliGemma / SmolLM |
+| **훈련 속도** | 빠름 | 보통 | 느림 |
+| **Inference 속도** | 빠름 (단일 forward) | 느림 (denoising 반복) | 보통~느림 |
+| **VRAM** | ~8GB | ~12GB | 24GB+ / 16GB+ |
+| **필요 데이터** | 수십 에피소드~ | 수백 에피소드~ | 소량도 가능 (사전학습 덕분) |
+| **핵심 특징** | Action chunking + VAE | 멀티모달 분포 표현 | 언어 지시 가능, 범용성 높음 |
+| **기본 LR** | `1e-5` | `1e-4` | 모델마다 다름 |
+| **빠른 Inference 옵션** | `temporal_ensemble_coeff` | `DDIM` + 적은 steps | `pi0_fast` |
+| **AIC 추천도** | ★★★ | ★★ | ★★ (VRAM 여유 시) |
