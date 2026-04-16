@@ -79,6 +79,8 @@ class Baseline(Policy):
 
         self.image_scale = 0.25  # 훈련 시 사용한 스케일과 반드시 동일하게
 
+        self.get_logger().info("Normalization statistics loaded successfully.")
+
     # ── 이미지 전처리 ─────────────────────────────────────────────
     def _img_to_tensor(self, raw_img, mean, std):
         img = np.frombuffer(raw_img.data, dtype=np.uint8).reshape(

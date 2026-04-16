@@ -62,6 +62,32 @@ VRAM 24GB+, 고성능    → pi0 / smolvla (언어 지시 활용 가능)
 
 ---
 
+### 각 policy.type의 추론 출력 (Action Space)
+
+**policy.type은 아키텍처만 결정하고, 출력 차원은 학습에 사용된 데이터셋이 결정합니다.**
+
+모든 오프라인 모방학습 계열(ACT, Diffusion, VQ-BeT, pi0, SmolVLA 등)은 학습 데이터셋의 action 공간을 그대로 출력합니다.
+
+| 녹화 시 설정 | 출력 action | 차원 | 예시 |
+|-------------|-------------|------|------|
+| `--robot.teleop_target_mode=cartesian` | Cartesian 속도 명령 | **6** | `[linear.x, y, z, angular.x, y, z]` |
+| `--robot.teleop_target_mode=joint` | 관절 속도 명령 | **6** | `[shoulder_pan, lift, elbow, wrist_1, 2, 3]` |
+
+> **RunACT.py에서 "(1, 7)" 언급이 있는 이유:** `get_stat("action.mean", (1, -1))`에서 `-1`은 실제 차원을 safetensors에서 자동으로 읽어오는 것. 저장된 데이터에 따라 6 또는 다른 값이 될 수 있음. 현재 AIC Cartesian 수집 기준으로는 **6차원**.
+
+**policy.type별로 달라지는 것:**
+
+| 항목 | 모방학습 계열 | VLA 계열 (pi0, SmolVLA) | SAC |
+|------|--------------|------------------------|-----|
+| **입력** | 이미지 + 로봇 상태 | 이미지 + 로봇 상태 + **언어 지시** | 환경 상태 |
+| **출력** | 데이터셋 action 그대로 | 데이터셋 action 그대로 | 환경 action 공간 |
+| **데이터 필요** | 오프라인 데이터셋 | 오프라인 데이터셋 | **실시간 환경 상호작용** |
+| **아키텍처** | 각기 다름 | 대형 LLM/VLM backbone | Actor-Critic 네트워크 |
+
+> **SAC만 예외**: 데이터셋 기반이 아닌 온라인 RL이라 action space를 환경에서 직접 정의. lerobot-record 데이터와 무관.
+
+---
+
 ## 1. 공통 훈련 파라미터 (`--[파라미터명]=값`)
 
 ### Dataset

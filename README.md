@@ -264,7 +264,7 @@ docker compose -f docker/docker-compose.yaml up
 | 공식 시작 가이드 | `ws_aic/src/aic/docs/getting_started.md` |
 | 스코어링 규칙 | `ws_aic/src/aic/docs/scoring.md` |
 | 정책 통합 가이드 | `ws_aic/src/aic/docs/policy.md` |
-| Docker 실행 가이드 | `CLAUDE-OUTPUTS/summaries/0413/summary_docker-eval-run-guide_v1.md` |
+| 시나리오 생성 파라미터 정리 | `CLAUDE-OUTPUTS/summaries/0413/summary_world-scenario-params_v1.md` |
 | 훈련 모델 기반 정책 노드 생성 가이드 | `CLAUDE-OUTPUTS/summaries/0412/summary_trained-model-to-policy_v1.md` |
 | LeRobot 연동 | `ws_aic/src/aic/aic_utils/lerobot_robot_aic/README.md` |
 | LeRobot 녹화·훈련 가이드 | `CLAUDE-OUTPUTS/summaries/0409/summary_lerobot-record-and-train_v2.md` |
