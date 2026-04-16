@@ -11,10 +11,12 @@ Trial 1 / 2 / 3 에 맞는 랜덤 파라미터로 Gazebo 월드를 생성하고,
     python3 generate_scenario.py 3 --seed 42    # Trial 3, 시드 고정 (재현용)
     python3 generate_scenario.py 1 --diversify  # 훈련 다양화 모드 (보드 yaw도 랜덤)
     python3 generate_scenario.py 1 --mode pixi  # eval 컨테이너 대신 pixi로 실행
+    python3 generate_scenario.py 1 --set nic_card_mount_0_yaw=0.0  # 특정 파라미터 고정
 
 출력:
     - JSON 파일: ~/aic_sejong/aic_data/scenarios/trial{N}_{timestamp}.json
-    - 콘솔: 실행 명령어 출력
+    - SDF 파일:  ~/aic_sejong/aic_data/scenarios/world/trial{N}_{timestamp}.sdf  (Gazebo 실행 후 자동)
+    - 콘솔: 실행 명령어 + SDF 수동 복사 명령어 출력
 
 소스 파라미터 범위 근거:
     - task_board_description.md: NIC ±10°, SC 없음, mount ±60°
@@ -26,10 +28,17 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+
+# Gazebo가 월드를 내보내는 고정 경로
+WORLD_SDF_SRC = Path("/tmp/aic.sdf")
 
 
 # ──────────────────────────────────────────
@@ -43,8 +52,8 @@ LIMITS = {
     "mount_translation": (-0.09425, 0.09425),  # 픽 위치 마운트 이동 범위 (m)
     "mount_yaw":         (-math.radians(60), math.radians(60)),  # 픽 위치 마운트 회전 ±60°
     # 훈련 다양화 전용 (평가 시에는 고정)
-    "board_yaw_trial12": (3.0, 3.2831),        # π±0.14 rad (약 ±8°)
-    "board_yaw_trial3":  (2.8, 3.1415),        # Trial 3 보드 yaw 변동 범위
+    "board_yaw_trial12": (0.0, 3.1415),        # π±0.14 rad (약 ±8°), 확정 X
+    "board_yaw_trial3":  (0.0, 3.1415),        # Trial 3 보드 yaw 변동 범위
     "board_x_trial12":   (0.13, 0.17),
     "board_y_trial12":   (-0.25, -0.15),
     "board_x_trial3":    (0.15, 0.19),
@@ -192,7 +201,7 @@ def generate_params(trial: int, diversify: bool = False) -> dict:
         else:
             params["task_board_x"]     = 0.15
             params["task_board_y"]     = -0.2
-            params["task_board_yaw"]   = 3.1415
+            params["task_board_yaw"]   = rnd(*LIMITS["board_yaw_trial12"])
         params["task_board_z"]     = 1.14
         params["task_board_roll"]  = 0.0
         params["task_board_pitch"] = 0.0
@@ -205,13 +214,13 @@ def generate_params(trial: int, diversify: bool = False) -> dict:
         else:
             params["task_board_x"]     = 0.17
             params["task_board_y"]     = 0.0
-            params["task_board_yaw"]   = 3.0
+            params["task_board_yaw"]   = rnd(*LIMITS["board_yaw_trial3"])
         params["task_board_z"]     = 1.14
         params["task_board_roll"]  = 0.0
         params["task_board_pitch"] = 0.0
 
     # ── 2. NIC 카드 마운트 ───────────────────────────
-    params.update(_nic_all_absent())
+    params.update(_nic_all_absent()) # NIC 카드 비활성화 코드
 
     if trial == 1:
         params["nic_card_mount_0_present"]     = "true"
@@ -228,7 +237,7 @@ def generate_params(trial: int, diversify: bool = False) -> dict:
         params["nic_card_mount_1_yaw"]         = rnd(*LIMITS["nic_yaw"])
 
     # ── 3. SC 포트 ──────────────────────────────────
-    params.update(_sc_ports_absent())
+    params.update(_sc_ports_absent()) # SC 포트 비활성화 함수
 
     if trial in (1, 2):
         # sample_config 기준 sc_port_0 배치 (삽입 대상 아님, 보드 구성용)
@@ -291,7 +300,8 @@ def build_pixi_cmd(params: dict) -> str:
 # JSON 저장
 # ──────────────────────────────────────────
 
-def save_json(trial: int, params: dict, seed, diversify: bool, out_dir: Path) -> Path:
+def save_json(trial: int, params: dict, seed, diversify: bool, out_dir: Path,
+              overrides: dict | None = None) -> Path:
     """파라미터를 JSON 파일로 저장하고 경로를 반환."""
     out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -304,6 +314,7 @@ def save_json(trial: int, params: dict, seed, diversify: bool, out_dir: Path) ->
             "timestamp": timestamp,
             "seed":      seed,
             "diversify": diversify,
+            "overrides": overrides or {},
         },
         "params": params,
     }
@@ -315,25 +326,58 @@ def save_json(trial: int, params: dict, seed, diversify: bool, out_dir: Path) ->
 
 
 # ──────────────────────────────────────────
+# SDF 파일 감시 & 저장
+# ──────────────────────────────────────────
+
+def watch_and_save_sdf(dest_path: Path, timeout: int = 90, prev_mtime: float = 0.0):
+    """
+    /tmp/aic.sdf 가 생성되거나 갱신될 때까지 백그라운드에서 대기한 뒤
+    dest_path 로 복사한다.
+
+    Args:
+        dest_path:  복사 목적지 경로 (예: scenarios/world/trial1_20260416_120000.sdf)
+        timeout:    최대 대기 시간 (초)
+        prev_mtime: 실행 전 /tmp/aic.sdf 의 mtime (없으면 0.0)
+    """
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + timeout
+    print(f"[SDF 감시] /tmp/aic.sdf 생성 대기 중... (최대 {timeout}초)", flush=True)
+
+    while time.time() < deadline:
+        if WORLD_SDF_SRC.exists():
+            cur_mtime = WORLD_SDF_SRC.stat().st_mtime
+            if cur_mtime > prev_mtime:
+                shutil.copy2(WORLD_SDF_SRC, dest_path)
+                print(f"[SDF 저장] {dest_path}", flush=True)
+                return
+        time.sleep(1.0)
+
+    print(f"[경고] {timeout}초 내에 /tmp/aic.sdf 가 생성/갱신되지 않았습니다.", flush=True)
+
+
+def _prev_sdf_mtime() -> float:
+    """실행 전 /tmp/aic.sdf 의 mtime 반환 (없으면 0.0)."""
+    return WORLD_SDF_SRC.stat().st_mtime if WORLD_SDF_SRC.exists() else 0.0
+
+
+# ──────────────────────────────────────────
 # 실행 (subprocess)
 # ──────────────────────────────────────────
 
-def run_command(params: dict, mode: str):
-    """파라미터를 실제로 실행."""
+def run_command(params: dict, mode: str) -> subprocess.Popen:
+    """파라미터로 Gazebo를 실행하고 Popen 객체를 반환."""
     flat_args = [f"{k}:={_fmt_val(v)}" for k, v in params.items()]
 
     if mode == "eval":
-        cmd = ["distrobox", "enter", "-r", "aic_eval", "--"] + ["/entrypoint.sh"] + flat_args
+        cmd = ["distrobox", "enter", "-r", "aic_eval", "--", "/entrypoint.sh"] + flat_args
+        return subprocess.Popen(cmd)
     else:  # pixi
         ws = Path.home() / "aic_sejong" / "ws_aic" / "src" / "aic"
         cmd = (
             f"cd {ws} && pixi run ros2 launch aic_bringup aic_gz_bringup.launch.py "
             + " ".join(flat_args)
         )
-        subprocess.run(cmd, shell=True)
-        return
-
-    subprocess.run(cmd)
+        return subprocess.Popen(cmd, shell=True)
 
 
 # ──────────────────────────────────────────
@@ -345,14 +389,16 @@ def main():
         description="AIC Trial 시나리오 랜덤 생성기",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-예시:
-  python3 generate_scenario.py 1                     # Trial 1, 명령어 출력만
-  python3 generate_scenario.py 2 --run               # Trial 2, 실제 실행
-  python3 generate_scenario.py 3 --seed 42           # 시드 고정 (재현 가능)
-  python3 generate_scenario.py 1 --diversify         # 보드 위치/yaw도 랜덤화
-  python3 generate_scenario.py 1 --mode pixi         # pixi 소스 빌드 모드
-  python3 generate_scenario.py 1 --output-dir /tmp   # JSON 저장 위치 지정
-        """,
+        예시:
+        python3 generate_scenario.py 1                     # Trial 1, 명령어 출력만
+        python3 generate_scenario.py 2 --run               # Trial 2, 실제 실행
+        python3 generate_scenario.py 3 --seed 42           # 시드 고정 (재현 가능)
+        python3 generate_scenario.py 1 --diversify         # 보드 위치/yaw도 랜덤화
+        python3 generate_scenario.py 1 --mode pixi         # pixi 소스 빌드 모드
+        python3 generate_scenario.py 1 --output-dir /tmp   # JSON 저장 위치 지정
+        python3 generate_scenario.py 1 --set nic_card_mount_0_yaw=0.0 task_board_x=0.15   # 특정 파라미터 값 지정
+        python3 generate_scenario.py 1 --output-dir "../aic_data/scenarios/"    # 해당 디렉토리에 월드 파일 저장
+    """,
     )
     parser.add_argument(
         "trial",
@@ -385,8 +431,16 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=None,
+        default="../aic_data/scenarios/",
         help="JSON 저장 폴더 (기본: ~/aic_sejong/aic_data/scenarios/)",
+    )
+    # --set: 특정 파라미터를 고정값으로 오버라이드
+    parser.add_argument(
+        "--set",
+        nargs="+",
+        metavar="KEY=VALUE",
+        default=[],
+        help="파라미터 오버라이드 (예: --set nic_card_mount_0_yaw=0.0 task_board_x=0.15)",
     )
     args = parser.parse_args()
 
@@ -398,10 +452,31 @@ def main():
     # 파라미터 생성
     params = generate_params(args.trial, diversify=args.diversify)
 
-    # JSON 저장
+    # --set 오버라이드 적용
+    overrides = {}
+    for item in args.set:
+        if "=" not in item:
+            parser.error(f"--set 형식 오류: '{item}' (올바른 형식: KEY=VALUE)")
+        key, val = item.split("=", 1)
+        if key not in params:
+            print(f"[경고] '{key}'는 생성된 파라미터에 없습니다. 그래도 추가합니다.")
+        # 타입 추론: 기존 값이 float이면 float, "true"/"false"면 문자열 그대로
+        if key in params and isinstance(params[key], float):
+            overrides[key] = float(val)
+        else:
+            overrides[key] = val
+    if overrides:
+        params.update(overrides)
+        print(f"[오버라이드] {len(overrides)}개 파라미터 고정: {list(overrides.keys())}")
+
+    # 저장 경로 결정 (JSON 과 SDF 가 같은 타임스탬프·스템을 공유)
     out_dir = args.output_dir or (Path.home() / "aic_sejong" / "aic_data" / "scenarios")
-    json_path = save_json(args.trial, params, args.seed, args.diversify, out_dir)
-    print(f"[저장] {json_path}\n")
+    json_path = save_json(args.trial, params, args.seed, args.diversify, out_dir, overrides)
+    stem = json_path.stem  # 예: trial1_20260416_120000
+    sdf_path = out_dir / "world" / f"{stem}.sdf"
+
+    print(f"[저장] JSON  → {json_path}")
+    print(f"[예정] SDF   → {sdf_path}\n")
 
     # 파라미터 요약 출력
     print("=" * 60)
@@ -420,10 +495,34 @@ def main():
     print(cmd_str)
     print()
 
-    # 실행
+    # SDF 수동 복사 명령어 (--run 없이 쓸 때 참고용)
+    print("[SDF 복사 명령어]  ← Gazebo 실행 후 별도 터미널에서 실행")
+    print(f"  mkdir -p {sdf_path.parent} && cp /tmp/aic.sdf {sdf_path}")
+    print()
+
+    # 실행 + SDF 자동 감시
     if args.run:
-        print("[실행 중...]")
-        run_command(params, args.mode)
+        prev_mtime = _prev_sdf_mtime()
+        print("[실행 중...] Ctrl+C 로 종료")
+
+        # SDF 감시를 백그라운드 스레드에서 실행
+        watcher = threading.Thread(
+            target=watch_and_save_sdf,
+            args=(sdf_path,),
+            kwargs={"timeout": 120, "prev_mtime": prev_mtime},
+            daemon=True,
+        )
+        watcher.start()
+
+        proc = run_command(params, args.mode)
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            print("\n[종료] 프로세스를 종료했습니다.")
+
+        # Gazebo 종료 후 watcher가 아직 실행 중이면 최대 5초 더 대기
+        watcher.join(timeout=5)
 
 
 def _print_summary(params: dict, trial: int):
