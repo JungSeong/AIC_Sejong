@@ -704,6 +704,21 @@ def run_collection_loop(
         # 8. 프로세스 종료
         terminate_processes(policy_proc, gazebo_proc)
 
+        # 9. 세트 완료 후 즉시 HuggingFace Hub 업로드
+        #    업로드가 완전히 끝난 후에만 다음 세트로 진행
+        if hub_repo_id and not dry_run:
+            set_path_in_repo = f"{hub_path_in_repo}/set_{set_idx:04d}"
+            print(f"\n[Hub] 세트 {set_idx} 업로드 시작 → {hub_repo_id}/{set_path_in_repo}")
+            upload_to_hub(
+                capture_dir=capture_dir,
+                repo_id=hub_repo_id,
+                private=hub_private,
+                path_in_repo=set_path_in_repo,
+            )
+            print(f"[Hub] 세트 {set_idx} 업로드 완료. 다음 세트로 진행합니다.")
+        elif hub_repo_id and dry_run:
+            print(f"[DRY-RUN] 세트 {set_idx} Hub 업로드 건너뜀 (repo_id={hub_repo_id})")
+
         # 다음 세트 전 짧은 대기
         if set_idx < n_sets:
             print("[대기] 다음 세트 준비 중... (5초)")
@@ -712,18 +727,6 @@ def run_collection_loop(
     print(f"\n{'='*60}")
     print(f"=== 수집 완료: {n_sets} 세트, 총 {total_collected} 에피소드 ===")
     print(f"{'='*60}")
-
-    # HuggingFace Hub 업로드 (옵션)
-    if hub_repo_id and not dry_run:
-        print(f"\n[Hub] HuggingFace Hub 업로드 시작...")
-        upload_to_hub(
-            capture_dir=capture_dir,
-            repo_id=hub_repo_id,
-            private=hub_private,
-            path_in_repo=hub_path_in_repo,
-        )
-    elif hub_repo_id and dry_run:
-        print(f"[DRY-RUN] Hub 업로드 건너뜀 (repo_id={hub_repo_id})")
 
 
 # ──────────────────────────────────────────
