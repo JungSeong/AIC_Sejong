@@ -579,16 +579,25 @@ def upload_to_hub(
     repo_type: str = "dataset",
     private: bool = True,
     path_in_repo: str = "captures",
+    num_workers: int = 4,
+    new_episode_dirs: list | None = None,
+    commit_batch_size: int = 500,
 ) -> None:
     """
-    capture_dir 전체를 HuggingFace Hub 데이터셋 레포에 업로드.
+    HuggingFace Hub 데이터셋 레포에 에피소드를 업로드.
+
+    new_episode_dirs 가 주어지면 해당 디렉토리만, 없으면 capture_dir 전체를 업로드.
+    커밋당 최대 commit_batch_size 개 에피소드씩 나눠 업로드해 25k 파일 한도를 회피.
 
     Args:
-        capture_dir   : 로컬 에피소드 저장 경로 (e.g. ~/aic_data/captures)
-        repo_id       : Hub 레포 ID (e.g. "aic-sejong-team/A")
-        repo_type     : "dataset" (기본) 또는 "model"
-        private       : True 이면 비공개 레포로 생성
-        path_in_repo  : Hub 레포 내 저장 경로 prefix
+        capture_dir       : 로컬 에피소드 저장 경로 (e.g. ~/aic_data/captures)
+        repo_id           : Hub 레포 ID (e.g. "aic-sejong-team/aic-dataset")
+        repo_type         : "dataset" (기본) 또는 "model"
+        private           : True 이면 비공개 레포로 생성
+        path_in_repo      : Hub 레포 내 저장 경로 prefix
+        num_workers       : (미사용, 하위 호환용)
+        new_episode_dirs  : 이번 세트에서 새로 생긴 에피소드 디렉토리 목록
+        commit_batch_size : 커밋당 최대 에피소드 수 (기본 500)
     """
     if not HF_HUB_AVAILABLE:
         print("[에러] huggingface_hub 패키지가 설치되어 있지 않습니다.")
@@ -609,14 +618,35 @@ def upload_to_hub(
         exist_ok=True,
     )
 
-    print(f"[Hub] 업로드 시작: {capture_dir} → {repo_id}/{path_in_repo}")
-    api.upload_folder(
-        folder_path=str(capture_dir),
-        repo_id=repo_id,
-        repo_type=repo_type,
-        path_in_repo=path_in_repo,
-        ignore_patterns=["*.pyc", "__pycache__", ".DS_Store"],
-    )
+    # 업로드할 디렉토리 목록 결정
+    if new_episode_dirs:
+        target_dirs = sorted(new_episode_dirs)
+    else:
+        target_dirs = sorted(d for d in capture_dir.iterdir() if d.is_dir())
+
+    if not target_dirs:
+        print("[Hub] 업로드할 에피소드 디렉토리가 없습니다.")
+        return
+
+    # commit_batch_size 단위로 나눠 업로드 (25k 파일 한도 회피)
+    total_dirs = len(target_dirs)
+    for batch_start in range(0, total_dirs, commit_batch_size):
+        batch = target_dirs[batch_start:batch_start + commit_batch_size]
+        batch_end = min(batch_start + commit_batch_size, total_dirs)
+        print(
+            f"[Hub] 업로드 중 ({batch_start + 1}–{batch_end}/{total_dirs}): "
+            f"{len(batch)}개 에피소드 → {repo_id}/{path_in_repo}"
+        )
+        for ep_dir in batch:
+            ep_path_in_repo = f"{path_in_repo}/{ep_dir.name}"
+            api.upload_folder(
+                folder_path=str(ep_dir),
+                repo_id=repo_id,
+                repo_type=repo_type,
+                path_in_repo=ep_path_in_repo,
+                ignore_patterns=["*.pyc", "__pycache__", ".DS_Store"],
+            )
+
     print(f"[Hub] 업로드 완료! https://huggingface.co/datasets/{repo_id}")
 
 
@@ -718,6 +748,7 @@ def run_collection_loop(
 
         # 4. 에피소드 기준점 기록
         episodes_before = count_completed_episodes(capture_dir)
+        episode_dirs_before = {d for d in capture_dir.iterdir() if d.is_dir()} if capture_dir.exists() else set()
 
         # 5. Zenoh 라우터 → Gazebo → Policy 순으로 시작
         ZENOH_WAIT      = 3   # Zenoh 안정화 대기
@@ -761,15 +792,17 @@ def run_collection_loop(
         # 7. 프로세스 종료
         terminate_processes(policy_proc, gazebo_proc, zenoh_proc)
 
-        # 8. 세트 완료 후 즉시 HuggingFace Hub 업로드
+        # 8. 세트 완료 후 즉시 HuggingFace Hub 업로드 (이번 세트 신규 에피소드만)
         if hub_repo_id and not dry_run:
             set_path_in_repo = f"{hub_path_in_repo}/set_{set_idx:04d}"
-            print(f"\n[Hub] 세트 {set_idx} 업로드 시작 → {hub_repo_id}/{set_path_in_repo}")
+            new_dirs = sorted({d for d in capture_dir.iterdir() if d.is_dir()} - episode_dirs_before)
+            print(f"\n[Hub] 세트 {set_idx} 업로드 시작 ({len(new_dirs)}개 에피소드) → {hub_repo_id}/{set_path_in_repo}")
             upload_to_hub(
                 capture_dir=capture_dir,
                 repo_id=hub_repo_id,
                 private=hub_private,
                 path_in_repo=set_path_in_repo,
+                new_episode_dirs=new_dirs,
             )
             print(f"[Hub] 세트 {set_idx} 업로드 완료. 다음 세트로 진행합니다.")
         elif hub_repo_id and dry_run:
