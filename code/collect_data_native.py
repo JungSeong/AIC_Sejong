@@ -504,7 +504,7 @@ def start_policy(
 
     cmd = (
         f"cd {PIXI_WS} && pixi run ros2 run aic_model aic_model "
-        "--ros-args -p policy:=data_gen_policy.policy.datacollect"
+        "--ros-args -p policy:=data_gen_policy.policy.perturbcollect"
     )
 
     if dry_run:
@@ -515,7 +515,12 @@ def start_policy(
         return None
 
     print(f"[Policy] DataCollect 시작. 저장 경로: {capture_dir} / {step_hz}Hz")
-    return subprocess.Popen(cmd, shell=True, env=env)
+    proc = subprocess.Popen(cmd, shell=True, env=env, stderr=subprocess.STDOUT)
+    time.sleep(2)
+    if proc.poll() is not None:
+        print(f"[에러] aic_model 프로세스가 즉시 종료됨 (returncode={proc.returncode}). "
+              "policy 초기화 에러일 수 있습니다.")
+    return proc
 
 
 def terminate_processes(*procs):
@@ -698,6 +703,11 @@ def run_collection_loop(
         print(f"  hub private    : {hub_private}")
 
     if not dry_run:
+        # 시작 전 잔존 프로세스 정리 (이전 수동 실행 또는 비정상 종료 대비)
+        print("[정리] 잔존 ROS2/Zenoh 프로세스 정리 중...")
+        terminate_processes()
+        print("[정리] 완료\n")
+
         # pixi 환경 워밍업
         print("[pixi] 환경 워밍업 중 (최초 1회)...")
         subprocess.run(
@@ -752,7 +762,7 @@ def run_collection_loop(
 
         # 5. Zenoh 라우터 → Gazebo → Policy 순으로 시작
         ZENOH_WAIT      = 3   # Zenoh 안정화 대기
-        GAZEBO_HEAD_START = 20  # Gazebo/aic_engine 선행 기동 시간
+        GAZEBO_HEAD_START = 15  # Gazebo/aic_engine 선행 기동 시간
 
         zenoh_proc = start_zenoh(dry_run=dry_run)
         if not dry_run:
