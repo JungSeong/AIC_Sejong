@@ -2,7 +2,8 @@ aic_data/huggingface/
 aic_data/outputs/
 aic_data/lerobot-datasets/
 aic_data/scenarios/
-aic_data/captures
+aic_data/captures/
+aic_data/model/
 
 myenv/
 

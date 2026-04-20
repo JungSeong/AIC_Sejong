@@ -36,6 +36,7 @@ ros-kilted-std-srvs = "*"
 ros-kilted-tf2-ros-py = "*"
 setuptools = ">=71.0.0,<81.0.0"                                                        # required by lerobot==0.4.3
 trimesh = ">=4.11.5,<5"
+ultralytics = ">=8.4.39,<9"
 
 [pypi-dependencies]
 torch = ">=2.0"

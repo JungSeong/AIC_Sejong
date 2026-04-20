@@ -5,20 +5,21 @@ RUN apt update && apt install -y git && curl -fsSL https://pixi.sh/install.sh | 
 ENV PATH="/root/.pixi/bin:$PATH"
 
 # Add base dependencies
-COPY aic_example_policies /ws_aic/src/aic/aic_example_policies
-COPY aic_model /ws_aic/src/aic/aic_model
-COPY aic_interfaces /ws_aic/src/aic/aic_interfaces
-COPY aic_utils /ws_aic/src/aic/aic_utils
-COPY pixi.toml pixi.lock /ws_aic/src/aic/
-COPY pixi_env_setup.sh /ws_aic/src/aic/
-
-COPY my_policy_node /ws_aic/src/aic/my_policy_node
+COPY ws_aic/src/aic/aic_example_policies /ws_aic/src/aic/aic_example_policies
+COPY ws_aic/src/aic/aic_model /ws_aic/src/aic/aic_model
+COPY ws_aic/src/aic/aic_interfaces /ws_aic/src/aic/aic_interfaces
+COPY ws_aic/src/aic/aic_utils /ws_aic/src/aic/aic_utils
+COPY ws_aic/src/aic/pixi.toml ws_aic/src/aic/pixi.lock /ws_aic/src/aic/
+COPY ws_aic/src/aic/pixi_env_setup.sh /ws_aic/src/aic/
+COPY ws_aic/src/aic/my_policy_node /ws_aic/src/aic/my_policy_node/
+COPY aic_data/model/yolo/weight/best.pt /models/port_detector.pt
+ENV AIC_YOLO_MODEL_PATH=/models/port_detector.pt
 
 # Add other dependencies
 
 SHELL ["/bin/bash", "-c"]
 RUN --mount=type=cache,target=/root/.cache/rattler/cache --mount=type=cache,target=/ws_aic/src/aic/.pixi/build \
-    cd /ws_aic/src/aic && pixi install --locked
+  cd /ws_aic/src/aic && pixi install --locked
 
 WORKDIR /ws_aic/src/aic
 COPY --chmod=755 <<"EOF" /entrypoint.sh
@@ -59,4 +60,4 @@ exec pixi run --as-is ros2 run aic_model aic_model "$@"
 EOF
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "-p", "policy:=my_policy_node.Baseline"]
+CMD ["--ros-args", "-p", "policy:=my_policy_node.StagedPolicy", "-p", "use_sim_time:=true"]

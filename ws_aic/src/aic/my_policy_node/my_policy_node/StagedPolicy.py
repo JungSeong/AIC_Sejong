@@ -43,6 +43,16 @@ from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 #  Stage 1 설정
 # ═══════════════════════════════════════════════════════════
 
+def _resolve_yolo_model_path() -> str:
+    # 1순위: 환경 변수 (팀원마다 경로가 다를 수 있으므로 권장)
+    env = os.environ.get("AIC_YOLO_MODEL_PATH")
+    if env and os.path.isfile(env):
+        return env
+
+    # 2순위: 홈 디렉토리 fallback (개발 편의용)
+    return os.path.expanduser("/home/vsc/LLM_TUNE/AIC_Sejong/aic_data/model/yolo/weight/best.pt")
+
+
 class Stage1Config:
     # --- 목표 위치 사양 ---
     # 접근점은 포트 축선상 거리 (팀 피드백 반영: 10cm → 7cm 로 하향)
@@ -76,9 +86,7 @@ class Stage1Config:
     USE_WORLD_Z_APPROACH: bool = True
 
     # --- Vision 설정 ---
-    YOLO_MODEL_PATH: str = os.path.expanduser(
-        "~/aic_yolo_runs/port_detector/weights/best.pt"
-    )
+    YOLO_MODEL_PATH: str = _resolve_yolo_model_path()
     YOLO_CONF_THRESH: float = 0.5
     # 3D 타당성 검증 범위 (base_link)
     BOARD_CENTER: tuple = (-0.38, 0.22, 0.13)
@@ -143,7 +151,7 @@ def transform_to_matrix(t) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════
-#  Vision 모듈 (YOLO + Stereo)
+#  Vision 모듈 (`YOLO + Stereo)
 # ═══════════════════════════════════════════════════════════
 
 class VisionPortEstimator:
@@ -167,6 +175,16 @@ class VisionPortEstimator:
 
     def _ensure_loaded(self):
         if self._loaded:
+            return
+        if not os.path.isfile(self._model_path):
+            if self._logger:
+                self._logger.error(
+                    f"YOLO 모델 파일 없음: {self._model_path}\n"
+                    "  해결 방법:\n"
+                    "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
+                    "  2) 패키지 share/models/port_detector.pt 에 번들\n"
+                    "  3) ~/aic_yolo_runs/port_detector/weights/best.pt 에 배치"
+                )
             return
         try:
             from ultralytics import YOLO
