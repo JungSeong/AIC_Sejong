@@ -1,6 +1,7 @@
+import os
+from huggingface_hub import snapshot_download
 import time
 import json
-import threading
 import torch
 import numpy as np
 import cv2
@@ -35,100 +36,93 @@ class Baseline(Policy):
         super().__init__(parent_node)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # executor 블로킹 방지 — 모델 로딩을 백그라운드 스레드에서 실행
-        self._model_ready = threading.Event()
-        self._load_error: Exception | None = None
-
-        threading.Thread(target=self._load_model, daemon=True).start()
-        self.get_logger().info("Baseline __init__ done. Model loading in background thread.")
-
-    # ── 백그라운드 모델 로딩 ──────────────────────────────────────
-    def _load_model(self):
-        import os
-        try:
-            policy_path = Path(
-                "aic_data/outputs/train/act_cnn_test/checkpoints/last/pretrained_model"
+        # ── [1/5] 경로 확인 ───────────────────────────────────
+        # snapshot_download: HF 캐시(~/.cache/huggingface/hub/)에서 자동으로 경로를 반환.
+        # CWD에 무관하게 동작하며, 이미 다운로드된 경우 캐시를 그대로 사용.
+        self.get_logger().info("[MODEL LOAD 1/5] Resolving model path via HuggingFace cache ...")
+        abs_path = Path(
+            snapshot_download(
+                repo_id="aic-sejong-team/act_AIC",
+                allow_patterns=["config.json", "*.safetensors"],
             )
+        )
+        self.get_logger().info(f"[MODEL LOAD 1/5] Resolved    : {abs_path}")
+        self.get_logger().info(
+            f"[MODEL LOAD 1/5] Directory OK. Files: {[f.name for f in abs_path.iterdir()]}"
+        )
 
-            # ── [1/5] 경로 확인 ───────────────────────────────────
-            abs_path = policy_path.resolve()
-            self.get_logger().info(f"[MODEL LOAD 1/5] CWD: {os.getcwd()}")
-            self.get_logger().info(f"[MODEL LOAD 1/5] Resolved path: {abs_path}")
-            if not abs_path.exists():
-                raise FileNotFoundError(f"Checkpoint directory not found: {abs_path}")
-            self.get_logger().info(f"[MODEL LOAD 1/5] Directory OK. Files: {[f.name for f in abs_path.iterdir()]}")
+        # ── [2/5] config.json ─────────────────────────────────
+        self.get_logger().info("[MODEL LOAD 2/5] Loading config.json ...")
+        with open(abs_path / "config.json", "r") as f:
+            config_dict = json.load(f)
+            config_dict.pop("type", None)
+        config = draccus.decode(ACTConfig, config_dict)
+        self.get_logger().info(
+            f"[MODEL LOAD 2/5] Config OK. chunk_size={getattr(config, 'chunk_size', '?')}"
+        )
 
-            # ── [2/5] config.json ─────────────────────────────────
-            self.get_logger().info("[MODEL LOAD 2/5] Loading config.json ...")
-            with open(abs_path / "config.json", "r") as f:
-                config_dict = json.load(f)
-                config_dict.pop("type", None)
-            config = draccus.decode(ACTConfig, config_dict)
-            self.get_logger().info(f"[MODEL LOAD 2/5] Config OK. chunk_size={getattr(config, 'chunk_size', '?')}")
+        # ── [3/5] 가중치 ──────────────────────────────────────
+        self.get_logger().info(
+            f"[MODEL LOAD 3/5] Loading model.safetensors on {self.device} ..."
+        )
+        self.policy = ACTPolicy(config)
+        self.policy.load_state_dict(load_file(abs_path / "model.safetensors"))
+        self.policy.eval()
+        self.policy.to(self.device)
+        param_count = sum(p.numel() for p in self.policy.parameters())
+        self.get_logger().info(f"[MODEL LOAD 3/5] Weights OK. Params: {param_count:,}")
 
-            # ── [3/5] 가중치 ──────────────────────────────────────
-            self.get_logger().info(f"[MODEL LOAD 3/5] Loading model.safetensors on {self.device} ...")
-            self.policy = ACTPolicy(config)
-            self.policy.load_state_dict(load_file(abs_path / "model.safetensors"))
-            self.policy.eval()
-            self.policy.to(self.device)
-            param_count = sum(p.numel() for p in self.policy.parameters())
-            self.get_logger().info(f"[MODEL LOAD 3/5] Weights OK. Params: {param_count:,}")
+        # ── [4/5] 정규화 통계 ─────────────────────────────────
+        stats_file = (
+            abs_path / "policy_preprocessor_step_3_normalizer_processor.safetensors"
+        )
+        self.get_logger().info(
+            f"[MODEL LOAD 4/5] Loading normalization stats from {stats_file.name} ..."
+        )
+        stats = load_file(stats_file)
+        self.get_logger().info(f"[MODEL LOAD 4/5] Stats keys: {list(stats.keys())}")
 
-            # ── [4/5] 정규화 통계 ─────────────────────────────────
-            stats_file = abs_path / "policy_preprocessor_step_3_normalizer_processor.safetensors"
-            self.get_logger().info(f"[MODEL LOAD 4/5] Loading normalization stats from {stats_file.name} ...")
-            stats = load_file(stats_file)
-            self.get_logger().info(f"[MODEL LOAD 4/5] Stats keys: {list(stats.keys())}")
+        def get_stat(key, shape):
+            if key not in stats:
+                raise KeyError(
+                    f"Key '{key}' not found in stats. Available: {list(stats.keys())}"
+                )
+            return stats[key].to(self.device).view(*shape)
 
-            def get_stat(key, shape):
-                if key not in stats:
-                    raise KeyError(f"Key '{key}' not found in stats. Available: {list(stats.keys())}")
-                return stats[key].to(self.device).view(*shape)
+        self.img_stats = {
+            "left": {
+                "mean": get_stat("observation.images.left_camera.mean",   (1, 3, 1, 1)),
+                "std":  get_stat("observation.images.left_camera.std",    (1, 3, 1, 1)),
+            },
+            "center": {
+                "mean": get_stat("observation.images.center_camera.mean", (1, 3, 1, 1)),
+                "std":  get_stat("observation.images.center_camera.std",  (1, 3, 1, 1)),
+            },
+            "right": {
+                "mean": get_stat("observation.images.right_camera.mean",  (1, 3, 1, 1)),
+                "std":  get_stat("observation.images.right_camera.std",   (1, 3, 1, 1)),
+            },
+        }
+        self.state_mean  = get_stat("observation.state.mean", (1, -1))
+        self.state_std   = get_stat("observation.state.std",  (1, -1))
+        self.action_mean = get_stat("action.mean", (1, -1))
+        self.action_std  = get_stat("action.std",  (1, -1))
+        self.get_logger().info(
+            f"[MODEL LOAD 4/5] Stats OK. "
+            f"state_dim={self.state_mean.shape}, action_dim={self.action_mean.shape}"
+        )
 
-            self.img_stats = {
-                "left": {
-                    "mean": get_stat("observation.images.left_camera.mean",   (1, 3, 1, 1)),
-                    "std":  get_stat("observation.images.left_camera.std",    (1, 3, 1, 1)),
-                },
-                "center": {
-                    "mean": get_stat("observation.images.center_camera.mean", (1, 3, 1, 1)),
-                    "std":  get_stat("observation.images.center_camera.std",  (1, 3, 1, 1)),
-                },
-                "right": {
-                    "mean": get_stat("observation.images.right_camera.mean",  (1, 3, 1, 1)),
-                    "std":  get_stat("observation.images.right_camera.std",   (1, 3, 1, 1)),
-                },
-            }
-            self.state_mean  = get_stat("observation.state.mean", (1, -1))
-            self.state_std   = get_stat("observation.state.std",  (1, -1))
-            self.action_mean = get_stat("action.mean", (1, -1))
-            self.action_std  = get_stat("action.std",  (1, -1))
-            self.get_logger().info(f"[MODEL LOAD 4/5] Stats OK. state_dim={self.state_mean.shape}, action_dim={self.action_mean.shape}")
+        self.image_scale = 0.25
 
-            self.image_scale = 0.25
-
-            # ── [5/5] 완료 ────────────────────────────────────────
-            self.get_logger().info("=" * 50)
-            self.get_logger().info("[MODEL LOAD 5/5] ★ MODEL READY ★")
-            self.get_logger().info(f"  device     : {self.device}")
-            self.get_logger().info(f"  params     : {param_count:,}")
-            self.get_logger().info(f"  state_dim  : {self.state_mean.shape[-1]}")
-            self.get_logger().info(f"  action_dim : {self.action_mean.shape[-1]}")
-            self.get_logger().info(f"  img_scale  : {self.image_scale}")
-            self.get_logger().info("=" * 50)
-
-        except Exception as e:
-            import traceback
-            self._load_error = e
-            self.get_logger().error("=" * 50)
-            self.get_logger().error("[MODEL LOAD FAILED] ✗ 로딩 실패")
-            self.get_logger().error(f"  Error: {type(e).__name__}: {e}")
-            self.get_logger().error(f"  Traceback:\n{traceback.format_exc()}")
-            self.get_logger().error("=" * 50)
-
-        finally:
-            self._model_ready.set()  # 성공/실패 모두 event 해제
+        # ── [5/5] 완료 ────────────────────────────────────────
+        self.get_logger().info("=" * 50)
+        self.get_logger().info("[MODEL LOAD 5/5] ★ MODEL READY ★")
+        self.get_logger().info(f"  device     : {self.device}")
+        self.get_logger().info(f"  params     : {param_count:,}")
+        self.get_logger().info(f"  state_dim  : {self.state_mean.shape[-1]}")
+        self.get_logger().info(f"  action_dim : {self.action_mean.shape[-1]}")
+        self.get_logger().info(f"  img_scale  : {self.image_scale}")
+        self.get_logger().info("=" * 50)
 
     # ── 이미지 전처리 ─────────────────────────────────────────────
     @staticmethod
@@ -212,15 +206,6 @@ class Baseline(Policy):
         send_feedback: SendFeedbackCallback,
         **kwargs,
     ):
-        # 모델 로딩 완료 대기 (최대 55초)
-        self.get_logger().info("insert_cable: waiting for model to be ready...")
-        if not self._model_ready.wait(timeout=55.0):
-            self.get_logger().error("Model loading timed out (55s). Aborting.")
-            return False
-        if self._load_error is not None:
-            self.get_logger().error(f"Model failed to load: {self._load_error}. Aborting.")
-            return False
-
         self.policy.reset()
         self.get_logger().info(f"Baseline.insert_cable() start. Task: {task}")
 
@@ -260,7 +245,9 @@ class Baseline(Policy):
             ang = np.clip(action[3:6], -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL)
 
             if not (np.allclose(lin, action[:3]) and np.allclose(ang, action[3:6])):
-                self.get_logger().warn(f"[step {step}] Clamped: {action[:6]} → {np.concatenate([lin, ang])}")
+                self.get_logger().warn(
+                    f"[step {step}] Clamped: {action[:6]} → {np.concatenate([lin, ang])}"
+                )
 
             twist = Twist(
                 linear=Vector3(x=float(lin[0]), y=float(lin[1]), z=float(lin[2])),
