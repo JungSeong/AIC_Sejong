@@ -4,6 +4,8 @@ aic_data/lerobot-datasets/
 aic_data/scenarios/
 aic_data/captures
 
+myenv/
+
 ABOUT-ME/
 TEMPLATES/
-.CLAUDE.md
+CLAUDE.md
