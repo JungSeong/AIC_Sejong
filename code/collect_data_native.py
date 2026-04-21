@@ -587,8 +587,9 @@ def terminate_processes(*procs, stop_zenoh: bool = False):
         "aic_adapter",
         "robot_state_publisher",
         "ros_gz_bridge",
-        "ros2_control",
-        "ros2.*controller_manager",
+        "ros2_control_node",
+        "controller_manager",
+        "component_container",
         "ros2.*spawner",
         "rviz2",
         "static_transform_publisher",
@@ -610,8 +611,20 @@ def terminate_processes(*procs, stop_zenoh: bool = False):
         # sudo 없이 pkill — 자신이 띄운 프로세스는 권한 없이 종료 가능
         subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True)
 
-    # 3단계: 소켓·GPU 컨텍스트 반환 대기
-    time.sleep(5)
+    # 3단계: 공유 메모리 정리 (종료된 PID의 Zenoh shm + ros2_control shm)
+    subprocess.run(
+        ["bash", "-c",
+         # 살아있는 PID의 zenoh 파일은 보존, 죽은 것만 삭제
+         "for f in /dev/shm/*.zenoh; do "
+         "  pid=$(basename $f .zenoh); "
+         "  kill -0 $pid 2>/dev/null || rm -f $f; "
+         "done; "
+         "rm -f /dev/shm/ros2_control_*"],
+        capture_output=True,
+    )
+
+    # 4단계: 소켓·GPU 컨텍스트 반환 대기
+    time.sleep(10)
 
 
 # ──────────────────────────────────────────
@@ -803,7 +816,7 @@ def run_collection_loop(
 
         # 5. Zenoh 라우터 → Gazebo → Policy 순으로 시작
         ZENOH_WAIT      = 3   # Zenoh 안정화 대기
-        GAZEBO_HEAD_START = 15  # Gazebo/aic_engine 선행 기동 시간
+        GAZEBO_HEAD_START = 25  # Gazebo/aic_engine 선행 기동 시간 (controller_manager 포함)
 
         zenoh_proc = start_zenoh(dry_run=dry_run)
         if not dry_run:
