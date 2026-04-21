@@ -6,7 +6,7 @@ services:
     build:
       dockerfile: docker/aic_eval/Dockerfile
       context: ..
-    command: gazebo_gui:=false launch_rviz:=false ground_truth:=false start_aic_engine:=true shutdown_on_aic_engine_exit:=true model_discovery_timeout_seconds:=600
+    command: gazebo_gui:=true launch_rviz:=true ground_truth:=false start_aic_engine:=true shutdown_on_aic_engine_exit:=true model_discovery_timeout_seconds:=600
     gpus: all
     networks:
       - default
@@ -14,6 +14,11 @@ services:
       AIC_EVAL_PASSWD: CHANGE_IN_PROD
       AIC_MODEL_PASSWD: CHANGE_IN_PROD
       # AIC_ENABLE_ACL: true
+      DISPLAY: $DISPLAY
+      QT_X11_NO_MITSHM: 1
+      NVIDIA_DRIVER_CAPABILITIES: all
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
   model:
     image: baseline:v1
     build:
@@ -22,15 +27,12 @@ services:
     gpus: all
     networks:
       - default
-    volumes:
-      - /home/swlinux/aic_sejong/debug/yolo_detections:/debug/yolo_detections
     environment:
       RMW_IMPLEMENTATION: rmw_zenoh_cpp
       ZENOH_ROUTER_CHECK_ATTEMPTS: -1
       AIC_ROUTER_ADDR: eval:7447
       AIC_MODEL_PASSWD: CHANGE_IN_PROD
       # AIC_ENABLE_ACL: true
-      AIC_DEBUG_SAVE_DIR: /debug/yolo_detections
 networks:
   default:
     internal: true

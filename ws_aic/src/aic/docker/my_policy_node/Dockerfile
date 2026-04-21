@@ -12,14 +12,17 @@ COPY ws_aic/src/aic/aic_utils /ws_aic/src/aic/aic_utils
 COPY ws_aic/src/aic/pixi.toml ws_aic/src/aic/pixi.lock /ws_aic/src/aic/
 COPY ws_aic/src/aic/pixi_env_setup.sh /ws_aic/src/aic/
 COPY ws_aic/src/aic/my_policy_node /ws_aic/src/aic/my_policy_node/
-COPY aic_data/model/yolo/weight/best.pt /models/port_detector.pt
+COPY ws_aic/src/aic/data_gen_policy /ws_aic/src/aic/data_gen_policy
+COPY aic_data/model/baseline/weight/best.pt /models/port_detector.pt
 ENV AIC_YOLO_MODEL_PATH=/models/port_detector.pt
 
 # Add other dependencies
 
 SHELL ["/bin/bash", "-c"]
 RUN --mount=type=cache,target=/root/.cache/rattler/cache --mount=type=cache,target=/ws_aic/src/aic/.pixi/build \
-  cd /ws_aic/src/aic && pixi install --locked
+  cd /ws_aic/src/aic && pixi install && \
+  rm -rf .pixi/envs/default/lib/python3.12/site-packages/my_policy_node && \
+  ln -s /ws_aic/src/aic/my_policy_node/my_policy_node .pixi/envs/default/lib/python3.12/site-packages/my_policy_node
 
 WORKDIR /ws_aic/src/aic
 COPY --chmod=755 <<"EOF" /entrypoint.sh
