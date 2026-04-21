@@ -415,10 +415,20 @@ def _ros2_env() -> dict:
     return env
 
 
+def is_zenoh_running() -> bool:
+    """Zenoh 라우터(rmw_zenohd)가 이미 실행 중인지 확인."""
+    result = subprocess.run(
+        ["pgrep", "-f", "rmw_zenohd"],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def start_zenoh(dry_run: bool = False) -> "subprocess.Popen | None":
     """
     Zenoh 라우터(rmw_zenohd) 시작.
 
+    이미 실행 중인 경우 새로 띄우지 않고 None 반환 (외부 Zenoh 보존).
     summary_eval-setup-no-docker 기준 Terminal 1 역할.
     ros2 launch 보다 먼저 실행되어야 한다.
     """
@@ -428,6 +438,10 @@ def start_zenoh(dry_run: bool = False) -> "subprocess.Popen | None":
         print("[DRY-RUN] Zenoh 명령어:")
         print(f"  {cmd}")
         return None
+
+    if is_zenoh_running():
+        print("[Zenoh] 이미 실행 중 — 기존 라우터 사용 (새로 띄우지 않음).")
+        return None  # 외부에서 띄운 것이므로 종료도 하지 않음
 
     print("[Zenoh] 라우터 시작...")
     proc = subprocess.Popen(
@@ -498,7 +512,7 @@ def start_policy(
 
     DataCollect = AutoCapture + 에피소드 시작 전 F/T 센서 Tare.
     """
-    env = os.environ.copy()
+    env = _ros2_env()   # RMW_IMPLEMENTATION + ZENOH_CONFIG_OVERRIDE 포함
     env["AIC_CAPTURE_DIR"]            = str(capture_dir)
     env["AIC_CAPTURE_STEP_SLEEP_SEC"] = str(1.0 / step_hz)
 
@@ -523,11 +537,17 @@ def start_policy(
     return proc
 
 
-def terminate_processes(*procs):
+def terminate_processes(*procs, stop_zenoh: bool = False):
     """
     프로세스 트리 전체를 완전히 정리.
 
     Python Popen 종료 후 OS 레벨에서 관련 프로세스를 모두 정리한다.
+
+    Args:
+        *procs      : 종료할 Popen 객체들
+        stop_zenoh  : True 일 때만 Zenoh 라우터도 함께 종료.
+                      외부에서 Zenoh를 별도로 관리하는 경우 False(기본값)로 두면
+                      스크립트가 Zenoh를 건드리지 않는다.
     """
     # 1단계: Python이 직접 들고 있는 Popen 종료
     for proc in procs:
@@ -566,9 +586,16 @@ def terminate_processes(*procs):
         "rmw_zenohd",
     ]
 
-    print("[정리] Gazebo·ROS2·Zenoh 잔존 프로세스 종료 중...")
-    for pattern in _GZ_PATTERNS + _ROS_PATTERNS + _ZENOH_PATTERNS:
-        subprocess.run(["sudo", "pkill", "-9", "-f", pattern], capture_output=True)
+    patterns = _GZ_PATTERNS + _ROS_PATTERNS
+    if stop_zenoh:
+        patterns += _ZENOH_PATTERNS
+        print("[정리] Gazebo·ROS2·Zenoh 잔존 프로세스 종료 중...")
+    else:
+        print("[정리] Gazebo·ROS2 잔존 프로세스 종료 중... (Zenoh는 유지)")
+
+    for pattern in patterns:
+        # sudo 없이 pkill — 자신이 띄운 프로세스는 권한 없이 종료 가능
+        subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True)
 
     # 3단계: 소켓·GPU 컨텍스트 반환 대기
     time.sleep(5)
@@ -704,7 +731,8 @@ def run_collection_loop(
 
     if not dry_run:
         # 시작 전 잔존 프로세스 정리 (이전 수동 실행 또는 비정상 종료 대비)
-        print("[정리] 잔존 ROS2/Zenoh 프로세스 정리 중...")
+        # Zenoh는 외부에서 별도로 관리할 수 있으므로 건드리지 않음
+        print("[정리] 잔존 ROS2/Gazebo 프로세스 정리 중... (Zenoh 제외)")
         terminate_processes()
         print("[정리] 완료\n")
 
