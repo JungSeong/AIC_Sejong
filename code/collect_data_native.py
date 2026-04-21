@@ -372,15 +372,28 @@ def wait_for_episodes(
     episodes_before: int,
     target_count: int,
     timeout: int = EPISODE_TIMEOUT,
-) -> int:
+    watch_procs: list | None = None,
+) -> tuple[int, str]:
     """
     target_count 개의 새 에피소드 완료까지 대기.
 
+    watch_procs 에 프로세스를 넘기면, 해당 프로세스가 조기 종료될 경우
+    즉시 대기를 중단하고 'proc_died' 를 반환한다.
+
     Returns:
-        실제로 완료된 새 에피소드 수
+        (실제로 완료된 새 에피소드 수, 종료 이유: 'ok' | 'timeout' | 'proc_died')
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # 프로세스 생존 여부 확인
+        if watch_procs:
+            for proc in watch_procs:
+                if proc is not None and proc.poll() is not None:
+                    new_eps = count_completed_episodes(capture_dir) - episodes_before
+                    print(f"\n[감지] 프로세스(PID {proc.pid}) 조기 종료 "
+                          f"(returncode={proc.returncode}) → 대기 중단")
+                    return new_eps, "proc_died"
+
         current = count_completed_episodes(capture_dir)
         new_eps = current - episodes_before
         elapsed = int(time.time() - (deadline - timeout))
@@ -390,14 +403,14 @@ def wait_for_episodes(
         )
         if new_eps >= target_count:
             print()
-            return new_eps
+            return new_eps, "ok"
         time.sleep(5)
 
     print()
     new_eps = count_completed_episodes(capture_dir) - episodes_before
     print(f"[경고] {timeout}초 내에 {target_count}개 에피소드가 완료되지 않았습니다. "
           f"(실제 완료: {new_eps}개)")
-    return new_eps
+    return new_eps, "timeout"
 
 
 # ──────────────────────────────────────────
@@ -812,17 +825,42 @@ def run_collection_loop(
             print("[DRY-RUN] 실제 실행 없이 종료.")
             continue
 
-        # 6. 에피소드 완료 대기
-        try:
-            completed = wait_for_episodes(
-                capture_dir, episodes_before, trials_per_set,
-                timeout=EPISODE_TIMEOUT,
-            )
-        except KeyboardInterrupt:
-            print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
-            terminate_processes(policy_proc, gazebo_proc, zenoh_proc)
-            print(f"[중단] 총 수집 에피소드: {total_collected}")
-            sys.exit(0)
+        # 6. 에피소드 완료 대기 (프로세스 조기 종료 감지 포함)
+        MAX_RETRIES = 3
+        retry = 0
+        completed = 0
+        while retry <= MAX_RETRIES:
+            try:
+                completed, reason = wait_for_episodes(
+                    capture_dir, episodes_before, trials_per_set,
+                    timeout=EPISODE_TIMEOUT,
+                    watch_procs=[gazebo_proc, policy_proc],
+                )
+            except KeyboardInterrupt:
+                print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
+                terminate_processes(policy_proc, gazebo_proc, zenoh_proc)
+                print(f"[중단] 총 수집 에피소드: {total_collected}")
+                sys.exit(0)
+
+            if reason == "ok":
+                break
+
+            if reason == "proc_died" and retry < MAX_RETRIES:
+                retry += 1
+                print(f"[재시도] 프로세스 비정상 종료 감지 → 세트 {set_idx} 재시도 "
+                      f"({retry}/{MAX_RETRIES})")
+                terminate_processes(policy_proc, gazebo_proc)
+
+                # 재시작
+                episodes_before = count_completed_episodes(capture_dir)
+                gazebo_proc  = start_gazebo(ENGINE_CONFIG_TMP, headless=headless)
+                time.sleep(GAZEBO_HEAD_START)
+                policy_proc  = start_policy(capture_dir, step_hz=step_hz)
+                remaining = max(0, gazebo_wait - GAZEBO_HEAD_START)
+                time.sleep(remaining)
+            else:
+                print(f"[포기] 세트 {set_idx}: 재시도 한도 초과 또는 timeout — 다음 세트로.")
+                break
 
         total_collected += completed
         print(f"[완료] 세트 {set_idx}: {completed}개 에피소드 수집 (누적: {total_collected})")
