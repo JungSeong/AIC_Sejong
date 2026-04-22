@@ -10,10 +10,13 @@ services:
     gpus: all
     networks:
       - default
+    volumes:
+      - /home/swlinux/aic_results/${RUN_TAG:-default}:/aic_results
     environment:
       AIC_EVAL_PASSWD: CHANGE_IN_PROD
       AIC_MODEL_PASSWD: CHANGE_IN_PROD
       # AIC_ENABLE_ACL: true
+      AIC_RESULTS_DIR: /aic_results
   model:
     image: baseline:v1
     build:
@@ -34,3 +37,4 @@ services:
 networks:
   default:
     internal: true
+
