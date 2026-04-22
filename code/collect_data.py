@@ -57,9 +57,9 @@ from generate_scenario import LIMITS, rnd
 # 경로 설정
 # ──────────────────────────────────────────
 
-PIXI_WS = Path.home() / "AIC_Sejong" / "ws_aic" / "src" / "aic"
-DEFAULT_CAPTURE_DIR = Path.home() / "AIC_Sejong" / "aic_data" / "captures"
-DEFAULT_SCENARIO_DIR = Path.home() / "AIC_Sejong" / "aic_data" / "scenarios"
+PIXI_WS = Path.home() / "aic_sejong" / "ws_aic" / "src" / "aic"
+DEFAULT_CAPTURE_DIR = Path.home() / "aic_sejong" / "aic_data" / "captures"
+DEFAULT_SCENARIO_DIR = Path.home() / "aic_sejong" / "aic_data" / "scenarios"
 ENGINE_CONFIG_TMP = Path("/tmp/aic_custom_config.yaml")
 
 GAZEBO_INIT_WAIT = 60   # Gazebo 초기화 대기 (초) — Zenoh peer 안정화 포함
