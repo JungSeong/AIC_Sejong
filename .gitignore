@@ -11,3 +11,6 @@ myenv/
 ABOUT-ME/
 TEMPLATES/
 CLAUDE.md
+
+.claude/
+.idea/
