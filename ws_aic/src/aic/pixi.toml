@@ -47,6 +47,7 @@ pynput = ">=1.7.6,<2"
 pyspacemouse = ">=2.0.0, <3"
 transformers = ">=4.50.0"
 diffusers = ">=0.33.0"
+ultralytics = ">=8.4.41, <9"
 
 [activation]
 scripts = ["pixi_env_setup.sh"]
