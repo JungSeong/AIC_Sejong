@@ -127,5 +127,12 @@ class CheatCodePlanner:
             "z_offset": float(z_offset),
             "slerp_fraction": float(slerp_fraction),
             "position_fraction": float(position_fraction),
+            # [수정 이유] 매 스텝의 실제 파지 오프셋(gripper/tcp와 plug 사이의 상대 포즈)을 기록하여 
+            # 학습 데이터셋(steps.jsonl)에서 그리퍼 상태를 정확히 추적할 수 있도록 함.
+            "gripper_offset": {
+                "x": float(plug_tip_gripper_offset[0]),
+                "y": float(plug_tip_gripper_offset[1]),
+                "z": float(plug_tip_gripper_offset[2]),
+            },
         }
         return pose, extras

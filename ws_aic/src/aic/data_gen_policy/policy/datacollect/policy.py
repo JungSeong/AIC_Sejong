@@ -15,6 +15,7 @@ from aic_model.policy import (
     MoveRobotCallback,
     SendFeedbackCallback,
 )
+from aic_model_interfaces.msg import Observation
 from aic_task_interfaces.msg import Task
 
 from data_gen_policy.policy.autocapture import AutoCapture
@@ -40,8 +41,28 @@ class DataCollect(AutoCapture):
         move_robot: MoveRobotCallback,
         send_feedback: SendFeedbackCallback,
     ):
+        # 1. 시스템 레벨 Tare 시도
         self._tare_sensor()
-        return super().insert_cable(task, get_observation, move_robot, send_feedback)
+        
+        # 2. 코드 레벨 소프트웨어 Tare (Eval 환경 대응)
+        # 초기 오프셋을 캡처하기 위해 잠시 대기 후 관측 데이터 획득
+        self.sleep_for(1.0)
+        initial_obs = get_observation()
+        fz_offset = 0.0
+        if initial_obs and hasattr(initial_obs, 'wrist_wrench'):
+            fz_offset = initial_obs.wrist_wrench.wrench.force.z
+            self.get_logger().info(f"[DataCollect] Initial Fz offset captured: {fz_offset:.4f}")
+
+        # 3. get_observation 콜백 래핑
+        def wrapped_get_observation() -> Observation:
+            obs = get_observation()
+            if obs and hasattr(obs, 'wrist_wrench'):
+                # Fz 값에서 초기 오프셋 차감
+                obs.wrist_wrench.wrench.force.z -= fz_offset
+            return obs
+
+        # 래핑된 콜백을 사용하여 데이터 수집 진행
+        return super().insert_cable(task, wrapped_get_observation, move_robot, send_feedback)
 
     def _tare_sensor(self) -> None:
         """F/T 센서 Tare 서비스 호출."""

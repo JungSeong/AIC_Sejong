@@ -244,14 +244,22 @@ def _mount_rails_sc() -> dict:
 
 
 def _make_nic_trial(nic_rail: int, diversify: bool) -> dict:
-    """NIC trial: nic_rail_N에 NIC 카드 삽입.
-
-    task.id → episode 디렉토리: YYYYMMDD_HHMMSS_nic_rail{N}_task_1
-    """
+    """NIC trial: nic_rail_N에 NIC 카드 삽입."""
     task_board = {"pose": _board_pose(1, diversify)}
     task_board.update(_nic_rails(nic_rail))
     task_board.update(_sc_rails_nic())
     task_board.update(_mount_rails_nic())
+
+    # Gripper Offset 랜덤화 (기존값에서 ±2mm 노이즈 추가, 항상 적용)
+    offset_x = rnd(-0.002, 0.002)
+    offset_y = 0.015385 + rnd(-0.002, 0.002)
+    offset_z = 0.04245 + rnd(-0.002, 0.002)
+
+    # [수정 이유] 시나리오 생성 시 결정된 그라운드 트루스 파지 오프셋(±2mm 노이즈 포함)을 
+    # 정책 노드에서 기록할 수 있도록 환경변수로 전달함.
+    os.environ["AIC_CAPTURE_GRIPPER_OFFSET_X"] = f"{offset_x:.6f}"
+    os.environ["AIC_CAPTURE_GRIPPER_OFFSET_Y"] = f"{offset_y:.6f}"
+    os.environ["AIC_CAPTURE_GRIPPER_OFFSET_Z"] = f"{offset_z:.6f}"
 
     return {
         "scene": {
@@ -259,7 +267,7 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> dict:
             "cables": {
                 "cable_0": {
                     "pose": {
-                        "gripper_offset": {"x": 0.0, "y": 0.015385, "z": 0.04245},
+                        "gripper_offset": {"x": offset_x, "y": offset_y, "z": offset_z},
                         "roll": 0.4432, "pitch": -0.4838, "yaw": 1.3303,
                     },
                     "attach_cable_to_gripper": True,
@@ -283,10 +291,7 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> dict:
 
 
 def _make_sc_trial(sc_rail: int, diversify: bool) -> dict:
-    """SC trial: sc_rail_N에 SC 케이블 삽입.
-
-    task.id → episode 디렉토리: YYYYMMDD_HHMMSS_sc_rail{N}_task_1
-    """
+    """SC trial: sc_rail_N에 SC 케이블 삽입."""
     task_board = {"pose": _board_pose(2, diversify)}
     # SC trial에서는 NIC rail 전부 absent
     for i in range(5):
@@ -294,13 +299,23 @@ def _make_sc_trial(sc_rail: int, diversify: bool) -> dict:
     task_board.update(_sc_rails_sc(sc_rail))
     task_board.update(_mount_rails_sc())
 
+    # Gripper Offset 랜덤화 (기존값에서 ±2mm 노이즈 추가, 항상 적용)
+    offset_x = rnd(-0.002, 0.002)
+    offset_y = 0.015385 + rnd(-0.002, 0.002)
+    offset_z = 0.04045 + rnd(-0.002, 0.002)
+
+    # [수정 이유] SC trial에서도 시나리오 생성 시 결정된 파지 오프셋을 정책 노드에 전달함.
+    os.environ["AIC_CAPTURE_GRIPPER_OFFSET_X"] = f"{offset_x:.6f}"
+    os.environ["AIC_CAPTURE_GRIPPER_OFFSET_Y"] = f"{offset_y:.6f}"
+    os.environ["AIC_CAPTURE_GRIPPER_OFFSET_Z"] = f"{offset_z:.6f}"
+
     return {
         "scene": {
             "task_board": task_board,
             "cables": {
                 "cable_1": {
                     "pose": {
-                        "gripper_offset": {"x": 0.0, "y": 0.015385, "z": 0.04045},
+                        "gripper_offset": {"x": offset_x, "y": offset_y, "z": offset_z},
                         "roll": 0.4432, "pitch": -0.4838, "yaw": 1.3303,
                     },
                     "attach_cable_to_gripper": True,
@@ -454,10 +469,14 @@ def start_policy(
     env = os.environ.copy()
     env["AIC_CAPTURE_DIR"]            = str(capture_dir)
     env["AIC_CAPTURE_STEP_SLEEP_SEC"] = str(1.0 / step_hz)
+    
+    # [수정 이유] 시나리오 생성 시 결정된 Ground Truth Gripper Offset 값을 
+    # 정책 노드(perturbcollect)가 읽을 수 있도록 환경변수 사본에 확실히 포함함.
+    # 또한 정책을 'datacollect'에서 'perturbcollect'로 변경하여 확장된 기록 로직을 활성화함.
 
     cmd = (
         f"cd {PIXI_WS} && pixi run ros2 run aic_model aic_model "
-        "--ros-args -p policy:=data_gen_policy.policy.datacollect"
+        "--ros-args -p policy:=data_gen_policy.policy.perturbcollect"
     )
 
     if dry_run:
@@ -467,7 +486,7 @@ def start_policy(
         print(f"  {cmd}")
         return None
 
-    print(f"[Policy] DataCollect 시작. 저장 경로: {capture_dir} / {step_hz}Hz")
+    print(f"[Policy] PerturbCollect 시작. 저장 경로: {capture_dir} / {step_hz}Hz")
     return subprocess.Popen(cmd, shell=True, env=env)
 
 
@@ -524,62 +543,6 @@ def terminate_processes(*procs):
 
     # 3단계: 소켓·GPU 컨텍스트 반환 대기
     time.sleep(5)
-
-
-# ──────────────────────────────────────────
-# HuggingFace Hub 업로드
-# ──────────────────────────────────────────
-
-def upload_to_hub(
-    capture_dir: Path,
-    repo_id: str,
-    repo_type: str = "dataset",
-    private: bool = True,
-    path_in_repo: str = "captures",
-) -> None:
-    """
-    capture_dir 전체를 HuggingFace Hub 데이터셋 레포에 업로드.
-
-    Args:
-        capture_dir   : 로컬 에피소드 저장 경로 (e.g. ~/aic_data/captures)
-        repo_id       : Hub 레포 ID (e.g. "aic-sejong-team/A")
-                        사용자마다 독립된 레포를 사용하며,
-                        같은 사용자의 여러 Trial은 path_in_repo 서브폴더로 구분됩니다.
-        repo_type     : "dataset" (기본) 또는 "model"
-        private       : True 이면 비공개 레포로 생성
-        path_in_repo  : Hub 레포 내 저장 경로 prefix
-                        (e.g. "runs/20260417_171600" — 보통 자동 생성)
-    """
-    if not HF_HUB_AVAILABLE:
-        print("[에러] huggingface_hub 패키지가 설치되어 있지 않습니다.")
-        print("       pip install huggingface_hub  후 다시 시도하세요.")
-        return
-
-    if not capture_dir.exists():
-        print(f"[경고] capture_dir 이 존재하지 않습니다: {capture_dir}")
-        return
-
-    api = HfApi()
-
-    # 레포 없으면 자동 생성
-    print(f"[Hub] 레포 확인/생성 중: {repo_id} (type={repo_type}, private={private})")
-    create_repo(
-        repo_id=repo_id,
-        repo_type=repo_type,
-        private=private,
-        exist_ok=True,
-    )
-
-    print(f"[Hub] 업로드 시작: {capture_dir} → {repo_id}/{path_in_repo}")
-    api.upload_folder(
-        folder_path=str(capture_dir),
-        repo_id=repo_id,
-        repo_type=repo_type,
-        path_in_repo=path_in_repo,
-        ignore_patterns=["*.pyc", "__pycache__", ".DS_Store"],
-    )
-    print(f"[Hub] 업로드 완료! https://huggingface.co/datasets/{repo_id}")
-
 
 # ──────────────────────────────────────────
 # 메인 루프
@@ -649,9 +612,7 @@ def run_collection_loop(
         print(f"  세트 {set_idx} / {n_sets}   (누적 에피소드: {total_collected})")
         print(f"{'='*60}")
 
-        # 세트마다 다른 시드
-        # 협업 범위 모드: seed_start + (set_idx - 1) → 0-based 직접 매핑
-        # 단일 시드 모드:  seed + set_idx             → 기존 방식 유지
+        # ... (시드 및 설정 생략)
         if range_mode:
             current_seed = seed_start + (set_idx - 1)
             random.seed(current_seed)
@@ -689,7 +650,7 @@ def run_collection_loop(
         episodes_before = count_completed_episodes(capture_dir)
 
         # 5. Gazebo 먼저 시작, 이후 policy 시작
-        GAZEBO_HEAD_START = 20  # Gazebo/aic_engine 선행 기동 시간 (30s discovery window 이내)
+        GAZEBO_HEAD_START = 20  # Gazebo/aic_engine 선행 기동 시간
 
         gazebo_proc = start_gazebo(ENGINE_CONFIG_TMP, headless=headless, dry_run=dry_run)
         if not dry_run:
@@ -715,7 +676,6 @@ def run_collection_loop(
         except KeyboardInterrupt:
             print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
             terminate_processes(policy_proc, gazebo_proc)
-            print(f"[중단] 총 수집 에피소드: {total_collected}")
             sys.exit(0)
 
         total_collected += completed
@@ -724,20 +684,43 @@ def run_collection_loop(
         # 8. 프로세스 종료
         terminate_processes(policy_proc, gazebo_proc)
 
-        # 9. 세트 완료 후 즉시 HuggingFace Hub 업로드
-        #    업로드가 완전히 끝난 후에만 다음 세트로 진행
+        # 9. LeRobot 형식 변환 및 업로드
         if hub_repo_id and not dry_run:
-            set_path_in_repo = f"{hub_path_in_repo}/set_{set_idx:04d}"
-            print(f"\n[Hub] 세트 {set_idx} 업로드 시작 → {hub_repo_id}/{set_path_in_repo}")
-            upload_to_hub(
-                capture_dir=capture_dir,
-                repo_id=hub_repo_id,
-                private=hub_private,
-                path_in_repo=set_path_in_repo,
+            # 변환용 임시 디렉토리
+            lerobot_out_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / hub_repo_id
+            
+            print(f"\n[LeRobot] 변환 시작: {capture_dir} → {lerobot_out_dir}")
+            
+            # 외부 스크립트 실행 (pixi run 권장)
+            # [수정 이유] 작업 경로(cwd)를 이동하더라도 스크립트를 정확히 찾을 수 있도록 절대 경로를 사용함.
+            script_path = Path.home() / "aic_sejong" / "code" / "convert_to_lerobot.py"
+            convert_cmd = [
+                "pixi", "run", "python3", str(script_path),
+                "--capture-dir", str(capture_dir),
+                "--out-dir", str(lerobot_out_dir),
+                "--repo-id", hub_repo_id,
+            ]
+            if not hub_private:
+                # convert_to_lerobot.py에 public 옵션이 필요하다면 추가 가능 (현재는 기본 private)
+                pass
+            
+            # 변환 및 업로드 실행
+            # [수정 이유] pixi.toml이 있는 ws_aic/src/aic/ 디렉토리를 작업 경로로 명시적으로 지정하여
+            # 'could not find pixi.toml' 에러를 해결하고 변환 스크립트를 올바르게 실행함.
+            print(f"[LeRobot] 명령어 실행: {' '.join(convert_cmd)} --push")
+            subprocess.run(
+                convert_cmd + ["--push"],
+                check=True,
+                cwd=str(Path(PIXI_WS))  # ws_aic/src/aic/ 경로 사용
             )
-            print(f"[Hub] 세트 {set_idx} 업로드 완료. 다음 세트로 진행합니다.")
-        elif hub_repo_id and dry_run:
-            print(f"[DRY-RUN] 세트 {set_idx} Hub 업로드 건너뜀 (repo_id={hub_repo_id})")
+            
+            print(f"[LeRobot] 세트 {set_idx} 변환 및 업로드 완료.")
+            
+            # 업로드 후 로컬 capture_dir 정리 (용량 확보)
+            # 주의: 필요하다면 주석 해제하여 사용
+            # for d in capture_dir.iterdir():
+            #     if d.is_dir(): shutil.rmtree(d)
+            # print("[정리] 로컬 Raw 데이터 정리 완료.")
 
         # 다음 세트 전 짧은 대기
         if set_idx < n_sets:

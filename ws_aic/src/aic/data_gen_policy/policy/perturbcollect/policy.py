@@ -147,10 +147,32 @@ class PerturbCollect(DataCollect):
 
         # insert 진입 시 사용할 XY perturbation 샘플링
         perturb_dx, perturb_dy = self._sample_perturbation()
+        
+        # [수정 이유] 에피소드 시작 시 실제 파지 편차(Grasp Deviation)를 기록하여
+        # ~2mm 수준의 초기 오차가 정책 성공률에 미치는 영향을 분석하고 로버스트성을 확보하기 위함.
+        try:
+            init_plug_tf = self._lookup_transform("base_link", plug_frame)
+            init_gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
+            initial_gripper_offset = {
+                "x": init_gripper_tf.translation.x - init_plug_tf.translation.x,
+                "y": init_gripper_tf.translation.y - init_plug_tf.translation.y,
+                "z": init_gripper_tf.translation.z - init_plug_tf.translation.z,
+            }
+        except Exception:
+            initial_gripper_offset = {"x": 0.0, "y": 0.0, "z": 0.0}
+
         self.get_logger().info(
             f"[PerturbCollect] perturbation  dx={perturb_dx*1000:.1f}mm  "
-            f"dy={perturb_dy*1000:.1f}mm"
+            f"dy={perturb_dy*1000:.1f}mm  "
+            f"initial_gripper_offset_z={initial_gripper_offset['z']*1000:.1f}mm"
         )
+
+        # [수정 이유] 시나리오 생성 스크립트(collect_data.py)에서 랜덤하게 생성된 
+        # 그라운드 트루스 파지 오프셋 값을 환경변수에서 읽어와 기록함.
+        gt_offset_x = float(os.environ.get("AIC_CAPTURE_GRIPPER_OFFSET_X", "0.0"))
+        gt_offset_y = float(os.environ.get("AIC_CAPTURE_GRIPPER_OFFSET_Y", "0.0"))
+        gt_offset_z = float(os.environ.get("AIC_CAPTURE_GRIPPER_OFFSET_Z", "0.0"))
+        ground_truth_gripper_offset = {"x": gt_offset_x, "y": gt_offset_y, "z": gt_offset_z}
 
         recorder.write_meta({
             "task": recorder.task_to_dict(task),
@@ -162,12 +184,14 @@ class PerturbCollect(DataCollect):
             "insert_min_z_offset": self.insert_min_z_offset,
             "stabilize_sec": self.stabilize_sec,
             "i_gain": self._planner.i_gain,
-            # perturbation 파라미터 기록
+            # [수정 사항] perturbation 및 파지 오프셋 기록 (robustness 분석용)
             "perturb_dx_m": perturb_dx,
             "perturb_dy_m": perturb_dy,
             "perturb_xy_range": self.perturb_xy_range,
             "perturb_xy_dist": self.perturb_xy_dist,
             "perturb_decay": self.perturb_decay,
+            "initial_gripper_offset": initial_gripper_offset,  # TF 기반 측정값
+            "ground_truth_gripper_offset": ground_truth_gripper_offset,  # 생성 스크립트 기반 실제값
         })
 
         start_time = time.time()
@@ -303,6 +327,8 @@ class PerturbCollect(DataCollect):
             "insertion_event_observed": insertion_event_observed,
             "phase_step_counts": phase_step_counts,
             "phase_exit_reason": phase_exit_reason,
+            "initial_gripper_offset": initial_gripper_offset,  # TF 기반 측정값
+            "ground_truth_gripper_offset": ground_truth_gripper_offset,  # 생성 스크립트 기반 실제값
             "perturb_dx_m": perturb_dx,
             "perturb_dy_m": perturb_dy,
         })

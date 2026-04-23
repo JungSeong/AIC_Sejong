@@ -103,10 +103,38 @@ class AutoCaptureRecorder:
         left_path = left_dir / f"{self.step_idx:06d}.png"
         center_path = center_dir / f"{self.step_idx:06d}.png"
         right_path = right_dir / f"{self.step_idx:06d}.png"
+
+        # LeRobot 호환 Observation State (27 scalars)
+        state = {
+            "tcp_pose.position.x": float(obs.controller_state.tcp_pose.position.x),
+            "tcp_pose.position.y": float(obs.controller_state.tcp_pose.position.y),
+            "tcp_pose.position.z": float(obs.controller_state.tcp_pose.position.z),
+            "tcp_pose.orientation.x": float(obs.controller_state.tcp_pose.orientation.x),
+            "tcp_pose.orientation.y": float(obs.controller_state.tcp_pose.orientation.y),
+            "tcp_pose.orientation.z": float(obs.controller_state.tcp_pose.orientation.z),
+            "tcp_pose.orientation.w": float(obs.controller_state.tcp_pose.orientation.w),
+            "tcp_velocity.linear.x": float(obs.controller_state.tcp_velocity.linear.x),
+            "tcp_velocity.linear.y": float(obs.controller_state.tcp_velocity.linear.y),
+            "tcp_velocity.linear.z": float(obs.controller_state.tcp_velocity.linear.z),
+            "tcp_velocity.angular.x": float(obs.controller_state.tcp_velocity.angular.x),
+            "tcp_velocity.angular.y": float(obs.controller_state.tcp_velocity.angular.y),
+            "tcp_velocity.angular.z": float(obs.controller_state.tcp_velocity.angular.z),
+            "tcp_error.x": float(obs.controller_state.tcp_error[0]),
+            "tcp_error.y": float(obs.controller_state.tcp_error[1]),
+            "tcp_error.z": float(obs.controller_state.tcp_error[2]),
+            "tcp_error.rx": float(obs.controller_state.tcp_error[3]),
+            "tcp_error.ry": float(obs.controller_state.tcp_error[4]),
+            "tcp_error.rz": float(obs.controller_state.tcp_error[5]),
+        }
+        # Joint Positions (7 joints)
+        for i, pos in enumerate(obs.joint_states.position):
+            state[f"joint_positions.{i}"] = float(pos)
+
         return {
             "left_image": self._save_image(obs.left_image, left_path),
             "center_image": self._save_image(obs.center_image, center_path),
             "right_image": self._save_image(obs.right_image, right_path),
+            "state": state,
             "wrist_wrench": {
                 "frame_id": obs.wrist_wrench.header.frame_id,
                 "force": {
@@ -139,6 +167,18 @@ class AutoCaptureRecorder:
     ) -> None:
         image_dir = self.episode_dir / "images"
         image_dir.mkdir(parents=True, exist_ok=True)
+        
+        # LeRobot 호환 Action (Target Pose)
+        lerobot_action = {
+            "position.x": float(action.pose.position.x),
+            "position.y": float(action.pose.position.y),
+            "position.z": float(action.pose.position.z),
+            "orientation.x": float(action.pose.orientation.x),
+            "orientation.y": float(action.pose.orientation.y),
+            "orientation.z": float(action.pose.orientation.z),
+            "orientation.w": float(action.pose.orientation.w),
+        }
+
         record = {
             "step": self.step_idx,
             "time": time.time(),
@@ -151,6 +191,7 @@ class AutoCaptureRecorder:
             },
             "observation": self.observation_to_dict(obs, image_dir),
             "action": self.motion_update_to_dict(action),
+            "lerobot_action": lerobot_action,
             "extras": extras,
         }
         with self.steps_path.open("a", encoding="utf-8") as f:
