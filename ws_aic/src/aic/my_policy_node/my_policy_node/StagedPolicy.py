@@ -74,11 +74,33 @@ class Stage1Config:
     # ═════════════════════════════════════════════════════════
     ENABLE_STAGE1B: bool = True
     Z_OFFSET_MID: float = 0.03             # 7cm → 3cm 하강
+
+    # [신규] Cable tension feedforward compensation (SFP only)
+    # 근거: Stage 1-B 수렴 대기 루프에서 axial err 가 정확히 13.6mm 에서
+    #       타임아웃 (Trial 1/2 재현). Hogan impedance steady-state err
+    #       공식: Δx = F_ext / K.  13.6mm × 150 N/m ≈ 2N.
+    #       → 케이블이 플러그를 2N 으로 위로 당기는 상태.
+    # 해법: target z 를 14mm 아래로 하달 → compliance 평형에서 정확히 목표 도달.
+    # SC 는 수렴 2.3mm 라 보상 불필요 (적용 시 overshoot 위험).
+    SFP_CABLE_TENSION_COMPENSATION: float = 0.014  # 14mm (30mm 실험 결과: gripper z=0.2350m 동일, plug z=0.1771m 동일 → saturation 아니고 cable 평형점. 증량은 무의미하므로 14mm 유지)
+
+    # [신규] 케이블 떨림(oscillation) 대응: 수렴 "안정성" 체크
+    # 단순 "err < 임계" 아니라 "연속 N회 err < 임계" 로 변경.
+    # 진동 중이면 err 가 오르락내리락 → stable_count 가 안 쌓임.
+    STAGE1B_CONVERGENCE_TOL_M: float = 0.005         # 5mm (보상 후 기준)
+    STAGE1B_STABLE_CONSECUTIVE: int = 3              # 0.15초 연속 안정
+    STAGE1B_CONVERGENCE_MAX_WAIT_S: float = 2.0
     N_STEPS_MID: int = 40
     DT_MID: float = 0.05                    # 총 2초
     # 중간 접근은 조금 더 부드럽게 (낮은 stiffness)
     STIFFNESS_MID: tuple = (150.0, 150.0, 150.0, 40.0, 40.0, 40.0)
     DAMPING_MID: tuple = (70.0, 70.0, 70.0, 18.0, 18.0, 18.0)
+    # [옵션 A] 수렴 대기 구간에서만 Z-방향 stiffness 부스트.
+    # 진단: cable 평형점에서 F=2N, K=150 → Δx=13.6mm. K=500 으로 올리면
+    # 이론상 Δx=4mm 로 축소. XY 는 150 유지(횡방향 순응성 보존),
+    # rot 도 그대로. damping 은 sqrt(K_ratio)=sqrt(3.33)≈1.83 배로 Z 축만 증가.
+    STIFFNESS_MID_BOOST: tuple = (150.0, 150.0, 500.0, 40.0, 40.0, 40.0)
+    DAMPING_MID_BOOST: tuple = (70.0, 70.0, 130.0, 18.0, 18.0, 18.0)
     # 매 스텝 TF 재조회 (feedback)
     FEEDBACK_MID: bool = True
 
@@ -970,6 +992,20 @@ class StagedPolicy(Policy):
                         )
                         q_end_mid = q_end
 
+                    # [Cable tension compensation] SFP 만 14mm 더 내림
+                    # 근거: 측정된 13.6mm steady-state err ≈ 2N 장력 / 150 N/m
+                    plug_name = (self._task.plug_name or "").lower()
+                    if "sfp" in plug_name:
+                        z_before = p_end_mid[2]
+                        p_end_mid[2] -= Stage1Config.SFP_CABLE_TENSION_COMPENSATION
+                        if i == 0:
+                            # 진단: 실제로 얼마나 낮게 명령되는지 확인
+                            self.get_logger().info(
+                                f"  [SFP] cable tension compensation applied: "
+                                f"gripper z {z_before:.4f}m → {p_end_mid[2]:.4f}m "
+                                f"(Δ=-{Stage1Config.SFP_CABLE_TENSION_COMPENSATION*1000:.0f}mm)"
+                            )
+
                     t_norm = (i + 1) / Stage1Config.N_STEPS_MID
                     t_smooth = interp_profile(
                         t_norm, quintic=Stage1Config.USE_QUINTIC_HERMITE
@@ -997,31 +1033,118 @@ class StagedPolicy(Policy):
 
                     self.sleep_for(Stage1Config.DT_MID)
 
-                # Stage 1-B 후 안정화 대기
-                if Stage1Config.SETTLE_AFTER_STAGE1B > 0:
+                # ─ Stage 1-B 수렴 대기 (위치 + 안정성 기반) ─
+                # 근거:
+                #   1) compensation 으로 정적 offset 제거됨 → target 정확 도달 기대
+                #   2) 그러나 cable 떨림(oscillation) 가능 → "err < tol 이
+                #      연속 N회" 로 안정 상태 확인
+                # 단순 "순간 err < tol" 이면 진동 중 우연히 낮은 순간에 통과할
+                # 수 있음 → 연속 체크로 진짜 수렴만 인정.
+                # 진단 로그: 명령 vs 목표
+                expected_plug_z = None
+                if port_pose is not None:
+                    expected_plug_z = port_pose.position.z + Stage1Config.Z_OFFSET_MID
+                self.get_logger().info(
+                    f"  Stage 1-B 수렴 대기 진단: "
+                    f"commanded gripper z = {p_end_mid[2]:.4f}m, "
+                    f"desired plug z = {expected_plug_z:.4f}m "
+                    f"(port_z={port_pose.position.z:.4f} + {Stage1Config.Z_OFFSET_MID:.3f})"
+                )
+                self.get_logger().info(
+                    f"  수렴 기준: err ≤ {Stage1Config.STAGE1B_CONVERGENCE_TOL_M*1000:.0f}mm "
+                    f"× {Stage1Config.STAGE1B_STABLE_CONSECUTIVE}회 연속 or "
+                    f"{Stage1Config.STAGE1B_CONVERGENCE_MAX_WAIT_S:.1f}s"
+                )
+                hold_pose = Pose(
+                    position=Point(
+                        x=float(p_end_mid[0]),
+                        y=float(p_end_mid[1]),
+                        z=float(p_end_mid[2]),
+                    ),
+                    orientation=tuple_to_quat(q_end_mid),
+                )
+                convergence_tol = Stage1Config.STAGE1B_CONVERGENCE_TOL_M
+                max_wait = Stage1Config.STAGE1B_CONVERGENCE_MAX_WAIT_S
+                stable_needed = Stage1Config.STAGE1B_STABLE_CONSECUTIVE
+                wait_end = time.time() + max_wait
+                stable_count = 0
+                last_err = None
+                converged = False
+                wait_start = time.time()
+                last_log_time = 0.0
+                # [옵션 A] 수렴 대기 구간에서 Z-stiffness 부스트 (150→500 N/m)
+                # 케이블 평형점 극복 목적 — S-curve 본체는 낮은 K 그대로 유지.
+                plug_is_sfp = "sfp" in (self._task.plug_name or "").lower()
+                hold_stiffness = (
+                    Stage1Config.STIFFNESS_MID_BOOST if plug_is_sfp
+                    else Stage1Config.STIFFNESS_MID
+                )
+                hold_damping = (
+                    Stage1Config.DAMPING_MID_BOOST if plug_is_sfp
+                    else Stage1Config.DAMPING_MID
+                )
+                if plug_is_sfp:
                     self.get_logger().info(
-                        f"  Stage 1-B 안정화 대기 "
-                        f"{Stage1Config.SETTLE_AFTER_STAGE1B:.1f}s"
+                        f"  [SFP] 수렴 대기 Z-stiffness 부스트: "
+                        f"{Stage1Config.STIFFNESS_MID[2]:.0f} → "
+                        f"{Stage1Config.STIFFNESS_MID_BOOST[2]:.0f} N/m"
                     )
-                    hold_pose = Pose(
-                        position=Point(
-                            x=float(p_end_mid[0]),
-                            y=float(p_end_mid[1]),
-                            z=float(p_end_mid[2]),
-                        ),
-                        orientation=tuple_to_quat(q_end_mid),
-                    )
-                    settle_end = time.time() + Stage1Config.SETTLE_AFTER_STAGE1B
-                    while time.time() < settle_end:
-                        try:
-                            self.set_pose_target(
-                                move_robot=move_robot, pose=hold_pose,
-                                stiffness=list(Stage1Config.STIFFNESS_MID),
-                                damping=list(Stage1Config.DAMPING_MID),
+                while time.time() < wait_end:
+                    try:
+                        self.set_pose_target(
+                            move_robot=move_robot, pose=hold_pose,
+                            stiffness=list(hold_stiffness),
+                            damping=list(hold_damping),
+                        )
+                    except TransformException:
+                        pass
+                    self.sleep_for(0.05)
+
+                    # 수렴 체크: 실제 plug z vs TARGET z
+                    cur_plug_tf = self._lookup_tf(self._plug_frame())
+                    cur_gripper_tf = self._lookup_tf("gripper/tcp")
+                    if cur_plug_tf is not None and port_pose is not None:
+                        desired_plug_z = (
+                            port_pose.position.z + Stage1Config.Z_OFFSET_MID
+                        )
+                        cur_axial = abs(
+                            cur_plug_tf.translation.z - desired_plug_z
+                        )
+                        last_err = cur_axial
+
+                        # [진단] 0.3초마다 실시간 상태 출력
+                        elapsed = time.time() - wait_start
+                        if elapsed - last_log_time >= 0.3:
+                            gripper_z_str = (
+                                f"{cur_gripper_tf.translation.z:.4f}"
+                                if cur_gripper_tf else "N/A"
                             )
-                        except TransformException:
-                            pass
-                        self.sleep_for(0.05)
+                            self.get_logger().info(
+                                f"    [t={elapsed:.1f}s] "
+                                f"plug_z={cur_plug_tf.translation.z:.4f}m, "
+                                f"gripper_z={gripper_z_str}, "
+                                f"err={cur_axial*1000:.1f}mm, "
+                                f"stable={stable_count}"
+                            )
+                            last_log_time = elapsed
+
+                        if cur_axial < convergence_tol:
+                            stable_count += 1
+                            if stable_count >= stable_needed:
+                                converged = True
+                                self.get_logger().info(
+                                    f"  수렴 완료: axial err "
+                                    f"{cur_axial*1000:.1f}mm × {stable_count}회 연속"
+                                )
+                                break
+                        else:
+                            stable_count = 0  # 떨림 중 — 카운터 reset
+                if not converged and last_err is not None:
+                    self.get_logger().warn(
+                        f"  수렴 대기 타임아웃 ({max_wait:.1f}s): "
+                        f"최종 err {last_err*1000:.1f}mm, "
+                        f"stable_count={stable_count} (필요 {stable_needed})"
+                    )
 
                 self.get_logger().info("━━━ Stage 1-B: 중간 접근 완료 ━━━")
 
@@ -1213,6 +1336,17 @@ class StagedPolicy(Policy):
             f"  port={task.port_name}, target={task.target_module_name}"
         )
         self._task = task
+
+        # [신규] Pre-Stage settle — Trial 1 초기 cable/physics 불안정 완화
+        # 근거:
+        #   Trial 1 은 cable 이 막 gripper 에 attach 된 직후 시작되어
+        #   flexible cable 이 아직 흔들리는 상태. 관측: Trial 1 이 다른
+        #   trial 대비 Stage 1 axial err 일관되게 크고 rim 걸림 많음.
+        # 효과 가설:
+        #   0.8 초 정지 대기 → cable 이 중력으로 안정화 → 첫 이동 시 tracking 향상.
+        # 비용: 시간 점수 영향 미미 (max 점수의 ~3%).
+        self.get_logger().info("Pre-Stage settle (0.8s) — cable 안정화 대기")
+        self.sleep_for(0.8)
 
         # TF 대기 (training 모드에서만; 평가 모드에선 실패해도 Vision으로 진행)
         # 짧게 대기 (최대 1초) — 없으면 바로 Vision으로
