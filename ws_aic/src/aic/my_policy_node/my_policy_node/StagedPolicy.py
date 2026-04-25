@@ -20,6 +20,7 @@ Stage 2/3: 임시 (ground_truth 기반, 추후 AI 교체)
 """
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -54,31 +55,78 @@ def _resolve_yolo_model_path() -> str:
 
 
 class Stage1Config:
-    # --- 목표 위치 사양 ---
-    # 접근점은 포트 축선상 거리 (팀 피드백 반영: 10cm → 7cm 로 하향)
+    # ═════════════════════════════════════════════════════════
+    #  Stage 1-A: Far Approach (10cm → 7cm 이상에서 접근)
+    # ═════════════════════════════════════════════════════════
+    # 포트 축선상 거리 (접근점 높이)
     Z_OFFSET: float = 0.07
     Z_OFFSET_TOLERANCE: float = 0.015
     XY_TOLERANCE: float = 0.025
 
-    # --- 방향 사양 ---
+    # 방향 사양
     AXIS_TOLERANCE_RAD: float = 0.087
     ROLL_TOLERANCE_RAD: float = 0.175
 
-    # --- 속도 사양 ---
+    # 속도 사양
     VEL_TOLERANCE_LIN: float = 0.01
     VEL_TOLERANCE_ANG: float = 0.1
 
-    # --- 동작 ---
+    # Stage 1-A 동작
     N_STEPS: int = 80
-    DT: float = 0.05
+    DT: float = 0.05  # 총 4초
 
-    # --- 제어 ---
+    # 제어
     STIFFNESS: tuple = (200.0, 200.0, 200.0, 50.0, 50.0, 50.0)
     DAMPING: tuple = (80.0, 80.0, 80.0, 20.0, 20.0, 20.0)
 
-    # --- 안전 / 실패 처리 ---
+    # ═════════════════════════════════════════════════════════
+    #  Stage 1-B: Mid Approach (7cm → 3cm 하강, 정렬 포함)
+    # ═════════════════════════════════════════════════════════
+    ENABLE_STAGE1B: bool = True
+    Z_OFFSET_MID: float = 0.03             # 7cm → 3cm 하강
+
+    # [신규] Cable tension feedforward compensation (SFP only)
+    # 근거: Stage 1-B 수렴 대기 루프에서 axial err 가 정확히 13.6mm 에서
+    #       타임아웃 (Trial 1/2 재현). Hogan impedance steady-state err
+    #       공식: Δx = F_ext / K.  13.6mm × 150 N/m ≈ 2N.
+    #       → 케이블이 플러그를 2N 으로 위로 당기는 상태.
+    # 해법: target z 를 14mm 아래로 하달 → compliance 평형에서 정확히 목표 도달.
+    # SC 는 수렴 2.3mm 라 보상 불필요 (적용 시 overshoot 위험).
+    SFP_CABLE_TENSION_COMPENSATION: float = 0.014  # 14mm (30mm 실험 결과: gripper z=0.2350m 동일, plug z=0.1771m 동일 → saturation 아니고 cable 평형점. 증량은 무의미하므로 14mm 유지)
+
+    # [신규] 케이블 떨림(oscillation) 대응: 수렴 "안정성" 체크
+    # 단순 "err < 임계" 아니라 "연속 N회 err < 임계" 로 변경.
+    # 진동 중이면 err 가 오르락내리락 → stable_count 가 안 쌓임.
+    STAGE1B_CONVERGENCE_TOL_M: float = 0.005         # 5mm (보상 후 기준)
+    STAGE1B_STABLE_CONSECUTIVE: int = 3              # 0.15초 연속 안정
+    STAGE1B_CONVERGENCE_MAX_WAIT_S: float = 2.0
+    N_STEPS_MID: int = 40
+    DT_MID: float = 0.05                    # 총 2초
+    # 중간 접근은 조금 더 부드럽게 (낮은 stiffness)
+    STIFFNESS_MID: tuple = (150.0, 150.0, 150.0, 40.0, 40.0, 40.0)
+    DAMPING_MID: tuple = (70.0, 70.0, 70.0, 18.0, 18.0, 18.0)
+    # [옵션 A] 수렴 대기 구간에서만 Z-방향 stiffness 부스트.
+    # 진단: cable 평형점에서 F=2N, K=150 → Δx=13.6mm. K=500 으로 올리면
+    # 이론상 Δx=4mm 로 축소. XY 는 150 유지(횡방향 순응성 보존),
+    # rot 도 그대로. damping 은 sqrt(K_ratio)=sqrt(3.33)≈1.83 배로 Z 축만 증가.
+    STIFFNESS_MID_BOOST: tuple = (150.0, 150.0, 500.0, 40.0, 40.0, 40.0)
+    DAMPING_MID_BOOST: tuple = (70.0, 70.0, 130.0, 18.0, 18.0, 18.0)
+    # 매 스텝 TF 재조회 (feedback)
+    FEEDBACK_MID: bool = True
+
+    # ═════════════════════════════════════════════════════════
+    #  안정화 대기 (관성 떨림 대응)
+    # ═════════════════════════════════════════════════════════
+    SETTLE_AFTER_STAGE1A: float = 0.3       # 초
+    SETTLE_AFTER_STAGE1B: float = 0.5       # 초
+    # 5차 Hermite 사용 (가속도 끝값 0 → 떨림 감소)
+    USE_QUINTIC_HERMITE: bool = True
+
+    # ═════════════════════════════════════════════════════════
+    #  안전 / 실패 처리
+    # ═════════════════════════════════════════════════════════
     FORCE_DELTA_LIMIT_N: float = 15.0
-    MAX_DURATION_S: float = 8.0
+    MAX_DURATION_S: float = 10.0           # Stage 1-A+B 포함 (기존 8 → 10)
     TF_RETRY: int = 10
     TF_RETRY_DT: float = 0.1
 
@@ -129,7 +177,37 @@ def rotate_vector_by_quat(v: np.ndarray, q: tuple) -> np.ndarray:
 
 
 def s_curve(t: float) -> float:
+    """3차 Hermite: 시작/끝 속도 0."""
     return 3.0 * t * t - 2.0 * t * t * t
+
+
+def s_curve_quintic(t: float) -> float:
+    """5차 Hermite: 시작/끝에서 속도 + 가속도 모두 0.
+
+    식: 10t³ - 15t⁴ + 6t⁵
+    특성:
+      t=0: pos=0, vel=0, acc=0
+      t=1: pos=1, vel=0, acc=0
+    → 가속도 연속 → 관성 떨림 최소화
+    """
+    return 10.0 * t**3 - 15.0 * t**4 + 6.0 * t**5
+
+
+def interp_profile(t: float, quintic: bool = True) -> float:
+    """보간 프로파일 선택."""
+    return s_curve_quintic(t) if quintic else s_curve(t)
+
+
+def _project_3d_to_pixel(point_3d_base, K, T_base_to_cam):
+    """3D base 좌표를 카메라 이미지 픽셀로 투영."""
+    p_homo = np.append(point_3d_base, 1.0)
+    p_cam = T_base_to_cam @ p_homo
+    x, y, z = p_cam[:3]
+    if z < 1e-6:
+        return -1.0, -1.0
+    u = K[0, 0] * x / z + K[0, 2]
+    v = K[1, 1] * y / z + K[1, 2]
+    return float(u), float(v)
 
 
 def transform_to_matrix(t) -> np.ndarray:
@@ -318,20 +396,36 @@ class VisionPortEstimator:
         )
         return (pts_4d[:3] / pts_4d[3]).flatten()
 
-    def estimate(self, obs, tf_buffer, target_class_id: int) -> Optional[np.ndarray]:
-        """포트 3D 좌표 추정.
+    def estimate(self, obs, tf_buffer, target_class_id: int,
+                 port_hint: Optional[str] = None) -> Optional[np.ndarray]:
+        """포트 3D 좌표 추정 (호환성 유지).
 
-        Args:
-            obs: aic observation (left/center/right image + camera info 포함)
-            tf_buffer: TF buffer (카메라 외부 파라미터용)
-            target_class_id: 0=sfp, 1=sc
+        단일 best 결과를 반환. 세밀한 선택이 필요하면 estimate_all() 사용.
+        """
+        candidates = self.estimate_all(obs, tf_buffer, target_class_id)
+        if not candidates:
+            return None
+
+        # port_hint가 주어지면 그에 맞는 걸 선택
+        if port_hint is not None:
+            chosen = self.select_by_port_name(candidates, port_hint)
+            if chosen is not None:
+                return chosen
+
+        # 기본: 보드 중심에 가장 가까운 것 (첫 번째)
+        return candidates[0]["pos"]
+
+    def estimate_all(
+        self, obs, tf_buffer, target_class_id: int
+    ) -> list:
+        """가능한 모든 유효 후보 반환. score 낮은 순(= 보드 중심 가까운 순) 정렬.
 
         Returns:
-            (x, y, z) in base_link, or None if failed
+            [{"pos": np.ndarray(3), "score": float, "conf_sum": float}, ...]
         """
         self._ensure_loaded()
         if not self._loaded:
-            return None
+            return []
 
         # 1. 카메라별 이미지 + 내부 파라미터 + 외부 TF
         images = {
@@ -352,7 +446,7 @@ class VisionPortEstimator:
             except TransformException:
                 if self._logger:
                     self._logger.warn(f"Vision: 카메라 {name} TF 없음")
-                return None
+                return []
 
         # 2. 각 카메라에서 검출 (타겟 클래스만)
         if self._logger:
@@ -370,35 +464,43 @@ class VisionPortEstimator:
                     f"Vision: 2대 이상의 카메라에서 검출 실패 "
                     f"({cams_with_dets})"
                 )
-            return None
+            return []
 
-        # 3. 카메라 쌍 선택 (베이스라인 큰 순)
-        pair = None
-        for a, b in [("left", "right"), ("left", "center"), ("center", "right")]:
+        # 3. 가능한 카메라 쌍 모두 사용 (3-view consistency 검증용)
+        available_pairs = []
+        for a, b in [("left", "center"), ("center", "right"),
+                     ("left", "right")]:
             if a in cams_with_dets and b in cams_with_dets:
-                pair = (a, b)
-                break
-        if pair is None:
-            return None
+                available_pairs.append((a, b))
 
-        cam_a, cam_b = pair
-        K_a = np.array(cam_infos[cam_a].k).reshape(3, 3)
-        K_b = np.array(cam_infos[cam_b].k).reshape(3, 3)
-        T_base_to_a = np.linalg.inv(cam_T_in_base[cam_a])
-        T_base_to_b = np.linalg.inv(cam_T_in_base[cam_b])
+        if not available_pairs:
+            return []
 
-        # 4. 가능한 모든 매칭으로 삼각측량 → 타당성 검증
+        # 카메라 정보 사전 캐시
+        K = {n: np.array(cam_infos[n].k).reshape(3, 3) for n, _ in self.CAMERAS
+             if n in cams_with_dets}
+        T_base_to = {n: np.linalg.inv(cam_T_in_base[n]) for n, _ in self.CAMERAS
+                     if n in cams_with_dets}
+
+        # 4. 각 카메라 쌍으로 후보 삼각측량
         board_center = np.array(Stage1Config.BOARD_CENTER)
-        best = None
-        best_score = float("inf")
+
+        # 각 detection (왼쪽 카메라 기준)마다 3D 추정
+        #   → 다른 카메라들에서 "재투영" 해서 실제 검출된 bbox와 매칭되는지 확인
+        # 이게 3-view consistency: 같은 포트의 진짜 3D라면 모든 카메라에서 일치
+        PIXEL_MATCH_THRESH = 30.0  # 재투영된 점이 실제 검출과 이만큼 이내여야 OK
+
+        candidates = []
+        # 주 카메라 쌍은 베이스라인 큰 것 (left-right 우선)
+        main_pair = available_pairs[-1]
+        cam_a, cam_b = main_pair
 
         for da in detections[cam_a]:
             for db in detections[cam_b]:
                 port_3d = self._triangulate(
-                    da["u"], da["v"], K_a, T_base_to_a,
-                    db["u"], db["v"], K_b, T_base_to_b,
+                    da["u"], da["v"], K[cam_a], T_base_to[cam_a],
+                    db["u"], db["v"], K[cam_b], T_base_to[cam_b],
                 )
-                # 보드 근처 + z 범위 검증
                 dist = float(np.linalg.norm(port_3d - board_center))
                 if dist > Stage1Config.BOARD_RADIUS:
                     continue
@@ -406,24 +508,91 @@ class VisionPortEstimator:
                         <= Stage1Config.Z_RANGE[1]):
                     continue
 
+                # 3-view consistency: 제3의 카메라(center)에 재투영했을 때
+                # 그 카메라 검출과 실제로 일치하는가?
+                third_cam = None
+                for name in ["center", "left", "right"]:
+                    if name not in (cam_a, cam_b) and name in detections:
+                        third_cam = name
+                        break
+
+                consistent = True
+                if third_cam and detections[third_cam]:
+                    u_proj, v_proj = _project_3d_to_pixel(
+                        port_3d, K[third_cam], T_base_to[third_cam]
+                    )
+                    # 제3카메라의 검출들 중 가장 가까운 것과의 거리
+                    min_px_dist = min(
+                        np.hypot(d["u"] - u_proj, d["v"] - v_proj)
+                        for d in detections[third_cam]
+                    )
+                    if min_px_dist > PIXEL_MATCH_THRESH:
+                        consistent = False
+
+                if not consistent:
+                    continue
+
                 conf_sum = da["conf"] + db["conf"]
                 score = dist - 0.1 * conf_sum
-                if score < best_score:
-                    best_score = score
-                    best = port_3d
+                candidates.append({
+                    "pos": port_3d,
+                    "score": score,
+                    "conf_sum": conf_sum,
+                })
 
-        if best is None:
-            if self._logger:
-                self._logger.warn("Vision: 타당한 매칭 없음 "
-                                  "(3D 타당성 검증 실패)")
-            return None
+        # score 낮은 순 정렬 (보드 중심 가깝고 conf 높을수록 앞)
+        candidates.sort(key=lambda c: c["score"])
 
-        if self._logger:
+        # 중복 제거 (같은 3D 좌표로 수렴한 매칭들 — 1cm 이내면 같은 포트로 간주)
+        unique = []
+        for c in candidates:
+            is_dup = False
+            for u in unique:
+                if np.linalg.norm(c["pos"] - u["pos"]) < 0.01:
+                    is_dup = True
+                    break
+            if not is_dup:
+                unique.append(c)
+
+        if self._logger and unique:
             self._logger.info(
-                f"Vision: 포트 3D 추정 성공 "
-                f"({best[0]:+.3f}, {best[1]:+.3f}, {best[2]:+.3f})"
+                f"Vision: {len(unique)}개 후보 포트 3D 추정 "
+                f"(best=({unique[0]['pos'][0]:+.3f}, "
+                f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}))"
             )
-        return best
+
+        return unique
+
+    @staticmethod
+    def select_by_port_name(
+        candidates: list, port_name: str
+    ) -> Optional[np.ndarray]:
+        """Task의 port_name으로 올바른 후보 선택.
+
+        NIC 카드 SFP 포트의 경우:
+          sfp_port_0 → x 좌표가 더 큰 쪽 (NIC 카드의 오른쪽)
+          sfp_port_1 → x 좌표가 더 작은 쪽 (NIC 카드의 왼쪽)
+
+        하나만 후보면 그걸 반환.
+        """
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]["pos"]
+
+        # SFP 포트 인덱스 기반 구분
+        if "sfp_port" in port_name:
+            # 후보를 x 좌표 기준으로 정렬
+            sorted_by_x = sorted(candidates, key=lambda c: c["pos"][0])
+            # port_0: x가 큰 쪽 (리스트 끝)
+            # port_1: x가 작은 쪽 (리스트 시작)
+            if port_name.endswith("_0") or port_name.endswith("0_link"):
+                return sorted_by_x[-1]["pos"]
+            elif port_name.endswith("_1") or port_name.endswith("1_link"):
+                return sorted_by_x[0]["pos"]
+
+        # SC 포트나 기타는 보드 중심에 가장 가까운 것 (score 최소)
+        return candidates[0]["pos"]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -552,11 +721,20 @@ class StagedPolicy(Policy):
         else:
             target_class_id = 0  # sfp_port
 
+        # task.port_name으로 올바른 후보 선택 (SFP 포트 0/1 구분)
+        # 예: "sfp_port_0", "sfp_port_1", "sc_port_base"
+        port_name_hint = self._task.port_name or ""
         port_3d = self._vision.estimate(
-            obs, self._parent_node._tf_buffer, target_class_id
+            obs, self._parent_node._tf_buffer, target_class_id,
+            port_hint=port_name_hint,
         )
         if port_3d is None:
             return None, None
+
+        self.get_logger().info(
+            f"Vision 선택 결과 (port_hint='{port_name_hint}'): "
+            f"({port_3d[0]:+.3f}, {port_3d[1]:+.3f}, {port_3d[2]:+.3f})"
+        )
 
         # Vision은 위치만 주고, 방향은 추정 안 함 → 단위 쿼터니언 사용
         # (월드 +z 접근 방식을 쓰므로 방향 정보가 덜 중요)
@@ -638,7 +816,15 @@ class StagedPolicy(Policy):
         gripper_tf: Transform,
         port_axis: np.ndarray,
         port_pose: Pose,
+        target_z: Optional[float] = None,
     ) -> tuple[bool, str]:
+        """target_z가 주어지면 그 값을 목표로 검증 (기본은 Stage 1-A 목표).
+
+        Stage 1-B까지 완료된 경우엔 target_z=Z_OFFSET_MID (3cm) 사용.
+        """
+        if target_z is None:
+            target_z = Stage1Config.Z_OFFSET
+
         # 플러그 TF 있으면 플러그 기준, 없으면 그리퍼 기준
         if plug_tf is not None:
             ref = np.array([
@@ -653,7 +839,6 @@ class StagedPolicy(Policy):
                 gripper_tf.translation.y,
                 gripper_tf.translation.z,
             ])
-            # 그리퍼 기준일 때는 오프셋 보정
             ref = ref - np.array([0.0, 0.015, 0.045])
             ref_name = "gripper(offset)"
 
@@ -664,12 +849,12 @@ class StagedPolicy(Policy):
         ])
         to_port = ref - port_pos
         axial = float(np.dot(to_port, port_axis))
-        axial_err = abs(axial - Stage1Config.Z_OFFSET)
+        axial_err = abs(axial - target_z)
         radial = float(np.linalg.norm(to_port - axial * port_axis))
 
         info = (
             f"{ref_name} axial={axial*100:.1f}cm "
-            f"(target {Stage1Config.Z_OFFSET*100:.0f}, err {axial_err*100:.1f}), "
+            f"(target {target_z*100:.0f}, err {axial_err*100:.1f}), "
             f"radial={radial*100:.1f}cm"
         )
 
@@ -776,7 +961,11 @@ class StagedPolicy(Policy):
                         port_source=port_source,
                     )
 
-            t_smooth = s_curve((i + 1) / Stage1Config.N_STEPS)
+            # 5차 Hermite (옵션: 3차). 끝 가속도 0 → 관성 떨림 감소
+            t_smooth = interp_profile(
+                (i + 1) / Stage1Config.N_STEPS,
+                quintic=Stage1Config.USE_QUINTIC_HERMITE,
+            )
             pos = p_start * (1.0 - t_smooth) + p_end * t_smooth
             q = quaternion_slerp(q_start, q_end, t_smooth)
 
@@ -796,6 +985,273 @@ class StagedPolicy(Policy):
 
             self.sleep_for(Stage1Config.DT)
 
+        # 4.5. Stage 1-A 후 안정화 대기 (관성 떨림 완화)
+        if Stage1Config.SETTLE_AFTER_STAGE1A > 0:
+            self.get_logger().info(
+                f"  Stage 1-A 안정화 대기 {Stage1Config.SETTLE_AFTER_STAGE1A:.1f}s"
+            )
+            # 마지막 waypoint 재전송으로 holding (떨림 감소)
+            last_pose = Pose(
+                position=Point(x=float(p_end[0]), y=float(p_end[1]), z=float(p_end[2])),
+                orientation=tuple_to_quat(q_end),
+            )
+            settle_end = time.time() + Stage1Config.SETTLE_AFTER_STAGE1A
+            while time.time() < settle_end:
+                try:
+                    self.set_pose_target(
+                        move_robot=move_robot, pose=last_pose,
+                        stiffness=list(Stage1Config.STIFFNESS),
+                        damping=list(Stage1Config.DAMPING),
+                    )
+                except TransformException:
+                    pass
+                self.sleep_for(0.05)
+
+        # ═════════════════════════════════════════════════════════
+        # 4-B. Stage 1-B: Mid Approach (7cm → 3cm 하강 + 정렬)
+        # ═════════════════════════════════════════════════════════
+        if Stage1Config.ENABLE_STAGE1B:
+            self.get_logger().info("━━━ Stage 1-B: 중간 접근 시작 (7→3cm) ━━━")
+            send_feedback("Stage 1-B: mid approach")
+
+            # Stage 1-B 시작점 = 현재 그리퍼 (= 접근점 근처)
+            mid_start_tf = self._lookup_tf("gripper/tcp")
+            if mid_start_tf is None:
+                self.get_logger().warn("Stage 1-B: gripper TF 조회 실패, 건너뜀")
+            else:
+                mid_start_pose = self._transform_to_pose(mid_start_tf)
+                p_start_mid = np.array([
+                    mid_start_pose.position.x,
+                    mid_start_pose.position.y,
+                    mid_start_pose.position.z,
+                ])
+                q_start_mid = quat_to_tuple(mid_start_pose.orientation)
+
+                for i in range(Stage1Config.N_STEPS_MID):
+                    elapsed = (self.time_now() - t0).nanoseconds / 1e9
+                    if elapsed > Stage1Config.MAX_DURATION_S:
+                        return Stage1Result(
+                            success=False, final_pose=None,
+                            port_pose=port_pose, port_axis=port_axis,
+                            elapsed_time=elapsed,
+                            failure_reason="timeout (stage 1-B)",
+                            port_source=port_source,
+                        )
+
+                    # 충돌 체크
+                    obs = get_observation()
+                    if obs is not None:
+                        f = obs.wrist_wrench.wrench.force
+                        fmag = float(np.sqrt(f.x*f.x + f.y*f.y + f.z*f.z))
+                        fdelta = fmag - baseline_force_mag
+                        if fdelta > Stage1Config.FORCE_DELTA_LIMIT_N:
+                            self.get_logger().warn(
+                                f"Stage 1-B 충돌 감지: {fmag:.1f}N "
+                                f"(baseline+{fdelta:.1f}N)"
+                            )
+                            return Stage1Result(
+                                success=False, final_pose=None,
+                                port_pose=port_pose, port_axis=port_axis,
+                                elapsed_time=elapsed,
+                                failure_reason=f"stage1b collision (+{fdelta:.1f}N)",
+                                port_source=port_source,
+                            )
+
+                    # FEEDBACK: 매 스텝 포트 TF 재조회 (있으면) — 드리프트 보정
+                    if Stage1Config.FEEDBACK_MID and port_source == "tf":
+                        fresh_port_tf = self._lookup_tf(self._port_frame())
+                        fresh_gripper_tf = self._lookup_tf("gripper/tcp")
+                        fresh_plug_tf = self._lookup_tf(self._plug_frame())
+                        if fresh_port_tf is not None and fresh_gripper_tf is not None:
+                            # 현재 포트 기준 접근점 재계산 (더 낮은 z_offset)
+                            fresh_port_pose = self._transform_to_pose(fresh_port_tf)
+                            # 임시로 Z_OFFSET을 Z_OFFSET_MID로 바꿔 계산
+                            saved_z = Stage1Config.Z_OFFSET
+                            Stage1Config.Z_OFFSET = Stage1Config.Z_OFFSET_MID
+                            mid_target_pose, _ = self._compute_approach_pose(
+                                fresh_port_pose, fresh_plug_tf,
+                                fresh_gripper_tf, port_source,
+                            )
+                            Stage1Config.Z_OFFSET = saved_z
+                            p_end_mid = np.array([
+                                mid_target_pose.position.x,
+                                mid_target_pose.position.y,
+                                mid_target_pose.position.z,
+                            ])
+                            q_end_mid = quat_to_tuple(
+                                mid_target_pose.orientation
+                            )
+                        else:
+                            # fallback: 처음 p_end에서 z만 내림
+                            p_end_mid = p_end.copy()
+                            p_end_mid[2] -= (
+                                Stage1Config.Z_OFFSET - Stage1Config.Z_OFFSET_MID
+                            )
+                            q_end_mid = q_end
+                    else:
+                        # Vision 모드: 처음 p_end에서 z만 내림
+                        p_end_mid = p_end.copy()
+                        p_end_mid[2] -= (
+                            Stage1Config.Z_OFFSET - Stage1Config.Z_OFFSET_MID
+                        )
+                        q_end_mid = q_end
+
+                    # [Cable tension compensation] SFP 만 14mm 더 내림
+                    # 근거: 측정된 13.6mm steady-state err ≈ 2N 장력 / 150 N/m
+                    plug_name = (self._task.plug_name or "").lower()
+                    if "sfp" in plug_name:
+                        z_before = p_end_mid[2]
+                        p_end_mid[2] -= Stage1Config.SFP_CABLE_TENSION_COMPENSATION
+                        if i == 0:
+                            # 진단: 실제로 얼마나 낮게 명령되는지 확인
+                            self.get_logger().info(
+                                f"  [SFP] cable tension compensation applied: "
+                                f"gripper z {z_before:.4f}m → {p_end_mid[2]:.4f}m "
+                                f"(Δ=-{Stage1Config.SFP_CABLE_TENSION_COMPENSATION*1000:.0f}mm)"
+                            )
+
+                    t_norm = (i + 1) / Stage1Config.N_STEPS_MID
+                    t_smooth = interp_profile(
+                        t_norm, quintic=Stage1Config.USE_QUINTIC_HERMITE
+                    )
+                    pos_mid = p_start_mid * (1.0 - t_smooth) + p_end_mid * t_smooth
+                    q_mid = quaternion_slerp(q_start_mid, q_end_mid, t_smooth)
+
+                    waypoint_mid = Pose(
+                        position=Point(
+                            x=float(pos_mid[0]),
+                            y=float(pos_mid[1]),
+                            z=float(pos_mid[2]),
+                        ),
+                        orientation=tuple_to_quat(q_mid),
+                    )
+                    try:
+                        self.set_pose_target(
+                            move_robot=move_robot,
+                            pose=waypoint_mid,
+                            stiffness=list(Stage1Config.STIFFNESS_MID),
+                            damping=list(Stage1Config.DAMPING_MID),
+                        )
+                    except TransformException as ex:
+                        self.get_logger().warn(f"Stage 1-B TF 오류: {ex}")
+
+                    self.sleep_for(Stage1Config.DT_MID)
+
+                # ─ Stage 1-B 수렴 대기 (위치 + 안정성 기반) ─
+                # 근거:
+                #   1) compensation 으로 정적 offset 제거됨 → target 정확 도달 기대
+                #   2) 그러나 cable 떨림(oscillation) 가능 → "err < tol 이
+                #      연속 N회" 로 안정 상태 확인
+                # 단순 "순간 err < tol" 이면 진동 중 우연히 낮은 순간에 통과할
+                # 수 있음 → 연속 체크로 진짜 수렴만 인정.
+                # 진단 로그: 명령 vs 목표
+                expected_plug_z = None
+                if port_pose is not None:
+                    expected_plug_z = port_pose.position.z + Stage1Config.Z_OFFSET_MID
+                self.get_logger().info(
+                    f"  Stage 1-B 수렴 대기 진단: "
+                    f"commanded gripper z = {p_end_mid[2]:.4f}m, "
+                    f"desired plug z = {expected_plug_z:.4f}m "
+                    f"(port_z={port_pose.position.z:.4f} + {Stage1Config.Z_OFFSET_MID:.3f})"
+                )
+                self.get_logger().info(
+                    f"  수렴 기준: err ≤ {Stage1Config.STAGE1B_CONVERGENCE_TOL_M*1000:.0f}mm "
+                    f"× {Stage1Config.STAGE1B_STABLE_CONSECUTIVE}회 연속 or "
+                    f"{Stage1Config.STAGE1B_CONVERGENCE_MAX_WAIT_S:.1f}s"
+                )
+                hold_pose = Pose(
+                    position=Point(
+                        x=float(p_end_mid[0]),
+                        y=float(p_end_mid[1]),
+                        z=float(p_end_mid[2]),
+                    ),
+                    orientation=tuple_to_quat(q_end_mid),
+                )
+                convergence_tol = Stage1Config.STAGE1B_CONVERGENCE_TOL_M
+                max_wait = Stage1Config.STAGE1B_CONVERGENCE_MAX_WAIT_S
+                stable_needed = Stage1Config.STAGE1B_STABLE_CONSECUTIVE
+                wait_end = time.time() + max_wait
+                stable_count = 0
+                last_err = None
+                converged = False
+                wait_start = time.time()
+                last_log_time = 0.0
+                # [옵션 A] 수렴 대기 구간에서 Z-stiffness 부스트 (150→500 N/m)
+                # 케이블 평형점 극복 목적 — S-curve 본체는 낮은 K 그대로 유지.
+                plug_is_sfp = "sfp" in (self._task.plug_name or "").lower()
+                hold_stiffness = (
+                    Stage1Config.STIFFNESS_MID_BOOST if plug_is_sfp
+                    else Stage1Config.STIFFNESS_MID
+                )
+                hold_damping = (
+                    Stage1Config.DAMPING_MID_BOOST if plug_is_sfp
+                    else Stage1Config.DAMPING_MID
+                )
+                if plug_is_sfp:
+                    self.get_logger().info(
+                        f"  [SFP] 수렴 대기 Z-stiffness 부스트: "
+                        f"{Stage1Config.STIFFNESS_MID[2]:.0f} → "
+                        f"{Stage1Config.STIFFNESS_MID_BOOST[2]:.0f} N/m"
+                    )
+                while time.time() < wait_end:
+                    try:
+                        self.set_pose_target(
+                            move_robot=move_robot, pose=hold_pose,
+                            stiffness=list(hold_stiffness),
+                            damping=list(hold_damping),
+                        )
+                    except TransformException:
+                        pass
+                    self.sleep_for(0.05)
+
+                    # 수렴 체크: 실제 plug z vs TARGET z
+                    cur_plug_tf = self._lookup_tf(self._plug_frame())
+                    cur_gripper_tf = self._lookup_tf("gripper/tcp")
+                    if cur_plug_tf is not None and port_pose is not None:
+                        desired_plug_z = (
+                            port_pose.position.z + Stage1Config.Z_OFFSET_MID
+                        )
+                        cur_axial = abs(
+                            cur_plug_tf.translation.z - desired_plug_z
+                        )
+                        last_err = cur_axial
+
+                        # [진단] 0.3초마다 실시간 상태 출력
+                        elapsed = time.time() - wait_start
+                        if elapsed - last_log_time >= 0.3:
+                            gripper_z_str = (
+                                f"{cur_gripper_tf.translation.z:.4f}"
+                                if cur_gripper_tf else "N/A"
+                            )
+                            self.get_logger().info(
+                                f"    [t={elapsed:.1f}s] "
+                                f"plug_z={cur_plug_tf.translation.z:.4f}m, "
+                                f"gripper_z={gripper_z_str}, "
+                                f"err={cur_axial*1000:.1f}mm, "
+                                f"stable={stable_count}"
+                            )
+                            last_log_time = elapsed
+
+                        if cur_axial < convergence_tol:
+                            stable_count += 1
+                            if stable_count >= stable_needed:
+                                converged = True
+                                self.get_logger().info(
+                                    f"  수렴 완료: axial err "
+                                    f"{cur_axial*1000:.1f}mm × {stable_count}회 연속"
+                                )
+                                break
+                        else:
+                            stable_count = 0  # 떨림 중 — 카운터 reset
+                if not converged and last_err is not None:
+                    self.get_logger().warn(
+                        f"  수렴 대기 타임아웃 ({max_wait:.1f}s): "
+                        f"최종 err {last_err*1000:.1f}mm, "
+                        f"stable_count={stable_count} (필요 {stable_needed})"
+                    )
+
+                self.get_logger().info("━━━ Stage 1-B: 중간 접근 완료 ━━━")
+
         # 5. 종료 검증
         final_plug_tf = self._lookup_tf(self._plug_frame())
         final_gripper_tf = self._lookup_tf("gripper/tcp")
@@ -808,8 +1264,14 @@ class StagedPolicy(Policy):
                 port_source=port_source,
             )
 
+        # Stage 1-B가 실행됐으면 최종 목표는 Z_OFFSET_MID (3cm)
+        final_target_z = (
+            Stage1Config.Z_OFFSET_MID if Stage1Config.ENABLE_STAGE1B
+            else Stage1Config.Z_OFFSET
+        )
         ok, info = self._check_stage1_termination(
-            final_plug_tf, final_gripper_tf, port_axis, port_pose
+            final_plug_tf, final_gripper_tf, port_axis, port_pose,
+            target_z=final_target_z,
         )
         elapsed = (self.time_now() - t0).nanoseconds / 1e9
 
@@ -978,6 +1440,17 @@ class StagedPolicy(Policy):
             f"  port={task.port_name}, target={task.target_module_name}"
         )
         self._task = task
+
+        # [신규] Pre-Stage settle — Trial 1 초기 cable/physics 불안정 완화
+        # 근거:
+        #   Trial 1 은 cable 이 막 gripper 에 attach 된 직후 시작되어
+        #   flexible cable 이 아직 흔들리는 상태. 관측: Trial 1 이 다른
+        #   trial 대비 Stage 1 axial err 일관되게 크고 rim 걸림 많음.
+        # 효과 가설:
+        #   0.8 초 정지 대기 → cable 이 중력으로 안정화 → 첫 이동 시 tracking 향상.
+        # 비용: 시간 점수 영향 미미 (max 점수의 ~3%).
+        self.get_logger().info("Pre-Stage settle (0.8s) — cable 안정화 대기")
+        self.sleep_for(0.8)
 
         # TF 대기 (training 모드에서만; 평가 모드에선 실패해도 Vision으로 진행)
         # 짧게 대기 (최대 1초) — 없으면 바로 Vision으로
