@@ -14,8 +14,8 @@ setup(
     package_data={'': ['py.typed']},
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='JungSeong',
-    maintainer_email='jungseonglian@sju.ac.kr',
+    maintainer='swlinux',
+    maintainer_email='swlinux@todo.todo',
     description='TODO: Package description',
     license='TODO: License declaration',
     extras_require={

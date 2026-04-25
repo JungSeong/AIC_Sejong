@@ -44,6 +44,16 @@ from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 #  Stage 1 설정
 # ═══════════════════════════════════════════════════════════
 
+def _resolve_yolo_model_path() -> str:
+    # 1순위: 환경 변수 (팀원마다 경로가 다를 수 있으므로 권장)
+    env = os.environ.get("AIC_YOLO_MODEL_PATH")
+    if env and os.path.isfile(env):
+        return env
+
+    # 2순위: 홈 디렉토리 fallback (개발 편의용)
+    return "/home/swlinux/aic_sejong/aic_data/model/yolo/weight/best.pt"
+
+
 class Stage1Config:
     # ═════════════════════════════════════════════════════════
     #  Stage 1-A: Far Approach (10cm → 7cm 이상에서 접근)
@@ -124,10 +134,8 @@ class Stage1Config:
     USE_WORLD_Z_APPROACH: bool = True
 
     # --- Vision 설정 ---
-    YOLO_MODEL_PATH: str = os.path.expanduser(
-        "~/aic_yolo_runs/port_detector/weights/best.pt"
-    )
-    YOLO_CONF_THRESH: float = 0.5
+    YOLO_MODEL_PATH: str = _resolve_yolo_model_path()
+    YOLO_CONF_THRESH: float = 0.2
     # 3D 타당성 검증 범위 (base_link)
     BOARD_CENTER: tuple = (-0.38, 0.22, 0.13)
     BOARD_RADIUS: float = 0.5  # 보드 중심 반경 50cm 이내
@@ -221,7 +229,7 @@ def transform_to_matrix(t) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════
-#  Vision 모듈 (YOLO + Stereo)
+#  Vision 모듈 (`YOLO + Stereo)
 # ═══════════════════════════════════════════════════════════
 
 class VisionPortEstimator:
@@ -236,15 +244,45 @@ class VisionPortEstimator:
 
     CLASS_NAMES = {0: "sfp_port", 1: "sc_port"}
 
+    # 디버그 이미지 저장 디렉토리 (None이면 저장 안 함)
+    # Docker: AIC_DEBUG_SAVE_DIR=/debug/yolo_detections (docker-compose에서 volume mount)
+    # Native: /home/swlinux/aic_sejong/debug/yolo_detections
+    DEBUG_SAVE_DIR: str = os.environ.get(
+        "AIC_DEBUG_SAVE_DIR", "/home/swlinux/aic_sejong/debug/yolo_detections"
+    )
+
     def __init__(self, model_path: str, conf_thresh: float = 0.5, logger=None):
         self._model_path = model_path
         self._conf_thresh = conf_thresh
         self._logger = logger
         self._model = None
         self._loaded = False
+        self._debug_call_count = 0  # 호출 횟수 (파일명 중복 방지)
+
+        # 디버그 디렉토리 생성
+        if self.DEBUG_SAVE_DIR:
+            try:
+                os.makedirs(self.DEBUG_SAVE_DIR, exist_ok=True)
+                if logger:
+                    logger.info(f"[Vision Debug] 저장 경로: {self.DEBUG_SAVE_DIR}")
+            except Exception as e:
+                if logger:
+                    logger.error(f"[Vision Debug] 디렉토리 생성 실패: {e}")
+                # 저장 실패해도 동작은 계속 — 디버그 비활성화
+                self.__class__.DEBUG_SAVE_DIR = None
 
     def _ensure_loaded(self):
         if self._loaded:
+            return
+        if not os.path.isfile(self._model_path):
+            if self._logger:
+                self._logger.error(
+                    f"YOLO 모델 파일 없음: {self._model_path}\n"
+                    "  해결 방법:\n"
+                    "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
+                    "  2) 패키지 share/models/port_detector.pt 에 번들\n"
+                    "  3) ~/aic_yolo_runs/port_detector/weights/best.pt 에 배치"
+                )
             return
         try:
             from ultralytics import YOLO
@@ -271,24 +309,79 @@ class VisionPortEstimator:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         return img
 
-    def _detect(self, image: np.ndarray) -> list:
-        results = self._model(image, verbose=False, conf=self._conf_thresh)
-        dets = []
+    def _detect(self, image: np.ndarray, cam_name: str = "") -> list:
+        import cv2
+
+        # conf=0.01로 raw 결과 전부 받아서 로깅 후, conf_thresh 적용
+        results = self._model(image, verbose=False, conf=0.01)
+        raw_dets = []
         for r in results:
             for box in r.boxes:
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                u = (x1 + x2) / 2
-                v = (y1 + y2) / 2
-                dets.append({
+                raw_dets.append({
                     "class_id": cls,
                     "class_name": self.CLASS_NAMES.get(cls, "unknown"),
                     "conf": conf,
-                    "u": float(u),
-                    "v": float(v),
+                    "u": float((x1 + x2) / 2),
+                    "v": float((y1 + y2) / 2),
+                    "xyxy": (int(x1), int(y1), int(x2), int(y2)),
                 })
-        return dets
+
+        # 진단 로그
+        if self._logger:
+            if raw_dets:
+                for d in raw_dets:
+                    flag = "✓" if d["conf"] >= self._conf_thresh else "✗(low conf)"
+                    self._logger.info(
+                        f"  [{cam_name}] {flag} {d['class_name']} "
+                        f"conf={d['conf']:.3f} (thresh={self._conf_thresh}) "
+                        f"uv=({d['u']:.0f},{d['v']:.0f})"
+                    )
+            else:
+                self._logger.warn(f"  [{cam_name}] 검출 결과 0개 (모델이 아무것도 못 찾음)")
+
+        # ── 디버그 이미지 저장 ────────────────────────────────
+        if self.DEBUG_SAVE_DIR:
+            debug_img = image.copy()
+            # 클래스별 색상: sfp_port=초록, sc_port=파랑, unknown=빨강
+            COLOR = {0: (0, 255, 0), 1: (255, 100, 0), -1: (0, 0, 255)}
+
+            for d in raw_dets:
+                x1, y1, x2, y2 = d["xyxy"]
+                color = COLOR.get(d["class_id"], COLOR[-1])
+                passed = d["conf"] >= self._conf_thresh
+
+                # 통과한 것: 실선 두껍게, 실패한 것: 점선 얇게
+                thickness = 3 if passed else 1
+                cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, thickness)
+
+                # 라벨
+                label = f"{d['class_name']} {d['conf']:.2f}"
+                label += " ✓" if passed else " ✗"
+                cv2.putText(
+                    debug_img, label, (x1, max(y1 - 6, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2,
+                )
+
+            # threshold 선 표시 (이미지 상단에 텍스트)
+            cv2.putText(
+                debug_img,
+                f"thresh={self._conf_thresh}  cam={cam_name}  dets={len(raw_dets)}",
+                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
+            )
+
+            fname = (
+                f"{self.DEBUG_SAVE_DIR}/"
+                f"{self._debug_call_count:04d}_{cam_name}.jpg"
+            )
+            cv2.imwrite(fname, debug_img)
+
+        self._debug_call_count += 1
+
+        # conf_thresh 필터 적용
+        return [d for d in raw_dets if d["conf"] >= self._conf_thresh]
 
     @staticmethod
     def _triangulate(u_a, v_a, K_a, T_base_to_a,
@@ -356,9 +449,11 @@ class VisionPortEstimator:
                 return []
 
         # 2. 각 카메라에서 검출 (타겟 클래스만)
+        if self._logger:
+            self._logger.info(f"Vision: 검출 시작 (target_class_id={target_class_id})")
         detections = {}
         for name in ["left", "center", "right"]:
-            dets = self._detect(images[name])
+            dets = self._detect(images[name], cam_name=name)
             dets = [d for d in dets if d["class_id"] == target_class_id]
             detections[name] = dets
 
@@ -528,8 +623,17 @@ class StagedPolicy(Policy):
         # ★ YOLO 모델 즉시 로드 (Stage 1 지연 방지)
         # __init__ 단계는 60초 여유 있음 (lifecycle configured 단계)
         self.get_logger().info("YOLO 모델 사전 로드 중...")
+        self.get_logger().info(f"  YOLO model path: {Stage1Config.YOLO_MODEL_PATH}")
+        self.get_logger().info(f"  YOLO conf threshold: {Stage1Config.YOLO_CONF_THRESH}")
         self._vision._ensure_loaded()
-        self.get_logger().info("YOLO 사전 로드 완료")
+        self.get_logger().info(f"  YOLO loaded: {self._vision._loaded}")
+        if not self._vision._loaded:
+            self.get_logger().error(
+                "  ✗ YOLO 모델 로드 실패! Vision fallback 불가.\n"
+                "  해결: AIC_YOLO_MODEL_PATH 환경변수 설정 또는 모델 파일 경로 확인"
+            )
+        else:
+            self.get_logger().info("  ✓ YOLO 사전 로드 완료")
 
     # ─────────────────────────────────────────────────────
     #  프레임 이름 / TF 조회
@@ -1360,6 +1464,15 @@ class StagedPolicy(Policy):
             f"elapsed={result.elapsed_time:.2f}s, "
             f"reason={result.failure_reason}"
         )
+
+        # TF/Vision 둘 다 실패한 경우 → Stage 2/3는 항상 None pose만 반환하므로
+        # 시간만 낭비. 즉시 종료하여 평가 시스템이 다음 태스크로 넘어갈 수 있도록 함.
+        if result.port_source == "none":
+            self.get_logger().error(
+                "포트 좌표 획득 완전 실패 (TF/Vision 모두 실패) → 조기 종료"
+            )
+            send_feedback("failed: port not detected (skipping stage 2/3)")
+            return False
 
         # Stage 2/3 — Vision 모드면 Stage1 result의 port_pose를 전달
         # (TF 없어서 _compute_stage23_pose 내부에서 무한 대기 방지)

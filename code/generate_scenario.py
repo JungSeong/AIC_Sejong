@@ -3,7 +3,7 @@
 generate_scenario.py
 ────────────────────
 Trial 1 / 2 / 3 에 맞는 랜덤 파라미터로 Gazebo 월드를 생성하고,
-사용된 파라미터를 JSON으로 저장하는 스크립트.
+사용된 파라미터 값이 무엇이었는지 JSON으로 저장하는 스크립트.
 
 사용법:
     python3 generate_scenario.py 1              # Trial 1, 명령어만 출력
@@ -52,7 +52,7 @@ LIMITS = {
     "mount_translation": (-0.09425, 0.09425),  # 픽 위치 마운트 이동 범위 (m)
     "mount_yaw":         (-math.radians(60), math.radians(60)),  # 픽 위치 마운트 회전 ±60°
     # 훈련 다양화 전용 (평가 시에는 고정)
-    "board_yaw_trial12": (0.0, 3.1415),        # π±0.14 rad (약 ±8°), 확정 X
+    "board_yaw_trial12": (0.0, 3.1415),        # Trial 1-2 보드 yaw 변동 범위
     "board_yaw_trial3":  (0.0, 3.1415),        # Trial 3 보드 yaw 변동 범위
     "board_x_trial12":   (0.13, 0.17),
     "board_y_trial12":   (-0.25, -0.15),
@@ -220,7 +220,7 @@ def generate_params(trial: int, diversify: bool = False) -> dict:
         params["task_board_pitch"] = 0.0
 
     # ── 2. NIC 카드 마운트 ───────────────────────────
-    params.update(_nic_all_absent()) # NIC 카드 비활성화 코드
+    params.update(_nic_all_absent())
 
     if trial == 1:
         params["nic_card_mount_0_present"]     = "true"
@@ -237,10 +237,9 @@ def generate_params(trial: int, diversify: bool = False) -> dict:
         params["nic_card_mount_1_yaw"]         = rnd(*LIMITS["nic_yaw"])
 
     # ── 3. SC 포트 ──────────────────────────────────
-    params.update(_sc_ports_absent()) # SC 포트 비활성화 함수
+    params.update(_sc_ports_absent())
 
     if trial in (1, 2):
-        # sample_config 기준 sc_port_0 배치 (삽입 대상 아님, 보드 구성용)
         params["sc_port_0_present"]     = "true"
         params["sc_port_0_translation"] = rnd(*LIMITS["sc_translation"])
         params["sc_port_0_roll"]        = 0.0
@@ -258,12 +257,12 @@ def generate_params(trial: int, diversify: bool = False) -> dict:
     params.update(_base_pick_mounts(trial))
 
     # ── 5. 케이블 & 공통 파라미터 ────────────────────
-    params["cable_type"]             = "sfp_sc_cable" if trial in (1, 2) else "sfp_sc_cable_reversed"
+    params["cable_type"]              = "sfp_sc_cable" if trial in (1, 2) else "sfp_sc_cable_reversed"
     params["attach_cable_to_gripper"] = "true"
-    params["spawn_task_board"]       = "true"
-    params["spawn_cable"]            = "true"
-    params["ground_truth"]           = "true"
-    params["start_aic_engine"]       = "false"
+    params["spawn_task_board"]        = "true"
+    params["spawn_cable"]             = "true"
+    params["ground_truth"]            = "true"
+    params["start_aic_engine"]        = "false"
 
     return params
 
@@ -333,11 +332,6 @@ def watch_and_save_sdf(dest_path: Path, timeout: int = 90, prev_mtime: float = 0
     """
     /tmp/aic.sdf 가 생성되거나 갱신될 때까지 백그라운드에서 대기한 뒤
     dest_path 로 복사한다.
-
-    Args:
-        dest_path:  복사 목적지 경로 (예: scenarios/world/trial1_20260416_120000.sdf)
-        timeout:    최대 대기 시간 (초)
-        prev_mtime: 실행 전 /tmp/aic.sdf 의 mtime (없으면 0.0)
     """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.time() + timeout
@@ -348,6 +342,11 @@ def watch_and_save_sdf(dest_path: Path, timeout: int = 90, prev_mtime: float = 0
             cur_mtime = WORLD_SDF_SRC.stat().st_mtime
             if cur_mtime > prev_mtime:
                 shutil.copy2(WORLD_SDF_SRC, dest_path)
+                # distrobox 컨테이너 내부 경로(/ws_aic/)를 호스트 실제 경로로 치환
+                ws_host = str(Path.home() / "aic_sejong" / "ws_aic")
+                content = dest_path.read_text()
+                content = content.replace("/ws_aic/", f"{ws_host}/")
+                dest_path.write_text(content)
                 print(f"[SDF 저장] {dest_path}", flush=True)
                 return
         time.sleep(1.0)
@@ -396,8 +395,7 @@ def main():
         python3 generate_scenario.py 1 --diversify         # 보드 위치/yaw도 랜덤화
         python3 generate_scenario.py 1 --mode pixi         # pixi 소스 빌드 모드
         python3 generate_scenario.py 1 --output-dir /tmp   # JSON 저장 위치 지정
-        python3 generate_scenario.py 1 --set nic_card_mount_0_yaw=0.0 task_board_x=0.15   # 특정 파라미터 값 지정
-        python3 generate_scenario.py 1 --output-dir "../aic_data/scenarios/"    # 해당 디렉토리에 월드 파일 저장
+        python3 generate_scenario.py 1 --set nic_card_mount_0_yaw=0.0 task_board_x=0.15
     """,
     )
     parser.add_argument(
@@ -406,53 +404,26 @@ def main():
         choices=[1, 2, 3],
         help="평가 Trial 번호 (1=SFP/NIC-rail0, 2=SFP/NIC-rail1, 3=SC)",
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="랜덤 시드 (같은 시드면 동일 파라미터 생성, 재현용)",
-    )
-    parser.add_argument(
-        "--diversify",
-        action="store_true",
-        help="훈련 다양화 모드: 보드 위치·yaw도 범위 내에서 랜덤화",
-    )
-    parser.add_argument(
-        "--run",
-        action="store_true",
-        help="명령어를 실제로 실행 (기본: 출력만)",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["eval", "pixi"],
-        default="eval",
-        help="실행 모드: eval=distrobox eval 컨테이너(기본), pixi=소스 빌드",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default="../aic_data/scenarios/",
-        help="JSON 저장 폴더 (기본: ~/aic_sejong/aic_data/scenarios/)",
-    )
-    # --set: 특정 파라미터를 고정값으로 오버라이드
-    parser.add_argument(
-        "--set",
-        nargs="+",
-        metavar="KEY=VALUE",
-        default=[],
-        help="파라미터 오버라이드 (예: --set nic_card_mount_0_yaw=0.0 task_board_x=0.15)",
-    )
+    parser.add_argument("--seed",       type=int,  default=None,
+                        help="랜덤 시드 (같은 시드면 동일 파라미터 생성, 재현용)")
+    parser.add_argument("--diversify",  action="store_true",
+                        help="훈련 다양화 모드: 보드 위치·yaw도 범위 내에서 랜덤화")
+    parser.add_argument("--run",        action="store_true",
+                        help="명령어를 실제로 실행 (기본: 출력만)")
+    parser.add_argument("--mode",       choices=["eval", "pixi"], default="eval",
+                        help="실행 모드: eval=distrobox eval 컨테이너(기본), pixi=소스 빌드")
+    parser.add_argument("--output-dir", type=Path, default=Path("../aic_data/scenarios/"),
+                        help="JSON 저장 폴더 (기본: ~/aic_sejong/aic_data/scenarios/)")
+    parser.add_argument("--set",        nargs="+", metavar="KEY=VALUE", default=[],
+                        help="파라미터 오버라이드 (예: --set nic_card_mount_0_yaw=0.0)")
     args = parser.parse_args()
 
-    # 시드 설정
     if args.seed is not None:
         random.seed(args.seed)
         print(f"[시드] {args.seed} 고정")
 
-    # 파라미터 생성
     params = generate_params(args.trial, diversify=args.diversify)
 
-    # --set 오버라이드 적용
     overrides = {}
     for item in args.set:
         if "=" not in item:
@@ -460,7 +431,6 @@ def main():
         key, val = item.split("=", 1)
         if key not in params:
             print(f"[경고] '{key}'는 생성된 파라미터에 없습니다. 그래도 추가합니다.")
-        # 타입 추론: 기존 값이 float이면 float, "true"/"false"면 문자열 그대로
         if key in params and isinstance(params[key], float):
             overrides[key] = float(val)
         else:
@@ -469,23 +439,20 @@ def main():
         params.update(overrides)
         print(f"[오버라이드] {len(overrides)}개 파라미터 고정: {list(overrides.keys())}")
 
-    # 저장 경로 결정 (JSON 과 SDF 가 같은 타임스탬프·스템을 공유)
     out_dir = args.output_dir or (Path.home() / "aic_sejong" / "aic_data" / "scenarios")
     json_path = save_json(args.trial, params, args.seed, args.diversify, out_dir, overrides)
-    stem = json_path.stem  # 예: trial1_20260416_120000
+    stem = json_path.stem
     sdf_path = out_dir / "world" / f"{stem}.sdf"
 
     print(f"[저장] JSON  → {json_path}")
     print(f"[예정] SDF   → {sdf_path}\n")
 
-    # 파라미터 요약 출력
     print("=" * 60)
     print(f"  Trial {args.trial}  |  diversify={args.diversify}")
     print("=" * 60)
     _print_summary(params, args.trial)
     print()
 
-    # 명령어 출력
     if args.mode == "eval":
         cmd_str = build_entrypoint_cmd(params)
     else:
@@ -495,17 +462,14 @@ def main():
     print(cmd_str)
     print()
 
-    # SDF 수동 복사 명령어 (--run 없이 쓸 때 참고용)
     print("[SDF 복사 명령어]  ← Gazebo 실행 후 별도 터미널에서 실행")
     print(f"  mkdir -p {sdf_path.parent} && cp /tmp/aic.sdf {sdf_path}")
     print()
 
-    # 실행 + SDF 자동 감시
     if args.run:
         prev_mtime = _prev_sdf_mtime()
         print("[실행 중...] Ctrl+C 로 종료")
 
-        # SDF 감시를 백그라운드 스레드에서 실행
         watcher = threading.Thread(
             target=watch_and_save_sdf,
             args=(sdf_path,),
@@ -521,7 +485,6 @@ def main():
             proc.terminate()
             print("\n[종료] 프로세스를 종료했습니다.")
 
-        # Gazebo 종료 후 watcher가 아직 실행 중이면 최대 5초 더 대기
         watcher.join(timeout=5)
 
 

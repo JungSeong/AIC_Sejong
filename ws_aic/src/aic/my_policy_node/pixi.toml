@@ -2,9 +2,9 @@
 name = "pixi-build-ros"
 version = "==0.3.3.20260113.c8b6a54"
 channels = [
-  "https://prefix.dev/pixi-build-backends",
-  "robostack-kilted",
-  "conda-forge",
+	"https://prefix.dev/pixi-build-backends",
+	"robostack-kilted",
+	"conda-forge",
 ]
 
 [package.host-dependencies]

@@ -1,0 +1,25 @@
+[project]
+name = "aic-sejong"
+version = "0.1.0"
+description = "AIC Sejong — Early Failure Prediction with Transformer"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "scikit-learn>=1.4",
+    "torch>=2.3",
+    "jupyter>=1.1",
+    "ipykernel>=6.29",
+    "ipywidgets>=8.1",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

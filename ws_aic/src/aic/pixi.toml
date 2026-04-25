@@ -18,7 +18,6 @@ packaging = ">=24.2,<26.0"                                                      
 pyright = "==1.1.408"
 ros-kilted-aic-control-interfaces = { path = "aic_interfaces/aic_control_interfaces" }
 ros-kilted-aic-example-policies = { path = "aic_example_policies" }
-ros-kilted-my-policy-node = { path = "my_policy_node" }
 ros-kilted-aic-model = { path = "aic_model" }
 ros-kilted-aic-model-interfaces = { path = "aic_interfaces/aic_model_interfaces" }
 ros-kilted-aic-task-interfaces = { path = "aic_interfaces/aic_task_interfaces" }
@@ -35,6 +34,8 @@ ros-kilted-std-msgs = "*"                                                       
 ros-kilted-std-srvs = "*"
 ros-kilted-tf2-ros-py = "*"
 setuptools = ">=71.0.0,<81.0.0"                                                        # required by lerobot==0.4.3
+trimesh = ">=4.11.5,<5"
+ultralytics = ">=8.4.39,<9"
 
 [pypi-dependencies]
 torch = ">=2.0"
@@ -43,6 +44,9 @@ lerobot = ">=0.5.1"
 lerobot_robot_ros = { git = "https://github.com/koonpeng/lerobot-ros", rev = "87708d0ae14a724bca78f8ae9d55448332509a57", subdirectory = "lerobot_robot_ros" }
 lerobot_teleoperator_devices = { git = "https://github.com/koonpeng/lerobot-ros", rev = "87708d0ae14a724bca78f8ae9d55448332509a57", subdirectory = "lerobot_teleoperator_devices" }
 mujoco = "==3.5.0"
+dm_control = "*"
+data-gen-policy = { path = "./data_gen_policy", editable = true }
+my-policy-node = { path = "./my_policy_node", editable = true }
 pynput = ">=1.7.6,<2"
 pyspacemouse = ">=2.0.0, <3"
 transformers = ">=4.50.0"
