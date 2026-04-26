@@ -6,3 +6,6 @@ src/UniversalRobots/
 src/gazebo/
 src/ros-controls/
 src/ros/
+src/data/lerobot
+src/data/yolo
+src/ais/data/
