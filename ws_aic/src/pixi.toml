@@ -70,8 +70,8 @@ draccus = "*"
 transforms3d = "*"
 
 # ais 로컬 패키지 (editable)
-data-gen-node        = { path = "ais/ais_ours_policy/data_gen_node",        editable = true }
-motion-planning-node = { path = "ais/ais_ours_policy/motion_planning_node", editable = true }
+data-gen-node        = { path = "ais/ais_policy/data_gen_node",        editable = true }
+motion-planning-node = { path = "ais/ais_policy/motion_planning_node", editable = true }
 
 [activation]
 scripts = ["aic/pixi_env_setup.sh"]

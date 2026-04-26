@@ -8,53 +8,53 @@
 ## 디렉토리 구조
 
 ```
-aic_sejong/
-├── ABOUT-ME/
-│   ├── about-me.md          ← 개인 배경 및 목표
-│   └── working-rules.md     ← Claude 작업 규칙 (응답 형식, 파일 저장 규칙 등)
+AIC_Sejong/
+├── README.md
 │
-├── CLAUDE.md                ← Claude 컨텍스트 진입점 (about-me + working-rules 참조)
-│
-├── CLAUDE-OUTPUTS/
-│   └── summaries/
-│       ├── 0405/            ← docs/ 전체 문서 요약 (getting_started, scoring 등 20개)
-│       ├── 0409/            ← 맵 파일, 예제 정책, LeRobot 녹화·훈련 요약
-│       ├── 0412/            ← 정책 노드 생성, eval 환경 설정, 훈련 파라미터 요약
-│       └── 0413/            ← Docker eval 실행 가이드
-│
-├── TEMPLATES/
-│   └── basic-templates.md   ← 코드/문서 작성 템플릿
-│
-├── aic_data/
-│   ├── huggingface/
-│   │   ├── hub/
-│   │   │   └── models--JungSeong2--act_AIC/   ← HF에서 받은 모델 캐시
-│   │   └── lerobot/
-│   │       └── calibration/                   ← LeRobot 캘리브레이션 데이터
-│   └── outputs/
-│       └── train/
-│           └── act_AIC/                       ← lerobot-train 훈련 출력 (체크포인트)
-│
-└── ws_aic/
-    └── src/
-        └── aic/                               ← AIC 공식 저장소 (git submodule)
-            ├── pixi.toml                      ← 전체 환경 의존성 정의
-            ├── pixi.lock                      ← 의존성 고정 파일 (Docker 빌드에 필수)
-            ├── docs/                          ← 공식 문서 (overview, scoring 등)
-            ├── aic_model/                     ← aic_model 노드 (정책 로더)
-            ├── aic_example_policies/          ← 예제 정책 (WaveArm, CheatCode, RunACT 등)
-            ├── aic_bringup/                   ← 시뮬레이션 launch 파일
-            ├── aic_engine/                    ← 태스크 오케스트레이션 + 스코어링
-            ├── aic_controller/                ← 로봇 팔 임피던스 컨트롤러
-            ├── aic_interfaces/                ← ROS 2 메시지/서비스 인터페이스
-            ├── aic_utils/
-            │   └── lerobot_robot_aic/         ← LeRobot ↔ AIC 연결 드라이버
-            ├── docker/                        ← Dockerfile, docker-compose.yaml
-            └── my_policy_node/                ← ★ 내 정책 패키지
-                ├── pixi.toml                  ← 패키지 의존성
-                ├── package.xml
-                └── my_policy_node/
-                    └── Baseline.py            ← ACT 기반 정책 구현체
+└── ws_aic/                  ← 워크스페이스 루트
+    └── src/                 ← 소스 루트 (pixi.toml 위치)
+        ├── pixi.toml        ← 전체 워크스페이스 환경 정의
+        ├── pixi.lock        ← 의존성 고정 파일
+        │
+        ├── aic/             ← AIC 공식 저장소 (git submodule)
+        │   ├── aic_model/                  ← aic_model 노드 (정책 로더)
+        │   ├── aic_adapter/                ← 모델 노드 어댑터 (C++)
+        │   ├── aic_example_policies/       ← 예제 정책 (WaveArm, CheatCode, RunACT 등)
+        │   ├── aic_bringup/                ← 시뮬레이션 launch 파일
+        │   ├── aic_engine/                 ← 태스크 오케스트레이션 + 스코어링
+        │   ├── aic_controller/             ← 로봇 팔 임피던스 컨트롤러
+        │   ├── aic_interfaces/             ← ROS 2 메시지/서비스 인터페이스
+        │   │   ├── aic_control_interfaces
+        │   │   ├── aic_engine_interfaces
+        │   │   ├── aic_model_interfaces
+        │   │   └── aic_task_interfaces
+        │   ├── aic_utils/
+        │   │   ├── lerobot_robot_aic/      ← LeRobot ↔ AIC 연결 드라이버
+        │   │   ├── aic_teleoperation/      ← 텔레오퍼레이션 유틸리티
+        │   │   └── aic_mujoco/             ← MuJoCo 시뮬레이터 지원
+        │
+        ├── ais/             ← ★ 팀 자체 개발 패키지
+        │   ├── ais_auto_capture/       ← YOLO 학습용 자동 데이터 수집
+        │   ├── ais_early_prediction/   ← 조기 실패 예측 (Transformer 기반)
+        │   ├── ais_eda/                ← 멀티뷰 편향 탐색적 데이터 분석
+        │   ├── ais_encoder/            ← 멀티모달 표현 학습 (Vision + Touch)
+        │   ├── ais_load_model_from_hf/ ← HuggingFace 모델 로드/업로드 유틸
+        │   ├── ais_motion_planning/    ← YOLO + 스테레오 기반 포트 검출 및 모션 플래닝
+        │   ├── docker/                     ← Dockerfile, docker-compose.yaml
+        │   └── ais_ours_policy/        ← ROS 2 노드 래퍼
+        │       ├── data_gen_node/      ← 데이터 생성 노드
+        │       └── motion_planning_node/ ← 모션 플래닝 노드
+        │
+        ├── model/           ← 훈련된 모델 가중치
+        │   ├── ais_act/     ← ACT 모델 체크포인트
+        │   └── ais_yolo/    ← YOLO 모델 가중치
+        │
+        ├── data/            ← 데이터셋
+        │   ├── lerobot/     ← LeRobot 형식 데이터셋 (master 브랜치)
+        │   └── yolo/        ← YOLO 학습 데이터 (날짜별, 예: 20260426/)
+        │
+        ├── docs/            ← 문서
+            └── summaries/   ← Claude 세션별 요약 (0405, 0409, ... 0423)
 ```
 
 ---
@@ -76,11 +76,8 @@ aic_sejong/
 ### 1. Docker 설치
 
 ```bash
-# Docker Engine 설치
 curl -fsSL https://get.docker.com | sh
-
-# 비루트 사용자 권한 추가 (로그아웃 후 재로그인 필요)
-sudo usermod -aG docker $USER
+sudo usermod -aG docker $USER   # 로그아웃 후 재로그인 필요
 ```
 
 ---
@@ -88,14 +85,11 @@ sudo usermod -aG docker $USER
 ### 2. NVIDIA Container Toolkit 설치 (GPU 사용 시)
 
 ```bash
-# 툴킷 설치
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
   sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 sudo apt update && sudo apt install -y nvidia-container-toolkit
-
-# Docker에 NVIDIA 런타임 등록
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
@@ -122,9 +116,8 @@ curl -fsSL https://pixi.sh/install.sh | sh
 ### 5. 저장소 클론 및 의존성 설치
 
 ```bash
-cd ~
-git clone https://github.com/JungSeong/AIC_Sejong.git
-cd ~/AIC_Sejong/ws_aic/src/aic
+git clone https://github.com/JungSeong/AIC_Sejong.git ~/AIC_Sejong
+cd ~/AIC_Sejong/ws_aic/src
 pixi install
 ```
 
@@ -142,20 +135,17 @@ distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_ev
 
 ---
 
-### 7. 환경변수 설정 (`~/.bashrc`에 등록해서 관리하시는 것을 권장합니다)
+### 7. 환경변수 설정 (`~/.bashrc`에 등록 권장)
 
 ```bash
-# HuggingFace 토큰 (lerobot-record push / snapshot_download 에 필요)
+# HuggingFace 토큰 (모델 push/pull 시 필요)
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
 
-# LeRobot 데이터셋 저장 위치 변경 (기본: ~/.cache/huggingface/lerobot)
-export HF_LEROBOT_HOME=/home/swlinux/aic_sejong/aic_data/huggingface/lerobot
+# LeRobot 데이터셋 저장 위치
+export HF_LEROBOT_HOME=~/AIC_Sejong/ws_aic/src/data/lerobot
 
-# HuggingFace 캐시 위치 변경 (기본: ~/.cache/huggingface)
-export HF_HOME=/home/swlinux/aic_sejong/aic_data/huggingface
-
-# 훈련 출력 위치는 lerobot-train 실행 시 --output_dir 으로 지정
-# 예: --output_dir=/home/swlinux/aic_sejong/aic_data/outputs/train/act_AIC
+# HuggingFace 캐시 위치
+export HF_HOME=~/.cache/huggingface
 ```
 
 ---
@@ -163,23 +153,21 @@ export HF_HOME=/home/swlinux/aic_sejong/aic_data/huggingface
 ### 8. HuggingFace 로그인
 
 ```bash
-cd ~/aic_sejong/ws_aic/src/aic
+cd ~/AIC_Sejong/ws_aic/src
 pixi run hf auth login --token $HF_TOKEN
-
-# 확인
-pixi run hf auth whoami
+pixi run hf auth whoami   # 확인
 ```
 
 ---
 
-### 9. 내 정책 노드 빌드
+### 9. 정책 노드 빌드
 
 ```bash
-cd ~/aic_sejong/ws_aic/src/aic
-pixi reinstall ros-kilted-my-policy-node
+cd ~/AIC_Sejong/ws_aic/src
+pixi install   # 변경 사항 반영
 ```
 
-> 코드(`Baseline.py`) 수정 후에도 반드시 재실행.
+> `Baseline.py` 또는 `StagedPolicy.py` 수정 후에도 재실행 필요.
 
 ---
 
@@ -188,25 +176,58 @@ pixi reinstall ros-kilted-my-policy-node
 ### A. 시뮬레이션 + 정책 실행
 
 ```bash
-# Terminal 1 — eval 컨테이너 (Gazebo + 엔진 + Zenoh 라우터 포함)
+# Terminal 1 — eval 컨테이너 (Gazebo + 엔진 + Zenoh 라우터)
 distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=false start_aic_engine:=true
 
-# Terminal 2 — 내 정책 (30초 이내 실행, source 불필요)
-cd ~/aic_sejong/ws_aic/src/aic
+# Terminal 2 — StagedPolicy (Vision 통합 3단계 State Machine)
+cd ~/AIC_Sejong/ws_aic/src
+pixi run ros2 run aic_model aic_model \
+  --ros-args -p use_sim_time:=true \
+  -p policy:=my_policy_node.StagedPolicy
+
+# Terminal 2 (대안) — Baseline (ACT 기반)
+cd ~/AIC_Sejong/ws_aic/src
 pixi run ros2 run aic_model aic_model \
   --ros-args -p use_sim_time:=true \
   -p policy:=my_policy_node.Baseline
 ```
 
+**StagedPolicy 동작 방식:**
+
+| 단계 | 방식 | 설명 |
+|------|------|------|
+| Stage 1 (이동) | YOLO + 스테레오 삼각측량 | 포트 위 10cm 지점까지 S-curve 보간 이동 |
+| Stage 2 (삽입 접근) | Ground truth (임시) | 정밀 어프로치 |
+| Stage 3 (삽입) | Ground truth (임시) | 케이블 삽입 완료 |
+
+> `ground_truth=true` 시: TF로 포트 좌표 직접 읽음 (오차 0)
+> `ground_truth=false` 시: YOLO 검출 + 스테레오 삼각측량 (오차 ~17mm)
+
 ---
 
-### B. 훈련 데이터 녹화
+### B. YOLO 학습 데이터 수집
 
 ```bash
-cd ~/aic_sejong/ws_aic/src/aic
+# Terminal 1 — eval 컨테이너 (ground_truth=true 필수)
+distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=true start_aic_engine:=true
+
+# Terminal 2 — 자동 캡처 노드
+cd ~/AIC_Sejong/ws_aic/src
+pixi run python ais/ais_motion_planning/collect_dataset.py
+```
+
+수집 데이터는 `data/yolo/<날짜>/` 아래 YOLO 형식으로 저장된다.
+
+---
+
+### C. LeRobot 훈련 데이터 녹화
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src
 
 # [중요!!] F/T 센서 tare (매 에피소드 전 필수)
 pixi run ros2 service call /aic_controller/tare_force_torque_sensor std_srvs/srv/Trigger
+
 pixi run lerobot-record \
   --robot.type=aic_controller --robot.id=aic \
   --teleop.type=aic_keyboard_ee --teleop.id=aic \
@@ -227,14 +248,14 @@ pixi run lerobot-record \
 
 ---
 
-### C. 모델 훈련
+### D. ACT 모델 훈련
 
 ```bash
-cd ~/aic_sejong/ws_aic/src/aic
+cd ~/AIC_Sejong/ws_aic/src
 pixi run lerobot-train \
-  --dataset.repo_id=JungSeong2/AIC \
+  --dataset.repo_id=aic-sejong-team/AIC \
   --policy.type=act \
-  --output_dir=/home/swlinux/aic_sejong/aic_data/outputs/train/act_AIC \
+  --output_dir=./model/ais_act \
   --job_name=act_AIC \
   --policy.device=cuda \
   --wandb.enable=true \
@@ -243,10 +264,19 @@ pixi run lerobot-train \
 
 ---
 
-### D. 제출용 Docker 이미지 빌드
+### E. YOLO 모델 훈련
 
 ```bash
-cd ~/aic_sejong/ws_aic/src/aic
+cd ~/AIC_Sejong/ws_aic/src
+pixi run python ais/ais_motion_planning/train_yolo.py
+```
+
+---
+
+### F. 제출용 Docker 이미지 빌드
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src/aic
 
 # 빌드
 docker compose -f docker/docker-compose.yaml build model
@@ -264,9 +294,9 @@ docker compose -f docker/docker-compose.yaml up
 | 공식 시작 가이드 | `ws_aic/src/aic/docs/getting_started.md` |
 | 스코어링 규칙 | `ws_aic/src/aic/docs/scoring.md` |
 | 정책 통합 가이드 | `ws_aic/src/aic/docs/policy.md` |
-| 시나리오 생성 파라미터 정리 | `CLAUDE-OUTPUTS/summaries/0413/summary_world-scenario-params_v1.md` |
-| 훈련 모델 기반 정책 노드 생성 가이드 | `CLAUDE-OUTPUTS/summaries/0412/summary_trained-model-to-policy_v1.md` |
 | LeRobot 연동 | `ws_aic/src/aic/aic_utils/lerobot_robot_aic/README.md` |
-| LeRobot 녹화·훈련 가이드 | `CLAUDE-OUTPUTS/summaries/0409/summary_lerobot-record-and-train_v2.md` |
-| LeRobot 녹화 파라미터 | `CLAUDE-OUTPUTS/summaries/0413/summary_teleop-params_v1.md` |
-| LeRobot 훈련 파라미터 | `CLAUDE-OUTPUTS/summaries/0412/summary_lerobot-train-params_v1.md` |
+| Stage 1-B 케이블 장력 보상 실험 노트 | `ws_aic/src/aic/my_policy_node/STAGE1_MP2_NOTES.md` |
+| 멀티모달 인코더 (Vision + Touch) | `ws_aic/src/ais/ais_encoder/README.md` |
+| 모션 플래닝 패키지 | `ws_aic/src/ais/ais_motion_planning/` |
+| 세션별 요약 | `ws_aic/src/docs/summaries/` |
+| 논문 요약 | `ws_aic/src/docs/paper/` |

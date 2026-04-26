@@ -125,6 +125,8 @@ DEFAULT_OUTPUT_DIR   = ROOT / "ws_aic" / "src" / "data" / "yolo"
 DEFAULT_SCENARIO_DIR = Path("/tmp/aic_scenario_params")
 ENGINE_CONFIG_TMP    = Path("/tmp/aic_yolo_config.yaml")
 WS_AIC_SETUP         = ROOT / "ws_aic" / "install" / "setup.bash"
+EPISODE_TRACKING_DIR = Path("/tmp/aic_yolo_episodes")
+SCENARIO_PARAMS_TMP  = Path("/tmp/aic_yolo_scenario_params.json")
 
 # pixi 전용 패키지 경로 (lerobot, cv2 등)
 PIXI_SITE_PACKAGES = PIXI_WS / ".pixi" / "envs" / "default" / "lib" / "python3.12" / "site-packages"
@@ -607,26 +609,34 @@ def start_gazebo(config_path: Path, headless: bool = False, dry_run: bool = Fals
     return proc
 
 
-def start_aic_model(dry_run: bool = False):
-    """엔터티 spawn을 위해 aic_model lifecycle 노드를 시작한다.
+def count_completed_episodes() -> int:
+    return len(list(EPISODE_TRACKING_DIR.glob("*/episode_summary.json")))
 
-    aic_engine은 aic_model이 configure/activate되어야 엔터티을 spawn한다.
-    YOLO 수집에서는 autocapture policy를 사용 — 데이터 저장 없이 lifecycle만 수행.
+
+def start_aic_model(dry_run: bool = False):
+    """datacollect policy로 trial을 실제 실행해 Task Board가 반드시 spawn되도록 한다.
+
+    autocapture는 lifecycle만 수행해 trial이 시작되지 않으므로 entity spawn이
+    보장되지 않는다. datacollect를 사용하면 aic_engine이 trial을 시작하고
+    Task Board를 spawn한다. LeRobot 저장은 env var 제거로 비활성화한다.
     """
     env = _ros2_env()
     _apply_pixi_env(env)
-    env.pop("AIC_LEROBOT_REPO_ID", None)   # LeRobot 저장 비활성화
+    env.pop("AIC_LEROBOT_REPO_ID", None)
     env.pop("AIC_LEROBOT_OUT_DIR",  None)
-    env["AIC_LEROBOT_PUSH_TO_HUB"] = "false"
+    env["AIC_LEROBOT_PUSH_TO_HUB"]        = "false"
+    env["AIC_CAPTURE_DIR"]                = str(EPISODE_TRACKING_DIR)
+    env["AIC_SCENARIO_PARAMS_FILE"]       = str(SCENARIO_PARAMS_TMP)
+    env["AIC_CAPTURE_STEP_SLEEP_SEC"]     = "0.1"
     cmd = (
         f"source {WS_AIC_SETUP} && "
         f"ros2 run aic_model aic_model "
-        f"--ros-args -p policy:=data_gen_node.policy.autocapture"
+        f"--ros-args -p policy:=data_gen_node.policy.datacollect"
     )
     if dry_run:
         print(f"[DRY-RUN] aic_model: {cmd}")
         return None
-    print("[aic_model] 시작 (autocapture policy — 데이터 저장 없음)...")
+    print("[aic_model] 시작 (datacollect policy — Task Board spawn 보장, LeRobot 저장 비활성)...")
     proc = subprocess.Popen(cmd, shell=True, executable="/bin/bash",
                             env=env, stderr=subprocess.STDOUT)
     time.sleep(1)
@@ -750,7 +760,7 @@ def run_yolo_collection_loop(
         print("[정리] 잔존 ROS2/Gazebo 프로세스 정리 중... (Zenoh 제외)")
         terminate_processes()
         print("[정리] 완료\n")
-
+        EPISODE_TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 
     # 누적 카운터 초기화
     total_saved    = 0
@@ -775,11 +785,28 @@ def run_yolo_collection_loop(
                 print(f"\n[시나리오 {scenario_counter}/{total_scenarios}]"
                       f"  {scenario_type.upper()} rail {rail_idx}  ({scenario_label})")
 
-                # 1. Engine config 생성 & 저장
+                # 1. Engine config 생성 & 저장, scenario_params JSON 저장
                 config = (make_nic_trial_config(rail_idx, diversify)
                           if scenario_type == "nic"
                           else make_sc_trial_config(rail_idx, diversify))
                 save_engine_config(config, ENGINE_CONFIG_TMP)
+
+                # datacollect policy가 읽는 scenario_params 파일 생성
+                if scenario_type == "nic":
+                    task_key = f"nic_rail{rail_idx}_task_1"
+                    params = {"trial_type": 0, "rail_idx": rail_idx,
+                              "gripper_offset_x": 0.0,
+                              "gripper_offset_y": LIMITS["nic_gripper_offset_y"],
+                              "gripper_offset_z": LIMITS["nic_gripper_offset_z"]}
+                else:
+                    task_key = f"sc_rail{rail_idx}_task_1"
+                    params = {"trial_type": 1, "rail_idx": rail_idx,
+                              "gripper_offset_x": 0.0,
+                              "gripper_offset_y": LIMITS["sc_gripper_offset_y"],
+                              "gripper_offset_z": LIMITS["sc_gripper_offset_z"]}
+                SCENARIO_PARAMS_TMP.write_text(
+                    json.dumps({task_key: params}, ensure_ascii=False), encoding="utf-8"
+                )
 
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 json_path = scenario_dir / f"{scenario_label}_{timestamp}.json"
@@ -793,9 +820,10 @@ def run_yolo_collection_loop(
                     )
 
                 # 2. Gazebo + aic_model 시작
-                # aic_engine이 aic_model을 configure/activate한 후에 trial을 spawn한다.
+                # datacollect policy가 trial을 실제로 실행해야 Task Board가 spawn된다.
                 # ─ 중요: aic_engine의 aic_model 탐색 타임아웃은 ~10-15초이므로
                 #         Gazebo 시작 직후 빠르게 aic_model을 올려야 씬 spawn에 성공한다.
+                episodes_before = count_completed_episodes()
                 collector.reset()
                 gazebo_proc = start_gazebo(ENGINE_CONFIG_TMP, headless=headless)
 
