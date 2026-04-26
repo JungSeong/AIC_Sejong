@@ -11,6 +11,7 @@ myenv/
 ABOUT-ME/
 TEMPLATES/
 CLAUDE.md
+GEMINI.md
 
 .claude/
 .idea/
