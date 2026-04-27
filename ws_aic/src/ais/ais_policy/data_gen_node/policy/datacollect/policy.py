@@ -260,6 +260,16 @@ class DataCollect(AutoCapture):
         start_time = time.time()
         phase_step_counts = {"approach": 0, "insert": 0, "stabilize": 0}
 
+        # 포트가 처음 보이는 순간부터 레코딩 시작 (phase 무관).
+        # YOLO 없으면 즉시 시작, 있으면 trigger 임계값(AIC_YOLO_TRIGGER_CONF, 기본 0.1)으로 감지.
+        recording_started = (self._yolo_model is None)
+
+        def _check_and_start(obs) -> None:
+            nonlocal recording_started
+            if not recording_started and self._detect_plugs(obs, conf=self._yolo_trigger_conf):
+                recording_started = True
+                self.get_logger().info("[DataCollect] 포트 첫 검출 → 레코딩 시작")
+
         # 8. Approach
         z_offset = self.approach_z_offset
         for t in range(self.approach_steps):
@@ -277,11 +287,14 @@ class DataCollect(AutoCapture):
                     reset_xy_integrator=True,
                 )
                 self.set_pose_target(move_robot=move_robot, pose=pose)
-                self._record_motion_step(
-                    recorder, "approach", task, port_transform,
-                    plug_tf, gripper_tf, wrapped_get_observation(), pose, extras,
-                )
-                phase_step_counts["approach"] += 1
+                obs = wrapped_get_observation()
+                _check_and_start(obs)
+                if recording_started:
+                    self._record_motion_step(
+                        recorder, "approach", task, port_transform,
+                        plug_tf, gripper_tf, obs, pose, extras,
+                    )
+                    phase_step_counts["approach"] += 1
             except TransformException:
                 pass
             self.sleep_for(self.step_sleep_sec)
@@ -299,11 +312,14 @@ class DataCollect(AutoCapture):
                     z_offset=z_offset,
                 )
                 self.set_pose_target(move_robot=move_robot, pose=pose)
-                self._record_motion_step(
-                    recorder, "insert", task, port_transform,
-                    plug_tf, gripper_tf, wrapped_get_observation(), pose, extras,
-                )
-                phase_step_counts["insert"] += 1
+                obs = wrapped_get_observation()
+                _check_and_start(obs)
+                if recording_started:
+                    self._record_motion_step(
+                        recorder, "insert", task, port_transform,
+                        plug_tf, gripper_tf, obs, pose, extras,
+                    )
+                    phase_step_counts["insert"] += 1
             except TransformException:
                 pass
             self.sleep_for(self.step_sleep_sec)
@@ -316,7 +332,7 @@ class DataCollect(AutoCapture):
             plug_tf    = self._lookup_transform("base_link", plug_frame)
             gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
             obs = wrapped_get_observation()
-            if obs is not None:
+            if obs is not None and recording_started:
                 recorder.record_terminal_step(
                     phase="stabilize", task=task, obs=obs,
                     port_tf=port_transform, plug_tf=plug_tf,
@@ -325,6 +341,17 @@ class DataCollect(AutoCapture):
                 phase_step_counts["stabilize"] = 1
         except TransformException:
             pass
+
+        if not recording_started:
+            self.get_logger().warn(
+                "[DataCollect] 에피소드 전체에서 포트 미검출 → skip"
+            )
+            self._write_episode_summary(episode_dir, {
+                "task_id": task.id,
+                "status": "detection_timeout",
+                "failure_reason": "port_not_detected_during_episode",
+            })
+            return False
 
         # 11. 에피소드 저장
         insertion_event_observed = self._has_successful_insertion(task)

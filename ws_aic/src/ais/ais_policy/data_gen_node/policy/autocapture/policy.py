@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import cv2
+import numpy as np
 from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
 from aic_model.policy import (
     GetObservationCallback,
@@ -19,6 +21,10 @@ from tf2_ros import TransformException
 
 from .lib.cheatcode import CheatCodePlanner
 from .lib.recording import AutoCaptureRecorder
+
+_YOLO_MODEL_DEFAULT = str(
+    Path(__file__).resolve().parents[5] / "model" / "ais_yolo-2" / "weights" / "best.pt"
+)
 
 
 class AutoCapture(Policy):
@@ -62,9 +68,104 @@ class AutoCapture(Policy):
             i_gain=float(os.environ.get("AIC_CAPTURE_CHEATCODE_I_GAIN", "0.15")),
             max_integrator_windup=self._max_integrator_windup,
         )
+        self._init_yolo()
         self.get_logger().info(
             "AutoCapture initialized. Output dir: %s" % str(self.capture_root)
         )
+
+    def _init_yolo(self) -> None:
+        model_path = Path(os.environ.get("AIC_YOLO_MODEL_PATH", _YOLO_MODEL_DEFAULT))
+        self._yolo_model = None
+        self._yolo_conf = float(os.environ.get("AIC_YOLO_CONF", "0.3"))
+        self._yolo_trigger_conf = float(os.environ.get("AIC_YOLO_TRIGGER_CONF", "0.1"))
+        self._yolo_detect_timeout_sec = float(
+            os.environ.get("AIC_YOLO_DETECT_TIMEOUT_SEC", "0")  # 0 = loop forever
+        )
+        if not model_path.exists():
+            self.get_logger().warn(
+                "[AutoCapture] YOLO 모델 파일 없음: %s" % model_path
+            )
+            return
+        try:
+            from ultralytics import YOLO
+            self._yolo_model = YOLO(str(model_path))
+            self.get_logger().info(
+                "[AutoCapture] YOLO 모델 로드 완료: %s" % model_path
+            )
+        except ImportError as e:
+            self.get_logger().error(
+                "[AutoCapture] ultralytics import 실패: %s\n"
+                "→ ws_aic/src/ 에서 'pixi install' 실행 후 재시도하세요." % e
+            )
+        except Exception as e:
+            self.get_logger().error("[AutoCapture] YOLO 로드 실패: %s" % e)
+
+    def _detect_plugs(self, obs, conf: float | None = None) -> bool:
+        """center 카메라 이미지에서 플러그(포트) 검출 여부 반환.
+
+        conf: 신뢰도 임계값. None이면 self._yolo_conf(기본 0.3) 사용.
+              낮은 값(예: self._yolo_trigger_conf=0.1)을 넘기면 첫 등장 감지용으로 활용.
+        """
+        if self._yolo_model is None or obs is None:
+            return False
+        try:
+            img_msg = obs.center_image
+            if img_msg.width == 0 or img_msg.height == 0:
+                return False
+            img = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(
+                img_msg.height, img_msg.width, 3
+            )
+            if img_msg.encoding == "rgb8":
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            threshold = conf if conf is not None else self._yolo_conf
+            results = self._yolo_model(img, verbose=False, conf=threshold)
+            return any(len(r.boxes) > 0 for r in results)
+        except Exception as e:
+            self.get_logger().warn("[AutoCapture] YOLO 검출 오류: %s" % e)
+            return False
+
+    def _wait_for_plug_detection(self, get_observation) -> bool:
+        """포트가 검출될 때까지 YOLO를 반복 실행.
+
+        AIC_YOLO_DETECT_TIMEOUT_SEC == 0 (기본값): 무한 대기 — 검출될 때만 진행.
+        AIC_YOLO_DETECT_TIMEOUT_SEC  > 0: 해당 초 내 미검출 시 False 반환 → 에피소드 중단.
+        YOLO 모델 없음: 검출 없이 진행 (graceful fallback).
+        """
+        if self._yolo_model is None:
+            self.get_logger().warn("[AutoCapture] YOLO 모델 없음 → 검출 없이 레코딩 진행")
+            return True
+
+        infinite = self._yolo_detect_timeout_sec <= 0
+        timeout_str = "∞" if infinite else f"{self._yolo_detect_timeout_sec:.0f}s"
+        self.get_logger().info(
+            "[AutoCapture] 포트 검출 대기 중... (timeout: %s)" % timeout_str
+        )
+
+        start = time.time()
+        checks = 0
+        while True:
+            obs = get_observation()
+            if self._detect_plugs(obs):
+                elapsed = time.time() - start
+                self.get_logger().info(
+                    "[AutoCapture] 포트 검출됨 (%.1fs 경과) → 레코딩 시작" % elapsed
+                )
+                return True
+
+            checks += 1
+            elapsed = time.time() - start
+
+            if not infinite and elapsed >= self._yolo_detect_timeout_sec:
+                self.get_logger().warn(
+                    "[AutoCapture] %.1fs 내 포트 미검출 → 에피소드 중단" % elapsed
+                )
+                return False
+
+            if checks % 25 == 0:  # ~5s 주기로 상태 출력 (0.2s × 25)
+                self.get_logger().info(
+                    "[AutoCapture] 포트 검출 대기 중... (%.0fs 경과)" % elapsed
+                )
+            self.sleep_for(0.2)
 
     def _normalize_event_namespace(self, namespace: str) -> str:
         return namespace.strip().strip("/")
@@ -297,6 +398,18 @@ class AutoCapture(Policy):
                 "i_gain": self._planner.i_gain,
             }
         )
+
+        if not self._wait_for_plug_detection(get_observation):
+            recorder.write_summary(
+                {
+                    "task": recorder.task_to_dict(task),
+                    "status": "detection_timeout",
+                    "selected_port_frame": port_frame,
+                    "plug_frame": plug_frame,
+                    "failure_reason": "port_not_detected_before_timeout",
+                }
+            )
+            return False
 
         z_offset = self.approach_z_offset
         for t in range(0, self.approach_steps):

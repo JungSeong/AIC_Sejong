@@ -69,6 +69,7 @@ EPISODE_TIMEOUT  = 1200  # 세트당 최대 대기 시간 (초)
 ROOT = Path(__file__).resolve().parents[4]  # AIC_Sejong/
 
 PIXI_WS              = ROOT / "ws_aic" / "src"
+YOLO_MODEL_DEFAULT   = PIXI_WS / "model" / "ais_yolo-2" / "weights" / "best.pt"
 ENGINE_CONFIG_TMP    = Path("/tmp/aic_custom_config.yaml")
 SCENARIO_PARAMS_TMP  = Path("/tmp/aic_scenario_params.json")
 EPISODE_TRACKING_DIR = Path("/tmp/aic_episodes")
@@ -95,7 +96,7 @@ def _apply_pixi_env(env: dict) -> None:
       pixi lib/   (pixi의 cv2가 OPENSSL_3.4.0 등 포함 라이브러리를 여기서 찾아야
                    시스템 libcrypto 버전 불일치 ImportError 방지)
     """
-    data_gen_node_parent = str(PIXI_WS / "ais" / "ais_ours_policy")
+    data_gen_node_parent = str(PIXI_WS / "ais" / "ais_policy")
     pixi_site            = str(PIXI_SITE_PACKAGES)
     pixi_lib             = str(PIXI_LIB)
 
@@ -607,6 +608,7 @@ def start_policy(
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
     lerobot_run_id: str = "",
+    yolo_model_path: "Path | None" = None,
     dry_run: bool = False,
 ) -> "subprocess.Popen | None":
     """
@@ -628,6 +630,13 @@ def start_policy(
     env["AIC_CAPTURE_STEP_SLEEP_SEC"] = str(1.0 / step_hz)
     env["AIC_SCENARIO_PARAMS_FILE"]   = str(SCENARIO_PARAMS_TMP)
 
+    resolved_yolo = Path(yolo_model_path) if yolo_model_path else YOLO_MODEL_DEFAULT
+    if resolved_yolo.exists():
+        env["AIC_YOLO_MODEL_PATH"] = str(resolved_yolo)
+    else:
+        print(f"[경고] YOLO 모델 파일 없음: {resolved_yolo}")
+        print(f"       모델을 해당 경로에 복사하거나 --yolo-model 로 지정하세요.")
+
     if lerobot_out_dir and lerobot_repo_id:
         env["AIC_LEROBOT_OUT_DIR"]  = str(lerobot_out_dir)
         env["AIC_LEROBOT_REPO_ID"]  = lerobot_repo_id
@@ -643,9 +652,10 @@ def start_policy(
 
     if dry_run:
         print("[DRY-RUN] Policy 명령어:")
-        print(f"  PYTHONPATH(추가)={data_gen_node_parent}")
+        print(f"  PYTHONPATH(추가)={env['PYTHONPATH']}")
         print(f"  AIC_CAPTURE_DIR={EPISODE_TRACKING_DIR}")
         print(f"  AIC_CAPTURE_STEP_SLEEP_SEC={env['AIC_CAPTURE_STEP_SLEEP_SEC']}  ({step_hz}Hz)")
+        print(f"  AIC_YOLO_MODEL_PATH={env.get('AIC_YOLO_MODEL_PATH', '(미설정 — 모델 없음)')}")
         if lerobot_out_dir and lerobot_repo_id:
             print(f"  AIC_LEROBOT_OUT_DIR={lerobot_out_dir}")
             print(f"  AIC_LEROBOT_REPO_ID={lerobot_repo_id}-{lerobot_run_id}")
@@ -754,6 +764,7 @@ def run_collection_loop(
     dry_run: bool,
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
+    yolo_model_path: "Path | None" = None,
 ):
     EPISODE_TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -766,6 +777,7 @@ def run_collection_loop(
     print(f"  저장 모드      : {'LeRobot → ' + lerobot_repo_id if use_lerobot else 'raw'}")
     print(f"  engine config  : {ENGINE_CONFIG_TMP}")
     print(f"  ws setup       : {WS_AIC_SETUP}")
+    print(f"  YOLO 모델      : {yolo_model_path or YOLO_MODEL_DEFAULT}")
     print(f"  diversify      : {diversify}")
     print(f"  headless       : {headless}")
     print(f"  dry-run        : {dry_run}")
@@ -778,17 +790,23 @@ def run_collection_loop(
         print("[정리] 완료\n")
 
         # data_gen_node + lerobot import 가능 여부 사전 확인
-        print("[확인] data_gen_node / lerobot import 체크 중...")
+        print("[확인] data_gen_node / lerobot / ultralytics import 체크 중...")
         check_env = _ros2_env()
         _apply_pixi_env(check_env)
         chk = subprocess.run(
-            f"source {WS_AIC_SETUP} && python3 -c 'import data_gen_node; import lerobot'",
+            f"source {WS_AIC_SETUP} && python3 -c "
+            f"'import data_gen_node; import lerobot; from ultralytics import YOLO'",
             shell=True, executable="/bin/bash", env=check_env, capture_output=True, text=True,
         )
         if chk.returncode != 0:
-            print(f"[경고] data_gen_node / lerobot import 실패:\n{chk.stderr.strip()}")
+            print(f"[경고] import 실패:\n{chk.stderr.strip()}")
+            if "ultralytics" in chk.stderr or "libz-ng" in chk.stderr or "PIL" in chk.stderr:
+                print(
+                    "[힌트] ultralytics / PIL 관련 오류 시 ws_aic/src/ 에서 'pixi install' 실행 후 재시도하세요.\n"
+                    "       YOLO 모델 없이도 수집은 진행되지만 포트 검출 단계가 생략됩니다."
+                )
         else:
-            print("[확인] data_gen_node / lerobot import 완료\n")
+            print("[확인] data_gen_node / lerobot / ultralytics import 완료\n")
 
     total_collected = 0
 
@@ -832,6 +850,7 @@ def run_collection_loop(
             lerobot_out_dir=lerobot_out_dir,
             lerobot_repo_id=lerobot_repo_id,
             lerobot_run_id=lerobot_run_id,
+            yolo_model_path=yolo_model_path,
             dry_run=dry_run,
         )
         if not dry_run:
@@ -878,6 +897,7 @@ def run_collection_loop(
                     lerobot_out_dir=lerobot_out_dir,
                     lerobot_repo_id=lerobot_repo_id,
                     lerobot_run_id=lerobot_run_id,
+                    yolo_model_path=yolo_model_path,
                 )
                 remaining = max(0, gazebo_wait - GAZEBO_HEAD_START)
                 time.sleep(remaining)
@@ -935,10 +955,13 @@ def main():
                         help="LeRobot 데이터셋 로컬 저장 경로 (미지정 시 raw 포맷)")
     parser.add_argument("--lerobot-repo-id",  type=str,  default="aic-sejong-team/aic-dataset",
                         help="HuggingFace repo ID (예: aic-sejong-team/aic-dataset)")
+    parser.add_argument("--yolo-model",       type=Path, default=None,
+                        help=f"YOLO 모델 .pt 경로 (기본: {YOLO_MODEL_DEFAULT})")
 
     args = parser.parse_args()
     # 상대 경로를 절대 경로로 변환 (subprocess 환경에서도 안전하게 동작)
     lerobot_out_dir = Path(args.lerobot_out_dir).resolve() if args.lerobot_out_dir else None
+    yolo_model_path = Path(args.yolo_model).resolve() if args.yolo_model else None
     run_collection_loop(
         n_sets          = args.sets,
         trials_per_set  = args.episodes_per_set,
@@ -949,6 +972,7 @@ def main():
         dry_run         = args.dry_run,
         lerobot_out_dir = lerobot_out_dir,
         lerobot_repo_id = args.lerobot_repo_id,
+        yolo_model_path = yolo_model_path,
     )
 
 if __name__ == "__main__":

@@ -1,4 +1,11 @@
 import numpy as np
+
+# transforms3d 0.4.1 calls np.maximum_sctype which was removed in NumPy 2.0.
+# Restore it from numpy._core so the system package loads cleanly.
+if not hasattr(np, "maximum_sctype"):
+    from numpy._core.numerictypes import maximum_sctype as _maximum_sctype
+    np.maximum_sctype = _maximum_sctype
+
 from geometry_msgs.msg import Point, Pose, Quaternion, Transform
 from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 
