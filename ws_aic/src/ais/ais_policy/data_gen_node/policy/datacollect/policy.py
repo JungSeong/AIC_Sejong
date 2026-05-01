@@ -21,11 +21,14 @@ import json
 import os
 import signal
 import subprocess
+import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from aic_model.policy import (
@@ -59,20 +62,37 @@ class DataCollect(AutoCapture):
         super().__init__(parent_node)
         self._lerobot_dataset = None
         self._lerobot_full_repo_id: Optional[str] = None
+        self._lerobot_version: str = os.environ.get("AIC_LEROBOT_VERSION", "master").strip()
+        self._lerobot_dataset_root: Optional[Path] = None
+        self._yolo_trigger_conf = float(os.environ.get("AIC_YOLO_TRIGGER_CONF", "0.7"))
+        _lerobot_out = os.environ.get("AIC_LEROBOT_OUT_DIR", "lerobot")
+        self._debug_image_dir = Path(
+            os.environ.get(
+                "AIC_DEBUG_IMAGE_DIR",
+                str(Path(_lerobot_out) / self._lerobot_version / "debug"),
+            )
+        )
         self._init_lerobot_dataset()
 
-        # 프로세스 종료 시 finalize (SIGTERM + 정상 종료 모두 대응)
+        # 프로세스 종료 시 finalize 보장 (두 가지 경로)
         atexit.register(self._finalize_dataset)
-        # signal.signal()은 main thread에서만 가능.
-        # ROS2 라이프사이클 on_configure 콜백은 executor 스레드에서 실행되므로
-        # non-main-thread일 경우 ValueError가 발생한다 — 조용히 건너뜀.
+        # 경로 1: SIGTERM — signal.signal()은 main thread에서만 동작.
+        # ROS2 lifecycle on_configure 콜백은 executor 스레드에서 실행되어
+        # ValueError가 발생할 수 있다 — 그 경우 경로 2로 대응.
         try:
             signal.signal(signal.SIGTERM, self._on_sigterm)
         except ValueError:
-            self.get_logger().warn(
-                "[DataCollect] SIGTERM 핸들러 등록 불가 (non-main thread). "
-                "atexit 핸들러로만 finalize 보장됨."
-            )
+            pass
+        # 경로 2: collect_data_aarch.py가 쓰는 stop-file을 감시하는 daemon thread.
+        # SIGTERM 핸들러 등록 성공 여부와 무관하게 항상 시작한다.
+        # stop-file이 생기면 finalize() 후 sys.exit(0)으로 깨끗이 종료
+        # (→ atexit 핸들러도 실행되므로 이중 finalize를 _finalize_dataset 내부에서 방어).
+        self._stop_file = Path(
+            os.environ.get("AIC_STOP_FILE", "/tmp/aic_policy_stop")
+        )
+        self._stop_file.unlink(missing_ok=True)   # 이전 실행에서 남은 파일 제거
+        t = threading.Thread(target=self._watch_stop_file, daemon=True)
+        t.start()
 
     # ──────────────────────────────────────────
     # LeRobot dataset 초기화
@@ -95,18 +115,14 @@ class DataCollect(AutoCapture):
 
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-        run_id = (os.environ.get("AIC_LEROBOT_RUN_ID") or
-                  datetime.now().strftime("%Y%m%d_%H%M%S"))
-        # HF Hub 목적지: run_id 없이 고정 repo → 모든 실행의 에피소드가 누적됨
         self._lerobot_full_repo_id = repo_id
         fps = int(os.environ.get("AIC_LEROBOT_FPS", "10"))
 
-        # 로컬 저장 경로: 고정 'master' 디렉터리에 모든 run의 에피소드를 누적.
-        # → 재실행해도 에피소드 번호가 이어지고 push_to_hub 시 덮어쓰기 없음.
-        dataset_root = Path(out_dir) / "master"
+        # Local path: {out_dir}/{version}/  e.g. lerobot/v1.0/
+        dataset_root = Path(out_dir) / self._lerobot_version
 
         if dataset_root.exists():
-            # 같은 run 내 두 번째 이상 configure (trial 2~N) → 기존 dataset에 episode 추가
+            # Resuming an existing version → append episodes
             self.get_logger().info(
                 f"[DataCollect] 기존 LeRobot dataset 열기 (episode 추가): {dataset_root}"
             )
@@ -115,7 +131,7 @@ class DataCollect(AutoCapture):
                 root=dataset_root,
             )
         else:
-            # 첫 번째 configure → 새 dataset 생성 (LeRobotDataset.create가 디렉터리도 생성)
+            # First run for this version → create fresh dataset
             self._lerobot_dataset = LeRobotDataset.create(
                 repo_id=self._lerobot_full_repo_id,
                 root=dataset_root,
@@ -123,12 +139,11 @@ class DataCollect(AutoCapture):
                 features=LEROBOT_FEATURES,
                 use_videos=True,
             )
+        self._lerobot_dataset_root = dataset_root
         self.get_logger().info(
             f"[DataCollect] LeRobot dataset 초기화 완료. "
-            f"local={dataset_root}  hub={self._lerobot_full_repo_id}"
+            f"local={dataset_root}  hub={self._lerobot_full_repo_id}@{self._lerobot_version}"
         )
-
-
 
     def _finalize_dataset(self) -> None:
         if self._lerobot_dataset is None:
@@ -136,24 +151,49 @@ class DataCollect(AutoCapture):
         try:
             self._lerobot_dataset.finalize()
             self.get_logger().info("[DataCollect] LeRobot dataset finalize 완료.")
-            if os.environ.get("AIC_LEROBOT_PUSH_TO_HUB", "true").lower() == "true":
-                # push_to_hub 전 HF Hub에 repo가 없으면 자동 생성
+            if os.environ.get("AIC_LEROBOT_PUSH_TO_HUB", "false").lower() == "true":
                 from huggingface_hub import HfApi
-                HfApi().create_repo(
+                api = HfApi()
+                # Ensure the repo exists
+                api.create_repo(
                     repo_id=self._lerobot_full_repo_id,
                     repo_type="dataset",
                     private=True,
-                    exist_ok=True,   # 이미 있으면 무시
+                    exist_ok=True,
                 )
-                self._lerobot_dataset.push_to_hub(private=True)
-
+                # Create the version branch if it doesn't exist
+                api.create_branch(
+                    repo_id=self._lerobot_full_repo_id,
+                    repo_type="dataset",
+                    branch=self._lerobot_version,
+                    exist_ok=True,
+                )
+                # Upload local dataset folder to the version branch
+                api.upload_folder(
+                    repo_id=self._lerobot_full_repo_id,
+                    repo_type="dataset",
+                    folder_path=str(self._lerobot_dataset_root),
+                    revision=self._lerobot_version,
+                )
                 self.get_logger().info(
-                    f"[DataCollect] HF Hub 업로드 완료: {self._lerobot_full_repo_id}"
+                    f"[DataCollect] HF Hub 업로드 완료: "
+                    f"{self._lerobot_full_repo_id}@{self._lerobot_version}"
                 )
         except Exception as e:
             self.get_logger().error(f"[DataCollect] finalize 실패: {e}")
         finally:
             self._lerobot_dataset = None
+
+    def _watch_stop_file(self) -> None:
+        """Daemon thread: poll for stop-file written by collect_data_aarch.py."""
+        while True:
+            if self._stop_file.exists():
+                self.get_logger().info(
+                    "[DataCollect] stop-file 감지 → dataset finalize 후 종료"
+                )
+                self._finalize_dataset()
+                sys.exit(0)
+            time.sleep(0.3)
 
     def _on_sigterm(self, signum, frame) -> None:
         self._finalize_dataset()
@@ -261,14 +301,50 @@ class DataCollect(AutoCapture):
         phase_step_counts = {"approach": 0, "insert": 0, "stabilize": 0}
 
         # 포트가 처음 보이는 순간부터 레코딩 시작 (phase 무관).
-        # YOLO 없으면 즉시 시작, 있으면 trigger 임계값(AIC_YOLO_TRIGGER_CONF, 기본 0.1)으로 감지.
+        # YOLO 없으면 즉시 시작, 있으면 task 타입에 맞는 클래스만 감지.
         recording_started = (self._yolo_model is None)
+        # Derive expected plug keyword from task port type: "sfp" → "sfp_port", else "sc_port"
+        _port_kw = "sfp" if "sfp" in task.port_type.lower() else "sc"
 
         def _check_and_start(obs) -> None:
             nonlocal recording_started
-            if not recording_started and self._detect_plugs(obs, conf=self._yolo_trigger_conf):
+            if recording_started or obs is None:
+                return
+            img_msg = obs.center_image
+            if img_msg.width == 0 or img_msg.height == 0:
+                return
+            img = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(
+                img_msg.height, img_msg.width, 3
+            )
+            bgr = img if img_msg.encoding != "rgb8" else cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            if self._yolo_model is not None:
+                results = self._yolo_model(bgr, verbose=False, conf=self._yolo_trigger_conf)
+                detected = any(
+                    _port_kw in r.names.get(int(box.cls[0]), "").lower()
+                    for r in results
+                    for box in r.boxes
+                )
+            else:
+                results, detected = [], True
+            if detected:
                 recording_started = True
                 self.get_logger().info("[DataCollect] 포트 첫 검출 → 레코딩 시작")
+                try:
+                    self._debug_image_dir.mkdir(parents=True, exist_ok=True)
+                    fname = f"{episode_name}_first_detection.jpg"
+                    debug_bgr = bgr.copy()
+                    for r in results:
+                        for box in r.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            conf_val = float(box.conf[0])
+                            cls_name = r.names.get(int(box.cls[0]), str(int(box.cls[0])))
+                            label = f"{cls_name} {conf_val*100:.1f}%"
+                            cv2.rectangle(debug_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(debug_bgr, label, (x1, max(y1 - 4, 0)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                    cv2.imwrite(str(self._debug_image_dir / fname), debug_bgr)
+                except Exception as e:
+                    self.get_logger().warn(f"[DataCollect] debug image 저장 실패: {e}")
 
         # 8. Approach
         z_offset = self.approach_z_offset
@@ -284,7 +360,7 @@ class DataCollect(AutoCapture):
                     slerp_fraction=interp,
                     position_fraction=interp,
                     z_offset=z_offset,
-                    reset_xy_integrator=True,
+                    reset_xy_integrator=(t == 0),
                 )
                 self.set_pose_target(move_robot=move_robot, pose=pose)
                 obs = wrapped_get_observation()
@@ -357,7 +433,7 @@ class DataCollect(AutoCapture):
         insertion_event_observed = self._has_successful_insertion(task)
 
         if isinstance(recorder, LeRobotRecorder):
-            recorder.save_episode()
+            recorder.save_episode(insertion_success=insertion_event_observed)
         else:
             recorder.write_summary({
                 "task": recorder.task_to_dict(task),

@@ -90,6 +90,11 @@ LEROBOT_FEATURES = {
             "sc_translation",
         ],
     },
+    "insertion_success": {
+        "dtype": "int64",
+        "shape": (1,),
+        "names": None,
+    },
 }
 
 
@@ -337,6 +342,7 @@ class LeRobotRecorder:
         self.scenario_params_vec = scenario_params_vec.astype(np.float32)
         # indices 5-7: gripper_offset x/y/z (observation.state 마지막 3차원과 동일)
         self._gripper_offset_xyz = self.scenario_params_vec[5:8]
+        self._episode_frame_count = 0
 
     def _build_state(self, obs: Observation) -> np.ndarray:
         cs = obs.controller_state
@@ -386,8 +392,10 @@ class LeRobotRecorder:
             "observation.images.left_camera":   decode_image(obs.left_image),
             "observation.images.center_camera": decode_image(obs.center_image),
             "observation.images.right_camera":  decode_image(obs.right_image),
+            "insertion_success": np.array([0], dtype=np.int64),
             "task": task_idx,
         })
+        self._episode_frame_count += 1
 
     def record_terminal_step(
         self,
@@ -409,5 +417,11 @@ class LeRobotRecorder:
             port_tf=port_tf, plug_tf=plug_tf, gripper_tf=gripper_tf, extras=extras,
         )
 
-    def save_episode(self) -> None:
+    def save_episode(self, insertion_success: bool = False) -> None:
+        # Backfill the last frame's insertion_success with the actual outcome.
+        # LeRobotDataset buffers frames in memory until save_episode() is called,
+        # so we can patch the field directly before flushing.
+        if self._episode_frame_count > 0 and insertion_success:
+            self.dataset.writer.episode_buffer["insertion_success"][-1] = np.array([1], dtype=np.int64)
+        self._episode_frame_count = 0
         self.dataset.save_episode()

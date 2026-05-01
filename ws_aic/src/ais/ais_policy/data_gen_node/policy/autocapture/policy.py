@@ -76,8 +76,7 @@ class AutoCapture(Policy):
     def _init_yolo(self) -> None:
         model_path = Path(os.environ.get("AIC_YOLO_MODEL_PATH", _YOLO_MODEL_DEFAULT))
         self._yolo_model = None
-        self._yolo_conf = float(os.environ.get("AIC_YOLO_CONF", "0.3"))
-        self._yolo_trigger_conf = float(os.environ.get("AIC_YOLO_TRIGGER_CONF", "0.1"))
+        self._yolo_conf = float(os.environ.get("AIC_YOLO_CONF", "0.6"))
         self._yolo_detect_timeout_sec = float(
             os.environ.get("AIC_YOLO_DETECT_TIMEOUT_SEC", "0")  # 0 = loop forever
         )
@@ -104,7 +103,6 @@ class AutoCapture(Policy):
         """center 카메라 이미지에서 플러그(포트) 검출 여부 반환.
 
         conf: 신뢰도 임계값. None이면 self._yolo_conf(기본 0.3) 사용.
-              낮은 값(예: self._yolo_trigger_conf=0.1)을 넘기면 첫 등장 감지용으로 활용.
         """
         if self._yolo_model is None or obs is None:
             return False
@@ -424,7 +422,7 @@ class AutoCapture(Policy):
                     slerp_fraction=interp_fraction,
                     position_fraction=interp_fraction,
                     z_offset=z_offset,
-                    reset_xy_integrator=True,
+                    reset_xy_integrator=(t == 0),
                 )
                 self.set_pose_target(move_robot=move_robot, pose=pose)
                 obs = get_observation()
