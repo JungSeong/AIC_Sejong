@@ -652,7 +652,7 @@ def start_policy(
     cmd = (
         f"source {WS_AIC_SETUP} && "
         f"ros2 run aic_model aic_model "
-        "--ros-args -p policy:=data_gen_node.policy.datacollect"
+        "--ros-args -p policy:=data_gen_node.DataCollect"
     )
 
     if dry_run:
