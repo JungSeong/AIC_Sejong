@@ -1020,7 +1020,7 @@ def main():
         python3 collect_data_aarch.py --sets 5 --dry-run                           # 명령어만 출력
         python3 collect_data_aarch.py --headless                                   # GUI 없이 백그라운드 실행
         python3 collect_data_aarch.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds
-""",
+    """,
     )
     parser.add_argument("--sets",             type=int,  default=10,
                         help="수집할 세트 수 (기본: 10)")
