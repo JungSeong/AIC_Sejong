@@ -81,9 +81,13 @@ class DataCollect(Policy):
     _STIFFNESS_DEFAULT = [200.0, 200.0, 200.0, 50.0, 50.0, 50.0]
     _DAMPING_DEFAULT   = [80.0, 80.0, 80.0, 20.0, 20.0, 20.0]
 
-    # 실제 삽입 단계 (순응 제어)
-    _INSERT_STIFFNESS = [25.0, 25.0, 400.0, 15.0, 15.0, 50.0]
-    _INSERT_DAMPING   = [20.0, 20.0, 100.0, 10.0, 10.0, 20.0]
+    # SFP 커넥터 전용 삽입 파라미터
+    _SFP_INSERT_STIFFNESS = [25.0, 25.0, 400.0, 15.0, 15.0, 50.0]
+    _SFP_INSERT_DAMPING   = [30.0, 30.0, 100.0, 10.0, 10.0, 20.0]
+
+    # SC 커넥터 전용 삽입 파라미터
+    _SC_INSERT_STIFFNESS = [20.0, 20.0, 500.0, 10.0, 10.0, 30.0]
+    _SC_INSERT_DAMPING   = [25.0, 25.0,  70.0,  8.0,  8.0, 15.0]
 
     # ── 모션 플래닝 상수 ──────────────────────────────────────────────────
     _STAGE1A_Z_OFFSET: float = 0.15       # 15cm (Far approach)
@@ -278,11 +282,12 @@ class DataCollect(Policy):
         mu.trajectory_generation_mode = TrajectoryGenerationMode(mode=TrajectoryGenerationMode.MODE_POSITION)
         return mu
 
-    def _record_motion_step(self, recorder, phase, task, port_tf, plug_tf, gripper_tf, obs, pose, extras):
+    def _record_motion_step(self, recorder, phase, task, port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=None, damping=None):
         if obs is None: return
         recorder.record_step(
             phase=phase, task=task, obs=obs, action=self._motion_update_from_pose(pose),
-            port_tf=port_tf, plug_tf=plug_tf, gripper_tf=gripper_tf, extras=extras
+            port_tf=port_tf, plug_tf=plug_tf, gripper_tf=gripper_tf, extras=extras,
+            stiffness=stiffness, damping=damping
         )
 
     # ── 메인 에피소드 수집 로직 ───────────────────────────────────────────────
@@ -326,6 +331,14 @@ class DataCollect(Policy):
         
         recording_started = (self._yolo_model is None)
         _port_kw = "sfp" if "sfp" in task.port_type.lower() else "sc"
+
+        # 포트 타입에 따른 삽입 파라미터 선택
+        if _port_kw == "sfp":
+            insert_stiffness = self._SFP_INSERT_STIFFNESS
+            insert_damping = self._SFP_INSERT_DAMPING
+        else:
+            insert_stiffness = self._SC_INSERT_STIFFNESS
+            insert_damping = self._SC_INSERT_DAMPING
 
         def _check_and_start(obs) -> None:
             nonlocal recording_started
@@ -380,7 +393,7 @@ class DataCollect(Policy):
                 obs = get_observation()
                 _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "approach", task, port_transform, plug_tf, gripper_tf, obs, pose, extras)
+                    self._record_motion_step(recorder, "approach", task, port_transform, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
@@ -412,7 +425,7 @@ class DataCollect(Policy):
                 obs = get_observation()
                 _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "descent", task, port_transform, plug_tf, gripper_tf, obs, pose, extras)
+                    self._record_motion_step(recorder, "descent", task, port_transform, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
                     if "descent" not in phase_step_counts: phase_step_counts["descent"] = 0
                     phase_step_counts["descent"] += 1
             except TransformException: pass
@@ -443,11 +456,11 @@ class DataCollect(Policy):
                 noisy_port_tf = Transform(rotation=port_transform.rotation)
                 noisy_port_tf.translation.x, noisy_port_tf.translation.y, noisy_port_tf.translation.z = port_transform.translation.x + x_offset_noise, port_transform.translation.y + y_offset_noise, port_transform.translation.z
                 pose, extras = self._planner.build_pose(port_transform=noisy_port_tf, plug_transform=plug_tf, gripper_transform=gripper_tf, z_offset=z_offset)
-                self.set_pose_target(move_robot=move_robot, pose=pose, stiffness=self._INSERT_STIFFNESS, damping=self._INSERT_DAMPING)
+                self.set_pose_target(move_robot=move_robot, pose=pose, stiffness=insert_stiffness, damping=insert_damping)
                 obs = get_observation()
                 _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "insert", task, port_transform, plug_tf, gripper_tf, obs, pose, extras)
+                    self._record_motion_step(recorder, "insert", task, port_transform, plug_tf, gripper_tf, obs, pose, extras, stiffness=insert_stiffness, damping=insert_damping)
                     phase_step_counts["insert"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
@@ -458,7 +471,11 @@ class DataCollect(Policy):
             plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
             obs = get_observation()
             if obs and recording_started:
-                recorder.record_terminal_step(phase="stabilize", task=task, obs=obs, port_tf=port_transform, plug_tf=plug_tf, gripper_tf=gripper_tf, extras={"z_offset": z_offset})
+                recorder.record_terminal_step(
+                    phase="stabilize", task=task, obs=obs, port_tf=port_transform,
+                    plug_tf=plug_tf, gripper_tf=gripper_tf, extras={"z_offset": z_offset},
+                    stiffness=insert_stiffness, damping=insert_damping
+                )
                 if "stabilize" not in phase_step_counts: phase_step_counts["stabilize"] = 0
                 phase_step_counts["stabilize"] += 1
         except TransformException: pass

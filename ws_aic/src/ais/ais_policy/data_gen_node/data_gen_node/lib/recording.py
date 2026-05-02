@@ -90,6 +90,16 @@ LEROBOT_FEATURES = {
             "sc_translation",
         ],
     },
+    "observation.stiffness": {
+        "dtype": "float32",
+        "shape": (6,),
+        "names": ["x", "y", "z", "rx", "ry", "rz"],
+    },
+    "observation.damping": {
+        "dtype": "float32",
+        "shape": (6,),
+        "names": ["x", "y", "z", "rx", "ry", "rz"],
+    },
     "insertion_success": {
         "dtype": "int64",
         "shape": (1,),
@@ -181,8 +191,14 @@ class LeRobotRecorder:
         plug_tf: Transform,
         gripper_tf: Transform,   # not used in LeRobot format, kept for signature compat
         extras: dict[str, Any],  # not used in LeRobot format, kept for signature compat
+        stiffness: Optional[list[float]] = None,
+        damping: Optional[list[float]] = None,
     ) -> None:
         task_name = "sfp_insertion" if "sfp" in task.port_type.lower() else "sc_insertion"
+
+        # Default parameters if not provided (for non-insertion phases)
+        _stiffness = np.array(stiffness if stiffness is not None else [0.0]*6, dtype=np.float32)
+        _damping = np.array(damping if damping is not None else [0.0]*6, dtype=np.float32)
 
         self.dataset.add_frame({
             "observation.state": self._build_state(obs),
@@ -193,6 +209,8 @@ class LeRobotRecorder:
             ], dtype=np.float32),
             "observation.plug_to_port":    compute_plug_to_port(port_tf, plug_tf),
             "observation.scenario_params": self.scenario_params_vec,
+            "observation.stiffness": _stiffness,
+            "observation.damping": _damping,
             "observation.images.left_camera":   decode_image(obs.left_image),
             "observation.images.center_camera": decode_image(obs.center_image),
             "observation.images.right_camera":  decode_image(obs.right_image),
@@ -211,6 +229,8 @@ class LeRobotRecorder:
         plug_tf: Transform,
         gripper_tf: Transform,
         extras: dict[str, Any],
+        stiffness: Optional[list[float]] = None,
+        damping: Optional[list[float]] = None,
     ) -> None:
         action = MotionUpdate()
         action.header.frame_id = "base_link"
@@ -220,6 +240,7 @@ class LeRobotRecorder:
         self.record_step(
             phase=phase, task=task, obs=obs, action=action,
             port_tf=port_tf, plug_tf=plug_tf, gripper_tf=gripper_tf, extras=extras,
+            stiffness=stiffness, damping=damping,
         )
 
     def save_episode(self, insertion_success: bool = False) -> None:

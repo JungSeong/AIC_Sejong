@@ -61,7 +61,7 @@ def rnd(low: float, high: float) -> float:
     return random.uniform(low, high)
 
 GAZEBO_INIT_WAIT = 60   # Gazebo 초기화 대기 (초) — Zenoh peer 안정화 포함
-EPISODE_TIMEOUT  = 1200  # 세트당 최대 대기 시간 (초)
+EPISODE_TIMEOUT  = 600  # 세트당 최대 대기 시간 (초)
 
 # ──────────────────────────────────────────
 # 경로 설정
