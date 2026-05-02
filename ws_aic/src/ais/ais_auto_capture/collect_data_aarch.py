@@ -419,10 +419,10 @@ def generate_engine_config(diversify: bool = True) -> tuple[dict, dict]:
     trials: dict = {}
     all_scenario_params: dict = {}
 
-    for rail in range(5):
-        cfg, params = _make_nic_trial(rail, diversify)
-        trials[f"trial_nic{rail}"] = cfg
-        all_scenario_params[f"nic_rail{rail}_task_1"] = params
+    # for rail in range(5):
+    #     cfg, params = _make_nic_trial(rail, diversify)
+    #     trials[f"trial_nic{rail}"] = cfg
+    #     all_scenario_params[f"nic_rail{rail}_task_1"] = params
 
     for rail in range(2):
         cfg, params = _make_sc_trial(rail, diversify)
