@@ -85,9 +85,30 @@ class DataCollect(Policy):
     _SFP_INSERT_STIFFNESS = [25.0, 25.0, 400.0, 15.0, 15.0, 50.0]
     _SFP_INSERT_DAMPING   = [30.0, 30.0, 100.0, 10.0, 10.0, 20.0]
 
-    # SC 커넥터 전용 삽입 파라미터
-    _SC_INSERT_STIFFNESS = [20.0, 20.0, 500.0, 10.0, 10.0, 30.0]
-    _SC_INSERT_DAMPING   = [25.0, 25.0,  70.0,  8.0,  8.0, 15.0]
+    # SC 커넥터 전용 삽입 파라미터 (model.sdf 기하학 역공학 설계)
+    #
+    # [z stiffness: 700]
+    #   SC 스프링 클립 ±45° 배치 → F_clip = F_z / √2
+    #   insert_min_z_offset=-15mm 기준: K=700 → F_z=10.5N → F_clip≈7.4N (체결 충분)
+    #   K=500이면 F_z=7.5N → F_clip≈5.3N (체결 불안정, 현재 22% 실패 원인)
+    #
+    # [x,y stiffness: 15]
+    #   SC 소켓 클리어런스 = (0.014 - 0.01272)/2 = 0.64mm  (SFP 2.0mm 대비 1/3)
+    #   K_xy=15 → 0.64mm 오차 시 저항 0.01N → 45° 클립이 측방 자가정렬 허용
+    #
+    # [z damping: 65]
+    #   K=700, m_eff≈1kg → 임계감쇠 D_c=2√700=53 → D=65 → ζ=1.22 (약한 과감쇠, 안정)
+    #   SFP(D=100, ζ=2.5)보다 빠른 z 침투로 클릭 포인트 통과 용이
+    #
+    # [rx,ry stiffness: 8]
+    #   SC 플러그 질량 0.040kg (SFP 0.010kg의 4배) → 틸트 모멘트 증가
+    #   낮은 회전 강성으로 페룰 자가정렬 허용
+    #
+    # [rz stiffness: 20]
+    #   sfp_sc_cable ball joint spring_stiffness=0 → 케이블 비틀림 구속 없음
+    #   낮은 rz로 케이블 잔류 비틀림에 의한 삽입 방해 최소화
+    _SC_INSERT_STIFFNESS = [15.0, 15.0, 700.0,  8.0,  8.0, 20.0]
+    _SC_INSERT_DAMPING   = [20.0, 20.0,  65.0,  6.0,  6.0, 12.0]
 
     # ── 모션 플래닝 상수 ──────────────────────────────────────────────────
     _STAGE1A_Z_OFFSET: float = 0.15       # 15cm (Far approach)
