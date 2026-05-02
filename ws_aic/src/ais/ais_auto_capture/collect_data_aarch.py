@@ -100,7 +100,7 @@ def _apply_pixi_env(env: dict) -> None:
     NOTE: pixi 혼용 없음. lerobot_venv 는 시스템 Python 3.12 로 생성했으므로
           source setup.bash 후 python3 (= /usr/bin/python3 3.12) 와 ABI가 일치한다.
     """
-    data_gen_node_parent = str(WS_SRC / "ais" / "ais_policy")
+    data_gen_node_parent = str(WS_SRC / "ais" / "ais_policy" / "data_gen_node")
     lerobot_site         = str(LEROBOT_VENV_SITE)
 
     existing_py = env.get("PYTHONPATH", "")
@@ -811,7 +811,6 @@ def terminate_processes(*procs, stop_zenoh: bool = False):
 
 def run_collection_loop(
     n_sets: int,
-    trials_per_set: int,
     diversify: bool,
     gazebo_wait: int,
     step_hz: float,
@@ -830,7 +829,7 @@ def run_collection_loop(
 
     print("=== AIC 데이터 수집 시작 (aarch64 소스 빌드 환경) ===")
     print(f"  세트 수        : {n_sets}")
-    print(f"  세트당 에피소드: {trials_per_set}")
+
     if use_lerobot:
         push_str = f"LeRobot → {lerobot_repo_id} (hub 업로드: {'ON' if push_to_hub else 'OFF — 로컬만'})"
     else:
@@ -850,36 +849,6 @@ def run_collection_loop(
         terminate_processes()
         print("[정리] 완료\n")
 
-        # data_gen_node + lerobot import 가능 여부 사전 확인
-        # lerobot_venv 의 Python 을 직접 사용한다 (push_dataset_to_hub 와 동일한 이유).
-        # "python3" 를 쓰면 호출 셸에 활성화된 다른 venv(aic_venv 등)가 선택될 수 있고,
-        # PYTHONPATH 에 있는 lerobot_venv(3.12) 의 numpy 와 ABI 충돌이 발생한다.
-        print("[확인] data_gen_node / lerobot / ultralytics import 체크 중...")
-        data_gen_parent = str(WS_SRC / "ais" / "ais_policy")
-        lerobot_python  = str(LEROBOT_VENV / "bin" / "python3")
-        chk = subprocess.run(
-            [lerobot_python, "-c",
-             f"import sys; sys.path.insert(0, '{data_gen_parent}'); "
-             "import data_gen_node; import lerobot; from ultralytics import YOLO; "
-             "print('ok')"],
-            capture_output=True, text=True,
-        )
-        if chk.returncode != 0:
-            print(f"[경고] import 실패:\n{chk.stderr.strip()}")
-            if "lerobot" in chk.stderr:
-                print(
-                    "[힌트] lerobot import 실패 시 아래 명령으로 재설치하세요:\n"
-                    f"       {LEROBOT_VENV}/bin/pip install lerobot"
-                )
-            if "ultralytics" in chk.stderr or "PIL" in chk.stderr:
-                print(
-                    "[힌트] ultralytics / PIL 관련 오류 시:\n"
-                    f"       {LEROBOT_VENV}/bin/pip install ultralytics\n"
-                    "       YOLO 모델 없이도 수집은 진행되지만 포트 검출 단계가 생략됩니다."
-                )
-        else:
-            print("[확인] data_gen_node / lerobot / ultralytics import 완료\n")
-
     total_collected = 0
 
     for set_idx in range(1, n_sets + 1):
@@ -889,6 +858,8 @@ def run_collection_loop(
 
         # 1. aic_engine config YAML 생성
         config, all_scenario_params = generate_engine_config(diversify=diversify)
+        trials_per_set = len(config["trials"])
+        print(f"  세트당 에피소드: {trials_per_set} (자동 감지)")
 
         # 2. YAML 저장
         if not dry_run:
@@ -935,53 +906,23 @@ def run_collection_loop(
             print("[DRY-RUN] 실제 실행 없이 종료.")
             continue
 
-        # 6. 에피소드 완료 대기 (프로세스 조기 종료 감지 포함)
-        MAX_RETRIES = 3
-        retry = 0
-        completed = 0
-        while retry <= MAX_RETRIES:
-            try:
-                completed, reason = wait_for_episodes(
-                    episodes_before, trials_per_set,
-                    timeout=EPISODE_TIMEOUT,
-                    watch_procs=[gazebo_proc, policy_proc],
-                )
-            except KeyboardInterrupt:
-                print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
-                stop_policy_gracefully(policy_proc, timeout=60)
-                terminate_processes(gazebo_proc, zenoh_proc)
-                if use_lerobot and not dry_run and push_to_hub:
-                    push_dataset_to_hub(lerobot_out_dir, lerobot_repo_id, lerobot_version)
-                print(f"[중단] 총 수집 에피소드: {total_collected}")
-                sys.exit(0)
+        try:
+            completed, reason = wait_for_episodes(
+                episodes_before, trials_per_set,
+                timeout=EPISODE_TIMEOUT,
+                watch_procs=[gazebo_proc, policy_proc],
+            )
+        except KeyboardInterrupt:
+            print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
+            stop_policy_gracefully(policy_proc, timeout=60)
+            terminate_processes(gazebo_proc, zenoh_proc)
+            if use_lerobot and not dry_run and push_to_hub:
+                push_dataset_to_hub(lerobot_out_dir, lerobot_repo_id, lerobot_version)
+            print(f"[중단] 총 수집 에피소드: {total_collected}")
+            sys.exit(0)
 
-            if reason == "ok":
-                break
-
-            if reason == "proc_died" and retry < MAX_RETRIES:
-                retry += 1
-                print(f"[재시도] 프로세스 비정상 종료 감지 → 세트 {set_idx} 재시도 "
-                      f"({retry}/{MAX_RETRIES})")
-                stop_policy_gracefully(policy_proc, timeout=30)
-                terminate_processes(gazebo_proc)
-
-                # 재시작
-                episodes_before = count_completed_episodes()
-                gazebo_proc  = start_gazebo(ENGINE_CONFIG_TMP, headless=headless)
-                time.sleep(GAZEBO_HEAD_START)
-                policy_proc  = start_policy(
-                    step_hz=step_hz,
-                    lerobot_out_dir=lerobot_out_dir,
-                    lerobot_repo_id=lerobot_repo_id,
-                    lerobot_run_id=lerobot_run_id,
-                    lerobot_version=lerobot_version,
-                    yolo_model_path=yolo_model_path,
-                )
-                remaining = max(0, gazebo_wait - GAZEBO_HEAD_START)
-                time.sleep(remaining)
-            else:
-                print(f"[포기] 세트 {set_idx}: 재시도 한도 초과 또는 timeout — 다음 세트로.")
-                break
+        if reason == "proc_died":
+            print(f"[경고] 세트 {set_idx}: 프로세스 조기 종료로 스킵합니다.")
 
         total_collected += completed
         print(f"[완료] 세트 {set_idx}: {completed}개 에피소드 수집 (누적: {total_collected})")
@@ -1024,15 +965,13 @@ def main():
     )
     parser.add_argument("--sets",             type=int,  default=10,
                         help="수집할 세트 수 (기본: 10)")
-    parser.add_argument("--episodes-per-set", type=int,  default=7,
-                        help="세트당 에피소드 수 / 완료 감지 기준 (기본: 7 = NIC×5 + SC×2)")
     parser.add_argument("--diversify",        action="store_true",
                         help="보드 위치/yaw도 범위 내에서 랜덤화")
     parser.add_argument("--gazebo-wait",      type=int,  default=GAZEBO_INIT_WAIT,
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
     parser.add_argument("--step-hz",          type=float, default=10.0,
                         help="스텝 샘플링 주파수 Hz (기본: 10Hz)")
-    parser.add_argument("--headless",          action="store_true",
+    parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",
                         help="명령어만 출력하고 실제 실행하지 않음")
@@ -1044,8 +983,8 @@ def main():
                         help="데이터셋 버전/브랜치 이름 (예: v1.0)")
     parser.add_argument("--yolo-model",       type=Path, default=None,
                         help=f"YOLO 모델 .pt 경로 (기본: {YOLO_MODEL_DEFAULT})")
-    parser.add_argument("--push-to-hub",      action="store_true",
-                        help="수집 완료 후 HuggingFace Hub에 데이터셋 업로드 (기본: 비활성)")
+    parser.add_argument("--push-to-hub",      action="store_false", default=True,
+                        help="수집 완료 후 HuggingFace Hub에 데이터셋 업로드 (기본: 활성, 제외하려면 --push-to-hub 사용)")
 
     args = parser.parse_args()
     # 상대 경로를 절대 경로로 변환 (subprocess 환경에서도 안전하게 동작)
@@ -1053,7 +992,6 @@ def main():
     yolo_model_path = Path(args.yolo_model).resolve() if args.yolo_model else None
     run_collection_loop(
         n_sets          = args.sets,
-        trials_per_set  = args.episodes_per_set,
         diversify       = args.diversify,
         gazebo_wait     = args.gazebo_wait,
         step_hz         = args.step_hz,

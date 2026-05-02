@@ -95,6 +95,11 @@ LEROBOT_FEATURES = {
         "shape": (1,),
         "names": None,
     },
+    "phase": {
+        "dtype": "string",
+        "shape": (1,),
+        "names": None,  # "approach" | "descent" | "insert" | "stabilize"
+    },
 }
 
 
@@ -177,7 +182,7 @@ class LeRobotRecorder:
         gripper_tf: Transform,   # not used in LeRobot format, kept for signature compat
         extras: dict[str, Any],  # not used in LeRobot format, kept for signature compat
     ) -> None:
-        task_idx = 0 if "sfp" in task.port_type.lower() else 1
+        task_name = "sfp_insertion" if "sfp" in task.port_type.lower() else "sc_insertion"
 
         self.dataset.add_frame({
             "observation.state": self._build_state(obs),
@@ -192,7 +197,8 @@ class LeRobotRecorder:
             "observation.images.center_camera": decode_image(obs.center_image),
             "observation.images.right_camera":  decode_image(obs.right_image),
             "insertion_success": np.array([0], dtype=np.int64),
-            "task": task_idx,
+            "phase": phase,
+            "task": task_name,
         })
         self._episode_frame_count += 1
 

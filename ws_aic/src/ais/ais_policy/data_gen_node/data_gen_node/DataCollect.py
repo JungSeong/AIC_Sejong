@@ -213,7 +213,7 @@ class DataCollect(Policy):
         while True:
             if self._stop_file.exists():
                 self._finalize_dataset()
-                sys.exit(0)
+                os._exit(0)  # sys.exit(0) → daemon thread에서는 프로세스가 안 죽음
             time.sleep(0.5)
 
     def _on_sigterm(self, signum, frame) -> None:
