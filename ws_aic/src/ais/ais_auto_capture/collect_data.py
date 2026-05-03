@@ -517,7 +517,7 @@ def start_gazebo(
 
 
 def start_policy(
-    step_hz: float = 10.0,
+    step_hz: float = 20.0,
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
     lerobot_run_id: str = "",

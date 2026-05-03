@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -59,13 +58,6 @@ class DataCollect(Policy):
     통합 데이터 수집 정책 클래스.
     """
 
-    # ── 기본 설정 ────────────────────────────────────────────────────────
-    _YOLO_MODEL_DEFAULT = str(
-        Path(__file__).resolve().parents[5] / "src" / "model" / "ais_yolo-2" / "weights" / "best.pt"
-    )
-    _CAPTURE_DIR_DEFAULT = "/tmp/aic_episodes"
-    _DEFAULT_STEP_HZ: float = 20.0
-
     # ── 임피던스 설정 (성공률 최적화) ──────────────────────────────────────────
     _STIFFNESS_DEFAULT = [100.0, 100.0, 100.0, 50.0, 50.0, 50.0]
     _DAMPING_DEFAULT   = [40.0, 40.0, 40.0, 20.0, 20.0, 20.0]
@@ -74,9 +66,9 @@ class DataCollect(Policy):
     _SFP_INSERT_STIFFNESS = [20.0, 20.0, 250.0, 10.0, 10.0, 40.0]
     _SFP_INSERT_DAMPING   = [10.0, 10.0, 60.0, 5.0, 5.0, 15.0]
 
-    # SC 커넥터 (XY 강성을 낮추어 '미끄러짐' 유도)
-    _SC_INSERT_STIFFNESS = [35.0, 35.0, 250.0, 10.0, 10.0, 40.0]
-    _SC_INSERT_DAMPING   = [20.0, 20.0, 80.0, 5.0, 5.0, 15.0]
+    # SC 커넥터 (미끄러짐 유도를 위한 Compliance를 유지하되, 케이블 저항을 이길 수 있도록 강성/감쇠 상향)
+    _SC_INSERT_STIFFNESS = [50.0, 50.0, 250.0, 15.0, 15.0, 40.0]
+    _SC_INSERT_DAMPING   = [30.0, 30.0, 80.0, 8.0, 8.0, 15.0]
 
     # ── 모션 플래닝 상수 ──────────────────────────────────────────────────
     _SC_INSERT_MIN_Z_OFFSET: float = -0.025  
@@ -88,29 +80,31 @@ class DataCollect(Policy):
         # 1. 상태 및 제어 변수 초기화
         self._task: Optional[Task] = None
         self._latest_insertion_event: Optional[str] = None
-        self._max_integrator_windup = 0.08 # 보정 한계 확대
+        # 나선형 진동(Oscillation) 방지를 위해 적분 한계를 낮추고(안전 범위), 부족한 힘은 Stiffness로 보상
+        self._max_integrator_windup = 0.15 
         
         # 2. 제어 주기 및 경로 설정
         fps = int(os.environ.get("AIC_LEROBOT_FPS", "0"))
-        self.step_sleep_sec = 1.0 / (fps if fps > 0 else self._DEFAULT_STEP_HZ)
-        self.capture_root = Path(os.environ.get("AIC_CAPTURE_DIR", self._CAPTURE_DIR_DEFAULT))
+        self.step_sleep_sec = 1.0 / (fps if fps > 0 else 20.0)
+        self.capture_root = Path(os.environ.get("AIC_CAPTURE_DIR", "/tmp/aic_episodes"))
         
         # 3. 플래너 및 환경 설정
         self._planner = CheatCodePlanner(
-            i_gain=0.18,
+            i_gain=float(os.environ.get("AIC_CAPTURE_CHEATCODE_I_GAIN", "0.15")),
             max_integrator_windup=self._max_integrator_windup,
         )
-        self.approach_steps = 100 
-        self.insert_z_step = 0.00025
-        self.insert_min_z_offset = -0.015
-        self.stabilize_sec = 5.0
-        self.sc_insert_min_z_offset = self._SC_INSERT_MIN_Z_OFFSET
+        self.approach_steps = int(os.environ.get("AIC_CAPTURE_CHEATCODE_APPROACH_STEPS", "100"))
+        self.insert_z_step = float(os.environ.get("AIC_CAPTURE_CHEATCODE_INSERT_Z_STEP", "0.00025"))
+        self.insert_min_z_offset = float(os.environ.get("AIC_CAPTURE_CHEATCODE_INSERT_MIN_Z_OFFSET", "-0.015"))
+        self.stabilize_sec = float(os.environ.get("AIC_CAPTURE_CHEATCODE_STABILIZE_SEC", "5.0"))
+        self.sc_insert_min_z_offset = float(os.environ.get("AIC_CAPTURE_SC_INSERT_MIN_Z_OFFSET", str(self._SC_INSERT_MIN_Z_OFFSET)))
 
         # 4. YOLO 및 데이터셋 설정
+        self._yolo_model_path = str(Path(__file__).resolve().parents[5] / "src" / "model" / "ais_yolo-2" / "weights" / "best.pt")
         self._lerobot_dataset = None
         self._lerobot_full_repo_id = os.environ.get("AIC_LEROBOT_REPO_ID", "").strip()
         self._lerobot_version = os.environ.get("AIC_LEROBOT_VERSION", "master").strip()
-        self._yolo_trigger_conf = 0.7
+        self._yolo_trigger_conf = float(os.environ.get("AIC_YOLO_TRIGGER_CONF", "0.7"))
         
         _lerobot_out = os.environ.get("AIC_LEROBOT_OUT_DIR", "lerobot")
         self._debug_image_dir = Path(_lerobot_out) / self._lerobot_version / "debug"
@@ -136,7 +130,7 @@ class DataCollect(Policy):
     # ── 인프라 로직 ──────────────────────────────────────────────────────────
 
     def _init_yolo(self) -> None:
-        model_path = Path(self._YOLO_MODEL_DEFAULT)
+        model_path = Path(self._yolo_model_path)
         self._yolo_model = None
         if not model_path.exists(): return
         try:
@@ -199,14 +193,14 @@ class DataCollect(Policy):
     def set_pose_target(self, move_robot, pose, stiffness=None, damping=None):
         _s = stiffness if stiffness is not None else self._STIFFNESS_DEFAULT
         _d = damping if damping is not None else self._DAMPING_DEFAULT
-        motion_update = MotionUpdate(
+        mu = MotionUpdate(
             header=Header(frame_id="base_link", stamp=self.get_clock().now().to_msg()),
             pose=pose, target_stiffness=np.diag(_s).flatten(), target_damping=np.diag(_d).flatten(),
             feedforward_wrench_at_tip=Wrench(force=Vector3(x=0.0, y=0.0, z=0.0), torque=Vector3(x=0.0, y=0.0, z=0.0)),
             wrench_feedback_gains_at_tip=[0.5, 0.5, 0.5, 0.0, 0.0, 0.0],
             trajectory_generation_mode=TrajectoryGenerationMode(mode=TrajectoryGenerationMode.MODE_POSITION),
         )
-        try: move_robot(motion_update=motion_update)
+        try: move_robot(motion_update=mu)
         except Exception: pass
 
     def _motion_update_from_pose(self, pose, stiffness=None, damping=None) -> MotionUpdate:
@@ -235,13 +229,19 @@ class DataCollect(Policy):
         episode_name = time.strftime("%Y%m%d_%H%M%S") + f"_{task.id}"
         episode_dir = self.capture_root / episode_name; episode_dir.mkdir(parents=True, exist_ok=True)
         if self._lerobot_dataset is None: return False
-        recorder = LeRobotRecorder(self._lerobot_dataset, self._load_scenario_params(task))
+        
+        scenario_params_vec = self._load_scenario_params(task)
+        recorder = LeRobotRecorder(self._lerobot_dataset, scenario_params_vec)
+        
         port_frame, plug_frame = f"task_board/{task.target_module_name}/{task.port_name}_link", f"{task.cable_name}/{task.plug_name}_link"
         if not self._wait_for_tf("base_link", port_frame) or not self._wait_for_tf("base_link", plug_frame): return False
 
         start_time = time.time(); phase_step_counts = {"approach": 0, "insert": 0, "stabilize": 0}
         recording_started = (self._yolo_model is None)
         _port_kw = "sfp" if "sfp" in task.port_type.lower() else "sc"
+
+        insert_stiffness = self._STIFFNESS_DEFAULT
+        insert_damping = self._DAMPING_DEFAULT
 
         def _check_and_start(obs) -> None:
             nonlocal recording_started
@@ -256,17 +256,15 @@ class DataCollect(Policy):
 
         current_approach_z = 0.180 if _port_kw == "sfp" else 0.150
 
-        # Phase 1-A: Alignment at High Z (Settling with Dynamic Tracking)
+        # Phase 1-A: Alignment at High Z (Dynamic Tracking + Early Lock-on)
         self.get_logger().info(f"━━━ Phase 1-A: Alignment at {current_approach_z*100:.0f}cm ━━━")
         for t in range(self.approach_steps):
-            t_norm = (t + 1) / float(self.approach_steps)
-            t_smooth = interp_profile(t_norm, quintic=True)
+            t_norm = (t + 1) / float(self.approach_steps); t_smooth = interp_profile(t_norm, quintic=True)
             try:
-                # [개선] 매 스텝 포트 좌표를 실시간 조회하여 Base Flex 대응
                 current_port_tf = self._lookup_transform("base_link", port_frame)
                 plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
                 
-                # [개선] SC/SFP 공통으로 조기 적분 가동 (60스텝 이후)
+                # 조기 락온: 마지막 2초(60스텝 이후) 적분기 가동
                 should_reset = (t < 60)
 
                 pose, extras = self._planner.build_pose(
@@ -274,58 +272,82 @@ class DataCollect(Policy):
                     slerp_fraction=t_smooth, position_fraction=t_smooth, z_offset=current_approach_z,
                     reset_xy_integrator=should_reset
                 )
+
+                # 텔레메트리 로깅
+                self.get_logger().info(f"pfrac: {extras['position_fraction']:.3} xy_error: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
+
                 self.set_pose_target(move_robot, pose)
                 obs = get_observation(); _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras)
+                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
 
         # Phase 1-D: Continuous Descent (Fine alignment with Dynamic Tracking)
-        self.get_logger().info(f"━━━ Phase 1-D: Continuous Descent with Integrator ━━━")
+        self.get_logger().info(f"━━━ Phase 1-D: Continuous Descent ━━━")
         dist_to_descend = current_approach_z - self._NEAR_APPROACH_Z_OFFSET
         mid_steps = int(dist_to_descend * 100 * 20)
         for t in range(mid_steps):
             t_norm = (t + 1) / float(mid_steps); t_smooth = interp_profile(t_norm, quintic=True)
             try:
-                # [개선] 하강 중에도 실시간 타겟 추적
                 current_port_tf = self._lookup_transform("base_link", port_frame)
                 plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
                 cur_z_offset = current_approach_z * (1.0 - t_smooth) + self._NEAR_APPROACH_Z_OFFSET * t_smooth
 
-                pose, extras = self._planner.build_pose(
-                    port_transform=current_port_tf, plug_transform=plug_tf, gripper_transform=gripper_tf, 
-                    z_offset=cur_z_offset, reset_xy_integrator=False
-                )
+                pose, extras = self._planner.build_pose(current_port_tf, plug_tf, gripper_tf, z_offset=cur_z_offset, reset_xy_integrator=False)
+                self.get_logger().info(f"z_off: {cur_z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
                 self.set_pose_target(move_robot, pose)
                 obs = get_observation(); _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras)
+                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
 
+        # 포트 타입에 따른 삽입 파라미터 선택
+        if _port_kw == "sfp":
+            insert_stiffness = self._SFP_INSERT_STIFFNESS
+            insert_damping = self._SFP_INSERT_DAMPING
+        else:
+            insert_stiffness = self._SC_INSERT_STIFFNESS
+            insert_damping = self._SC_INSERT_DAMPING
+
         # Phase 3: Insert (Compliance Optimized for Slipping)
         self.get_logger().info("━━━ Phase 3: Insert (Compliance ON) ━━━")
-        stiff, damp = (self._SFP_INSERT_STIFFNESS if _port_kw == "sfp" else self._SC_INSERT_STIFFNESS), (self._SFP_INSERT_DAMPING if _port_kw == "sfp" else self._SC_INSERT_DAMPING)
         z_limit = (self.sc_insert_min_z_offset if _port_kw == "sc" else self.insert_min_z_offset)
         z_offset = self._NEAR_APPROACH_Z_OFFSET
         while z_offset >= z_limit:
             if self._has_successful_insertion(task): break
             try:
-                # [개선] 삽입 중에도 실시간 타겟 추적
                 current_port_tf = self._lookup_transform("base_link", port_frame)
                 plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
-                pose, extras = self._planner.build_pose(port_transform=current_port_tf, plug_transform=plug_tf, gripper_transform=gripper_tf, z_offset=z_offset)
-                self.set_pose_target(move_robot, pose, stiffness=stiff, damping=damp)
+
+                pose, extras = self._planner.build_pose(current_port_tf, plug_tf, gripper_tf, z_offset=z_offset)
+                self.get_logger().info(f"INSERT z: {z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
+                self.set_pose_target(move_robot, pose, stiffness=insert_stiffness, damping=insert_damping)
                 obs = get_observation(); _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "insert", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=stiff, damping=damp)
+                    self._record_motion_step(recorder, "insert", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=insert_stiffness, damping=insert_damping)
                     phase_step_counts["insert"] += 1
                 z_offset -= self.insert_z_step
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
+
+        success = self._has_successful_insertion(task)
+        self.sleep_for(0.5 if success else self.stabilize_sec)
+        try:
+            plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
+            obs = get_observation()
+            if obs and recording_started:
+                recorder.record_terminal_step(
+                    phase="stabilize", task=task, obs=obs, port_tf=current_port_tf,
+                    plug_tf=plug_tf, gripper_tf=gripper_tf, extras={"z_offset": z_offset},
+                    stiffness=insert_stiffness, damping=insert_damping
+                )
+                if "stabilize" not in phase_step_counts: phase_step_counts["stabilize"] = 0
+                phase_step_counts["stabilize"] += 1
+        except TransformException: pass
 
         success = self._has_successful_insertion(task)
         self.sleep_for(0.5 if success else self.stabilize_sec)
