@@ -240,8 +240,24 @@ class DataCollect(Policy):
         recording_started = (self._yolo_model is None)
         _port_kw = "sfp" if "sfp" in task.port_type.lower() else "sc"
 
-        insert_stiffness = self._STIFFNESS_DEFAULT
-        insert_damping = self._DAMPING_DEFAULT
+        # 포트 타입에 따른 파라미터 분기 (SFP는 기존 설정 유지, SC만 별도 튜닝)
+        if _port_kw == "sc":
+            # SC: 나선형 진동 방지를 위해 적분 이득/한계를 대폭 낮추고, 
+            # 대신 접근 단계의 강성을 올려 물리적으로 케이블 장력을 이겨내도록 함.
+            self._planner.i_gain = 0.07 
+            self._planner.max_integrator_windup = 0.08
+            approach_stiffness = [250.0, 250.0, 250.0, 50.0, 50.0, 50.0]
+            approach_damping = [80.0, 80.0, 80.0, 20.0, 20.0, 20.0]
+            insert_stiffness = self._SC_INSERT_STIFFNESS
+            insert_damping = self._SC_INSERT_DAMPING
+        else:
+            # SFP: 문제없이 작동하던 기존 설정 복구
+            self._planner.i_gain = float(os.environ.get("AIC_CAPTURE_CHEATCODE_I_GAIN", "0.15"))
+            self._planner.max_integrator_windup = 0.08
+            approach_stiffness = self._STIFFNESS_DEFAULT
+            approach_damping = self._DAMPING_DEFAULT
+            insert_stiffness = self._SFP_INSERT_STIFFNESS
+            insert_damping = self._SFP_INSERT_DAMPING
 
         def _check_and_start(obs) -> None:
             nonlocal recording_started
@@ -276,10 +292,10 @@ class DataCollect(Policy):
                 # 텔레메트리 로깅
                 self.get_logger().info(f"pfrac: {extras['position_fraction']:.3} xy_error: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
 
-                self.set_pose_target(move_robot, pose)
+                self.set_pose_target(move_robot, pose, stiffness=approach_stiffness, damping=approach_damping)
                 obs = get_observation(); _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
+                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=approach_stiffness, damping=approach_damping)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
@@ -297,21 +313,13 @@ class DataCollect(Policy):
 
                 pose, extras = self._planner.build_pose(current_port_tf, plug_tf, gripper_tf, z_offset=cur_z_offset, reset_xy_integrator=False)
                 self.get_logger().info(f"z_off: {cur_z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
-                self.set_pose_target(move_robot, pose)
+                self.set_pose_target(move_robot, pose, stiffness=approach_stiffness, damping=approach_damping)
                 obs = get_observation(); _check_and_start(obs)
                 if recording_started:
-                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
+                    self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=approach_stiffness, damping=approach_damping)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
-
-        # 포트 타입에 따른 삽입 파라미터 선택
-        if _port_kw == "sfp":
-            insert_stiffness = self._SFP_INSERT_STIFFNESS
-            insert_damping = self._SFP_INSERT_DAMPING
-        else:
-            insert_stiffness = self._SC_INSERT_STIFFNESS
-            insert_damping = self._SC_INSERT_DAMPING
 
         # Phase 3: Insert (Compliance Optimized for Slipping)
         self.get_logger().info("━━━ Phase 3: Insert (Compliance ON) ━━━")
