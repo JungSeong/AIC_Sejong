@@ -48,10 +48,12 @@ LIMITS = {
     "board_y_trial12":   (-0.25, -0.15),
     "board_x_trial3":    (0.15, 0.19),
     "board_y_trial3":    (-0.05, 0.05),
-    # gripper offset 기준값 및 노이즈
+    # gripper offset 기준값 (Sample Config) 및 노이즈 범위
     "gripper_offset_noise": (-0.002, 0.002),
+    "nic_gripper_offset_x": 0.0,
     "nic_gripper_offset_y": 0.015385,
     "nic_gripper_offset_z": 0.04245,
+    "sc_gripper_offset_x":  0.0,
     "sc_gripper_offset_y":  0.015385,
     "sc_gripper_offset_z":  0.04045,
 }
@@ -288,7 +290,7 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> tuple[dict, dict]:
     nic_y      = rnd(*LIMITS["nic_yaw"])
     sc_bg_t    = rnd(*LIMITS["sc_translation"])
 
-    offset_x = rnd(*LIMITS["gripper_offset_noise"])
+    offset_x = LIMITS["nic_gripper_offset_x"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_y = LIMITS["nic_gripper_offset_y"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_z = LIMITS["nic_gripper_offset_z"] + rnd(*LIMITS["gripper_offset_noise"])
 
@@ -350,7 +352,7 @@ def _make_sc_trial(sc_rail: int, diversify: bool) -> tuple[dict, dict]:
     board   = _board_pose(2, diversify)
     sc_t    = rnd(*LIMITS["sc_translation"])
 
-    offset_x = rnd(*LIMITS["gripper_offset_noise"])
+    offset_x = LIMITS["sc_gripper_offset_x"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_y = LIMITS["sc_gripper_offset_y"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_z = LIMITS["sc_gripper_offset_z"] + rnd(*LIMITS["gripper_offset_noise"])
 

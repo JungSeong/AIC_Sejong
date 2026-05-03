@@ -100,9 +100,13 @@ class CheatCodePlanner:
                 )
             )
 
-        target_x = port_xy[0] + self.i_gain * self.tip_x_error_integrator
-        target_y = port_xy[1] + self.i_gain * self.tip_y_error_integrator
-        target_z = port_transform.translation.z + z_offset - plug_tip_gripper_offset[2]
+        # [수정] 오프셋 피드포워드 적용: 그리퍼가 아닌 '플러그 끝단'이 포트에 정렬되도록 함
+        # 그리퍼 좌표에 (그리퍼-플러그) 오프셋을 더해주어야 플러그가 목표 지점에 안착함
+        target_x = port_xy[0] + plug_tip_gripper_offset[0] + self.i_gain * self.tip_x_error_integrator
+        target_y = port_xy[1] + plug_tip_gripper_offset[1] + self.i_gain * self.tip_y_error_integrator
+        
+        # Z축 또한 플러그 끝단 높이를 맞추기 위해 오프셋만큼 그리퍼를 위로(+) 보정
+        target_z = port_transform.translation.z + z_offset + plug_tip_gripper_offset[2]
 
         blend_xyz = (
             position_fraction * target_x + (1.0 - position_fraction) * gripper_xyz[0],

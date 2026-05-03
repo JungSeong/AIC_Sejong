@@ -107,7 +107,7 @@ class DataCollect(Policy):
         # 1. 상태 및 제어 변수 초기화
         self._task: Optional[Task] = None
         self._latest_insertion_event: Optional[str] = None
-        self._max_integrator_windup = 0.10 # [최적화] 확실한 삽입을 위해 보정 범위 확대
+        self._max_integrator_windup = 0.05
         
         # 2. 제어 주기 및 경로 설정
         fps = int(os.environ.get("AIC_LEROBOT_FPS", "0"))
