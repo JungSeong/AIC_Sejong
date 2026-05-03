@@ -15,3 +15,5 @@ GEMINI.md
 
 .claude/
 .idea/
+
+*.pt
