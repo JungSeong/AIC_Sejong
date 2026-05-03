@@ -74,34 +74,32 @@ class DataCollect(Policy):
         Path(__file__).resolve().parents[5] / "src" / "model" / "ais_yolo-2" / "weights" / "best.pt"
     )
     _CAPTURE_DIR_DEFAULT = "/tmp/aic_episodes"
-    _DEFAULT_STEP_HZ: float = 10.0
+    _DEFAULT_STEP_HZ: float = 20.0
 
     # ── 임피던스 설정 (StagedPolicy 기준) ──────────────────────────────────
     # 기본(Approach) 단계
-    _STIFFNESS_DEFAULT = [200.0, 200.0, 150.0, 50.0, 50.0, 50.0]
-    _DAMPING_DEFAULT   = [80.0, 80.0, 80.0, 20.0, 20.0, 20.0]
+    _STIFFNESS_DEFAULT = [100.0, 100.0, 100.0, 50.0, 50.0, 50.0]
+    _DAMPING_DEFAULT   = [40.0, 40.0, 40.0, 20.0, 20.0, 20.0]
 
     # SFP 커넥터 전용 삽입 파라미터
-    _SFP_INSERT_STIFFNESS = [15.0, 15.0, 400.0, 15.0, 15.0, 50.0]
-    _SFP_INSERT_DAMPING   = [30.0, 30.0, 100.0, 10.0, 10.0, 20.0]
+    _SFP_INSERT_STIFFNESS = [20.0, 20.0, 250.0, 10.0, 10.0, 40.0]
+    _SFP_INSERT_DAMPING   = [10.0, 10.0, 60.0, 5.0, 5.0, 15.0]
 
-    # SC 커넥터 전용 삽입 파라미터
-    _SC_INSERT_STIFFNESS = [20.0, 20.0, 500.0, 20.0, 20.0, 50.0]
-    _SC_INSERT_DAMPING   = [30.0, 30.0, 100.0, 10.0, 10.0, 20.0]
+    # SC 커넥터 전용 삽입 파라미터 (XY는 CheatCode 순정, Z는 돌파력 강화)
+    _SC_INSERT_STIFFNESS = [90.0, 90.0, 250.0, 50.0, 50.0, 50.0]
+    _SC_INSERT_DAMPING   = [50.0, 50.0, 80.0, 20.0, 20.0, 20.0]
 
     # ── 모션 플래닝 상수 ──────────────────────────────────────────────────
     _SFP_STAGE1A_Z_OFFSET: float = 0.14       # 14cm (Far approach)
     _SC_STAGE1A_Z_OFFSET: float = 0.008       # 0.8cm (Far approach)
 
-    # SC 케이블 전용 삽입 하한: 스프링 클립 ±45° 클릭 포인트 통과에 필요한 추가 5mm
-    _SC_INSERT_MIN_Z_OFFSET: float = -0.020  # -20mm (SFP 기본 -15mm 대비 5mm 추가 하강) 
+    # SC 케이블 전용 삽입 하한: 스프링 걸쇠 확실한 고정을 위해 상향
+    _SC_INSERT_MIN_Z_OFFSET: float = -0.025  
     _STAGE1B_CONVERGENCE_TOL_M: float = 0.005
     _STAGE1B_STABLE_CONSECUTIVE: int = 3
     _STAGE1B_CONVERGENCE_MAX_WAIT_S: float = 2.0
 
-    WIGGLE_RAD = 0.0015  # 1.5mm 반지름
-    WIGGLE_FREQ = 3.0    # 3Hz (초당 3바퀴)
-    STUCK_THRESHOLD = 0.005 # 5mm 이상 차이나면 박힌 것으로 간주
+    _NEAR_APPROACH_Z_OFFSET: float = 0.010  # 1cm (Near approach before insert)
 
     def __init__(self, parent_node):
         super().__init__(parent_node)
@@ -109,7 +107,7 @@ class DataCollect(Policy):
         # 1. 상태 및 제어 변수 초기화
         self._task: Optional[Task] = None
         self._latest_insertion_event: Optional[str] = None
-        self._max_integrator_windup = 0.05
+        self._max_integrator_windup = 0.10 # [최적화] 확실한 삽입을 위해 보정 범위 확대
         
         # 2. 제어 주기 및 경로 설정
         fps = int(os.environ.get("AIC_LEROBOT_FPS", "0"))
@@ -118,12 +116,12 @@ class DataCollect(Policy):
         
         # 3. 플래너 및 환경 설정
         self._planner = CheatCodePlanner(
-            i_gain=float(os.environ.get("AIC_CAPTURE_CHEATCODE_I_GAIN", "0.15")),
+            i_gain=0.15, # CheatCode 순정값 유지
             max_integrator_windup=self._max_integrator_windup,
         )
         self.approach_z_offset = float(os.environ.get("AIC_CAPTURE_CHEATCODE_APPROACH_Z_OFFSET", "0.2"))
-        self.approach_steps = int(os.environ.get("AIC_CAPTURE_CHEATCODE_APPROACH_STEPS", "100"))
-        self.insert_z_step = float(os.environ.get("AIC_CAPTURE_CHEATCODE_INSERT_Z_STEP", "0.0005"))
+        self.approach_steps = 100  # 5초 정렬
+        self.insert_z_step = float(os.environ.get("AIC_CAPTURE_CHEATCODE_INSERT_Z_STEP", "0.00025"))
         self.insert_min_z_offset = float(os.environ.get("AIC_CAPTURE_CHEATCODE_INSERT_MIN_Z_OFFSET", "-0.015"))
         self.stabilize_sec = float(os.environ.get("AIC_CAPTURE_CHEATCODE_STABILIZE_SEC", "5.0"))
         self.sc_insert_min_z_offset = float(os.environ.get("AIC_CAPTURE_SC_INSERT_MIN_Z_OFFSET", str(self._SC_INSERT_MIN_Z_OFFSET)))
@@ -221,7 +219,7 @@ class DataCollect(Policy):
         while True:
             if self._stop_file.exists():
                 self._finalize_dataset()
-                os._exit(0)  # sys.exit(0) → daemon thread에서는 프로세스가 안 죽음
+                os._exit(0)
             time.sleep(0.5)
 
     def _on_sigterm(self, signum, frame) -> None:
@@ -361,29 +359,36 @@ class DataCollect(Policy):
                 except Exception as e:
                     self.get_logger().warn(f"[DataCollect] debug 이미지 저장 실패: {e}")
 
-        # 9. Phase 1-A: Far Approach
-        self.get_logger().info(f"━━━ Phase 1-A: Far Approach ({self.approach_steps // 2} steps) ━━━")
-        z_offset = self.approach_z_offset
-
+        # [타입별 높이 및 로직 분기]
         if _port_kw == "sfp":
-            target_z_1a = self._SFP_STAGE1A_Z_OFFSET
-        elif _port_kw == "sc":
-            target_z_1a = self._SC_STAGE1A_Z_OFFSET
+            current_approach_z = 0.180
+        else:
+            current_approach_z = 0.200 # SC는 CheatCode 순정 높이(20cm) 적용
+
+        # 9. Phase 1-A: Alignment at High Z
+        self.get_logger().info(f"━━━ Phase 1-A: Alignment at {current_approach_z*100:.0f}cm ({self.approach_steps} steps) ━━━")
         
-        for t in range(self.approach_steps // 2):
-            t_norm = (t + 1) / float(self.approach_steps // 2)
+        for t in range(self.approach_steps):
+            t_norm = (t + 1) / float(self.approach_steps)
             t_smooth = interp_profile(t_norm, quintic=True)
             try:
                 plug_tf = self._lookup_transform("base_link", plug_frame)
                 gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
-                cur_z_offset = z_offset * (1.0 - t_smooth) + target_z_1a * t_smooth
-                port_tf = Transform(rotation=port_transform.rotation)
+                
+                cur_z_offset = current_approach_z
+                port_tf = Transform(translation=port_transform.translation, rotation=port_transform.rotation)
+
+                # [로직 분기] SC는 CheatCode 순정(100스텝 리셋), SFP는 락온(60스텝 이후 가동)
+                if _port_kw == "sc":
+                    should_reset = True
+                else:
+                    should_reset = (t < 60)
 
                 pose, extras = self._planner.build_pose(
                     port_transform=port_tf, plug_transform=plug_tf,
                     gripper_transform=gripper_tf, slerp_fraction=t_smooth,
                     position_fraction=t_smooth, z_offset=cur_z_offset,
-                    reset_xy_integrator=(t == 0)
+                    reset_xy_integrator=should_reset
                 )
                 self.set_pose_target(move_robot=move_robot, pose=pose)
                 obs = get_observation()
@@ -394,20 +399,37 @@ class DataCollect(Policy):
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
 
-        # 11. Convergence Wait
-        self.get_logger().info(f"━━━ Phase 1-C: CONVERGENCE WAIT ━━━")
-        wait_end = time.time() + self._STAGE1B_CONVERGENCE_MAX_WAIT_S
-        stable_count = 0
-        while time.time() < wait_end:
+        # 11-B. Mid Approach (안정적 하강)
+        self.get_logger().info(f"━━━ Phase 1-D: Continuous Descent (to {self._NEAR_APPROACH_Z_OFFSET*1000:.0f}mm) ━━━")
+        
+        # 초당 1cm 속도 유지 (20Hz 기준: 1cm당 20스텝)
+        dist_to_descend = current_approach_z - self._NEAR_APPROACH_Z_OFFSET
+        mid_steps = int(dist_to_descend * 100 * 20) 
+        
+        for t in range(mid_steps):
+            t_norm = (t + 1) / float(mid_steps)
+            t_smooth = interp_profile(t_norm, quintic=True)
             try:
                 plug_tf = self._lookup_transform("base_link", plug_frame)
-                desired_plug_z = port_transform.translation.z + target_z_1a
-                if abs(plug_tf.translation.z - desired_plug_z) < self._STAGE1B_CONVERGENCE_TOL_M:
-                    stable_count += 1
-                    if stable_count >= self._STAGE1B_STABLE_CONSECUTIVE: break
-                else: stable_count = 0
+                gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
+                
+                cur_z_offset = current_approach_z * (1.0 - t_smooth) + self._NEAR_APPROACH_Z_OFFSET * t_smooth
+
+                pose, extras = self._planner.build_pose(
+                    port_transform=port_transform, 
+                    plug_transform=plug_tf,
+                    gripper_transform=gripper_tf, 
+                    z_offset=cur_z_offset,
+                    reset_xy_integrator=False # 하강 전 구간 적분기 가동
+                )
+                self.set_pose_target(move_robot=move_robot, pose=pose)
+                obs = get_observation()
+                _check_and_start(obs)
+                if recording_started:
+                    self._record_motion_step(recorder, "approach", task, port_transform, plug_tf, gripper_tf, obs, pose, extras, stiffness=self._STIFFNESS_DEFAULT, damping=self._DAMPING_DEFAULT)
+                    phase_step_counts["approach"] += 1
             except TransformException: pass
-            self.sleep_for(0.05)
+            self.sleep_for(self.step_sleep_sec)
 
         # 포트 타입에 따른 삽입 파라미터 선택
         if _port_kw == "sfp":
@@ -418,47 +440,27 @@ class DataCollect(Policy):
             insert_damping = self._SC_INSERT_DAMPING
 
         # 12. Final stabilization & Insert
-        self.sleep_for(1.0)
+        self.sleep_for(0.5)
         self.get_logger().info("━━━ Phase 3: Insert started (Compliance ON) ━━━")
-        # SC 케이블은 스프링 클립 클릭 포인트 통과를 위해 SFP보다 더 깊이 삽입
         effective_insert_min_z_offset = self.sc_insert_min_z_offset if _port_kw == "sc" else self.insert_min_z_offset
         self.get_logger().info(f"[DataCollect] insert_min_z_offset: {effective_insert_min_z_offset*1000:.1f}mm ({_port_kw})")
-        z_offset = target_z_1a
-        x_offset_noise, y_offset_noise = 0, 0
+        z_offset = self._NEAR_APPROACH_Z_OFFSET
 
         while z_offset >= effective_insert_min_z_offset:
             if self._has_successful_insertion(task):
-                self.get_logger().info(f"✨ [DataCollect] Insertion SUCCESS detected via callback! (Event:{self._latest_insertion_event})")
-                break # 즉시 삽입 루프 탈출
+                self.get_logger().info(f"✨ [DataCollect] Insertion SUCCESS detected via callback!")
+                break
             try:
                 plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
-                if _port_kw == "sc":
-                    # 명령한 위치(port_z + z_offset)와 실제 위치(plug_tf.z) 비교
-                    commanded_z = port_transform.translation.z + z_offset
-                    if (plug_tf.translation.z - commanded_z) > self.STUCK_THRESHOLD:
-                        self.get_logger().info("⚠️ [SC] Stuck detected! Lifting up for  retry...")
-                        z_offset += 0.010  # 1cm 위로 급하게 들어올림
-                        # 들어올릴 때 XY에 미세한 랜덤 오프셋을 주어 정렬을 다시 시도
-                        x_offset_noise += np.random.uniform(-0.001, 0.001)
-                        y_offset_noise += np.random.uniform(-0.001, 0.001)
-                        self.sleep_for(0.2) # 잠시 대기 후 다시 하강 시작
-                        continue
-
-                target_x = port_transform.translation.x + x_offset_noise
-                target_y = port_transform.translation.y + y_offset_noise
-
-                if _port_kw == "sfp":
-                    # 시간에 따른 원형 궤적 계산
-                    t_phase = time.time() * self.WIGGLE_FREQ * 2.0 * np.pi
-                    target_x += self.WIGGLE_RAD * np.cos(t_phase)
-                    target_y += self.WIGGLE_RAD * np.sin(t_phase)
-
-                noisy_port_tf = Transform(rotation=port_transform.rotation)
-                noisy_port_tf.translation.x = target_x
-                noisy_port_tf.translation.y = target_y
-                noisy_port_tf.translation.z = port_transform.translation.z
-
-                pose, extras = self._planner.build_pose(port_transform=noisy_port_tf, plug_transform=plug_tf, gripper_transform=gripper_tf, z_offset=z_offset)
+                
+                # CheatCode와 동일하게 원본 port_transform을 사용하여 포즈 계산
+                pose, extras = self._planner.build_pose(
+                    port_transform=port_transform, 
+                    plug_transform=plug_tf, 
+                    gripper_transform=gripper_tf, 
+                    z_offset=z_offset
+                )
+                
                 self.set_pose_target(move_robot=move_robot, pose=pose, stiffness=insert_stiffness, damping=insert_damping)
                 obs = get_observation()
                 _check_and_start(obs)
@@ -473,10 +475,10 @@ class DataCollect(Policy):
         # 13. Phase 4: Stabilize
         if self._has_successful_insertion(task):
             self.get_logger().info("[DataCollect] Fast exit triggered.")
-            self.sleep_for(0.5) # 성공 시엔 0.5초만 안정화
+            self.sleep_for(0.5)
         else:
             self.get_logger().warn("[DataCollect] Reached min Z without success event. Waiting full stabilize time.")
-            self.sleep_for(self.stabilize_sec) # 실패 시엔 기존대로 대기
+            self.sleep_for(self.stabilize_sec)
         try:
             plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
             obs = get_observation()

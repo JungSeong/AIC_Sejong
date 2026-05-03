@@ -838,7 +838,7 @@ def main():
                         help="보드 위치/yaw도 범위 내에서 랜덤화")
     parser.add_argument("--gazebo-wait",      type=int,  default=GAZEBO_INIT_WAIT,
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
-    parser.add_argument("--step-hz",          type=float, default=10.0,
+    parser.add_argument("--step-hz",          type=float, default=20.0,
                         help="스텝 샘플링 주파수 Hz (기본: 10Hz)")
     parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
