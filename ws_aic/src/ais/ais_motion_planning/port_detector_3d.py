@@ -13,7 +13,7 @@ YOLO 포트 검출 + 스테레오 삼각측량 → 3D 좌표
 사용법:
   cd ~/AIC_Sejong/ws_aic/src/aic
   pixi run python /home/sch24/port_detector_3d.py \\
-    --model ~/aic_yolo_runs/port_detector/weights/best.pt
+    --model ../../weight/ais_yolo/weights/best.pt
 
 옵션:
   --compare: ground truth와 비교하여 오차 출력

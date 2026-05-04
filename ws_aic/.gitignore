@@ -1,10 +1,17 @@
-build/
-install/
-log/
+/build
+/install
+/log
 
-UniversalRobots/
-gazebo/
-ros-controls/
-ros/
-model/
-data/
+src/UniversalRobots/
+src/gazebo/
+src/ros-controls/
+src/ros/
+src/data/lerobot
+src/data/yolo
+src/ais/data/
+src/ais/ais_early_prediction/__pycache__
+src/ais/ais_motion_planning/__pycache__
+src/ais/ais_port_detection/__pycache__
+
+
+__pycache__

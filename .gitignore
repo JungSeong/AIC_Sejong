@@ -1,5 +1,9 @@
-aic_venv/
-lerobot_venv/
+aic_data/huggingface/
+aic_data/outputs/
+aic_data/lerobot-datasets/
+aic_data/scenarios/
+aic_data/captures/
+aic_data/model/
 
 paper/
 myenv/
@@ -11,3 +15,5 @@ GEMINI.md
 
 .claude/
 .idea/
+
+*.pt
