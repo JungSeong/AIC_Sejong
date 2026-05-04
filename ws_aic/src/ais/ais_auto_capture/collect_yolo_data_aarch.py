@@ -631,7 +631,7 @@ def start_aic_model(dry_run: bool = False):
     cmd = (
         f"source {WS_AIC_SETUP} && "
         f"ros2 run aic_model aic_model "
-        f"--ros-args -p policy:=data_gen_node.policy.datacollect"
+        f"--ros-args -p policy:=data_gen_node.DataCollect"
     )
     if dry_run:
         print(f"[DRY-RUN] aic_model: {cmd}")

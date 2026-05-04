@@ -48,10 +48,12 @@ LIMITS = {
     "board_y_trial12":   (-0.25, -0.15),
     "board_x_trial3":    (0.15, 0.19),
     "board_y_trial3":    (-0.05, 0.05),
-    # gripper offset 기준값 및 노이즈
+    # gripper offset 기준값 (Sample Config) 및 노이즈 범위
     "gripper_offset_noise": (-0.002, 0.002),
+    "nic_gripper_offset_x": 0.0,
     "nic_gripper_offset_y": 0.015385,
     "nic_gripper_offset_z": 0.04245,
+    "sc_gripper_offset_x":  0.0,
     "sc_gripper_offset_y":  0.015385,
     "sc_gripper_offset_z":  0.04045,
 }
@@ -60,7 +62,7 @@ def rnd(low: float, high: float) -> float:
     return random.uniform(low, high)
 
 GAZEBO_INIT_WAIT = 60   # Gazebo 초기화 대기 (초) — Zenoh peer 안정화 포함
-EPISODE_TIMEOUT  = 1200  # 세트당 최대 대기 시간 (초)
+EPISODE_TIMEOUT  = 600  # 세트당 최대 대기 시간 (초)
 
 # ──────────────────────────────────────────
 # 경로 설정
@@ -68,45 +70,44 @@ EPISODE_TIMEOUT  = 1200  # 세트당 최대 대기 시간 (초)
 
 ROOT = Path(__file__).resolve().parents[4]  # AIC_Sejong/
 
-PIXI_WS              = ROOT / "ws_aic" / "src"
+WS_SRC               = ROOT / "ws_aic" / "src"
+YOLO_MODEL_DEFAULT   = WS_SRC / "model" / "ais_yolo-2" / "weights" / "best.pt"
 ENGINE_CONFIG_TMP    = Path("/tmp/aic_custom_config.yaml")
 SCENARIO_PARAMS_TMP  = Path("/tmp/aic_scenario_params.json")
 EPISODE_TRACKING_DIR = Path("/tmp/aic_episodes")
+POLICY_STOP_FILE     = Path("/tmp/aic_policy_stop")
 
 # 소스 빌드된 ROS2 워크스페이스
 WS_AIC_SETUP = ROOT / "ws_aic" / "install" / "setup.bash"
 
-# pixi 환경의 site-packages (lerobot 등 pixi 전용 패키지 경로)
-# pixi는 ws_aic/src/.pixi/envs/default/ 하위에 Python 환경을 구성한다.
-PIXI_SITE_PACKAGES = PIXI_WS / ".pixi" / "envs" / "default" / "lib" / "python3.12" / "site-packages"
-# pixi의 공유 라이브러리 (실행 시 OpenSSL 등 시스템과 버전 충돌 방지)
-PIXI_LIB            = PIXI_WS / ".pixi" / "envs" / "default" / "lib"
+# lerobot / ultralytics 등이 설치된 Python 3.12 venv
+# 생성: python3.12 -m venv <ROOT>/lerobot_venv
+# 설치: lerobot_venv/bin/pip install lerobot ultralytics
+LEROBOT_VENV      = ROOT / "lerobot_venv"
+# site-packages 경로를 Python 버전에 무관하게 자동 탐지
+_venv_site = next((LEROBOT_VENV / "lib").glob("python3.*/site-packages"), None)
+LEROBOT_VENV_SITE = _venv_site or (LEROBOT_VENV / "lib" / "python3.12" / "site-packages")
 
 
 def _apply_pixi_env(env: dict) -> None:
-    """소스 빌드 Python에서 pixi 패키지(lerobot, cv2 등)를
-    안전하게 사용할 수 있도록 env를 in-place 수정.
+    """ROS2 Python에서 lerobot_venv 패키지(lerobot, ultralytics 등)를
+    안전하게 사용할 수 있도록 PYTHONPATH를 in-place 수정.
 
-    PYTHONPATH:
-      1. data_gen_node 패키지 루트 (pixi editable-install이 소스 WS에 없으므로 직접 지정)
-      2. pixi site-packages        (lerobot 등이 여기에 설치되어 있음)
+    PYTHONPATH order:
+      1. data_gen_node 패키지 루트   — policy 소스
+      2. lerobot_venv site-packages  — lerobot, huggingface_hub, ultralytics 등
+                                       (Python 3.12용으로 컴파일 — 시스템 python3 와 일치)
+      3. 기존 PYTHONPATH             — ws_aic install paths (rclpy, ros2cli 등)
 
-    LD_LIBRARY_PATH:
-      pixi lib/   (pixi의 cv2가 OPENSSL_3.4.0 등 포함 라이브러리를 여기서 찾아야
-                   시스템 libcrypto 버전 불일치 ImportError 방지)
+    NOTE: pixi 혼용 없음. lerobot_venv 는 시스템 Python 3.12 로 생성했으므로
+          source setup.bash 후 python3 (= /usr/bin/python3 3.12) 와 ABI가 일치한다.
     """
-    data_gen_node_parent = str(PIXI_WS / "ais" / "ais_ours_policy")
-    pixi_site            = str(PIXI_SITE_PACKAGES)
-    pixi_lib             = str(PIXI_LIB)
+    data_gen_node_parent = str(WS_SRC / "ais" / "ais_policy" / "data_gen_node")
+    lerobot_site         = str(LEROBOT_VENV_SITE)
 
-    # PYTHONPATH
-    py_extras = f"{data_gen_node_parent}:{pixi_site}"
     existing_py = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{py_extras}:{existing_py}" if existing_py else py_extras
-
-    # LD_LIBRARY_PATH
-    existing_ld = env.get("LD_LIBRARY_PATH", "")
-    env["LD_LIBRARY_PATH"] = f"{pixi_lib}:{existing_ld}" if existing_ld else pixi_lib
+    prefix = f"{data_gen_node_parent}:{lerobot_site}"
+    env["PYTHONPATH"] = f"{prefix}:{existing_py}" if existing_py else prefix
 
 # ──────────────────────────────────────────
 # aic_engine config YAML 생성
@@ -289,7 +290,7 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> tuple[dict, dict]:
     nic_y      = rnd(*LIMITS["nic_yaw"])
     sc_bg_t    = rnd(*LIMITS["sc_translation"])
 
-    offset_x = rnd(*LIMITS["gripper_offset_noise"])
+    offset_x = LIMITS["nic_gripper_offset_x"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_y = LIMITS["nic_gripper_offset_y"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_z = LIMITS["nic_gripper_offset_z"] + rnd(*LIMITS["gripper_offset_noise"])
 
@@ -351,7 +352,7 @@ def _make_sc_trial(sc_rail: int, diversify: bool) -> tuple[dict, dict]:
     board   = _board_pose(2, diversify)
     sc_t    = rnd(*LIMITS["sc_translation"])
 
-    offset_x = rnd(*LIMITS["gripper_offset_noise"])
+    offset_x = LIMITS["sc_gripper_offset_x"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_y = LIMITS["sc_gripper_offset_y"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_z = LIMITS["sc_gripper_offset_z"] + rnd(*LIMITS["gripper_offset_noise"])
 
@@ -420,10 +421,10 @@ def generate_engine_config(diversify: bool = True) -> tuple[dict, dict]:
     trials: dict = {}
     all_scenario_params: dict = {}
 
-    for rail in range(5):
-        cfg, params = _make_nic_trial(rail, diversify)
-        trials[f"trial_nic{rail}"] = cfg
-        all_scenario_params[f"nic_rail{rail}_task_1"] = params
+    # for rail in range(5):
+    #     cfg, params = _make_nic_trial(rail, diversify)
+    #     trials[f"trial_nic{rail}"] = cfg
+    #     all_scenario_params[f"nic_rail{rail}_task_1"] = params
 
     for rail in range(2):
         cfg, params = _make_sc_trial(rail, diversify)
@@ -607,6 +608,8 @@ def start_policy(
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
     lerobot_run_id: str = "",
+    lerobot_version: str = "master",
+    yolo_model_path: "Path | None" = None,
     dry_run: bool = False,
 ) -> "subprocess.Popen | None":
     """
@@ -628,24 +631,38 @@ def start_policy(
     env["AIC_CAPTURE_STEP_SLEEP_SEC"] = str(1.0 / step_hz)
     env["AIC_SCENARIO_PARAMS_FILE"]   = str(SCENARIO_PARAMS_TMP)
 
+    resolved_yolo = Path(yolo_model_path) if yolo_model_path else YOLO_MODEL_DEFAULT
+    if resolved_yolo.exists():
+        env["AIC_YOLO_MODEL_PATH"] = str(resolved_yolo)
+    else:
+        print(f"[경고] YOLO 모델 파일 없음: {resolved_yolo}")
+        print(f"       모델을 해당 경로에 복사하거나 --yolo-model 로 지정하세요.")
+
     if lerobot_out_dir and lerobot_repo_id:
-        env["AIC_LEROBOT_OUT_DIR"]  = str(lerobot_out_dir)
-        env["AIC_LEROBOT_REPO_ID"]  = lerobot_repo_id
-        env["AIC_LEROBOT_RUN_ID"]   = lerobot_run_id
-        env["AIC_LEROBOT_FPS"]      = str(int(step_hz))
+        env["AIC_LEROBOT_OUT_DIR"]      = str(lerobot_out_dir)
+        env["AIC_LEROBOT_REPO_ID"]      = lerobot_repo_id
+        env["AIC_LEROBOT_RUN_ID"]       = lerobot_run_id
+        env["AIC_LEROBOT_FPS"]          = str(int(step_hz))
+        env["AIC_LEROBOT_VERSION"]      = lerobot_version
+        # push는 모든 세트 완료 후 collect_data_aarch.py가 직접 수행한다.
+        # policy_proc는 세트 종료마다 SIGTERM으로 죽기 때문에 push_to_hub가
+        # 실행되지 않는 문제를 방지하기 위해 per-set push는 비활성화한다.
+        env["AIC_LEROBOT_PUSH_TO_HUB"] = "false"
+        env["AIC_STOP_FILE"]            = str(POLICY_STOP_FILE)
 
     # source-built workspace를 쓰므로 start_gazebo 와 동일한 ROS2/Zenoh 인스턴스를 사용.
     cmd = (
         f"source {WS_AIC_SETUP} && "
         f"ros2 run aic_model aic_model "
-        "--ros-args -p policy:=data_gen_node.policy.datacollect"
+        "--ros-args -p policy:=data_gen_node.DataCollect"
     )
 
     if dry_run:
         print("[DRY-RUN] Policy 명령어:")
-        print(f"  PYTHONPATH(추가)={data_gen_node_parent}")
+        print(f"  PYTHONPATH(추가)={env['PYTHONPATH']}")
         print(f"  AIC_CAPTURE_DIR={EPISODE_TRACKING_DIR}")
         print(f"  AIC_CAPTURE_STEP_SLEEP_SEC={env['AIC_CAPTURE_STEP_SLEEP_SEC']}  ({step_hz}Hz)")
+        print(f"  AIC_YOLO_MODEL_PATH={env.get('AIC_YOLO_MODEL_PATH', '(미설정 — 모델 없음)')}")
         if lerobot_out_dir and lerobot_repo_id:
             print(f"  AIC_LEROBOT_OUT_DIR={lerobot_out_dir}")
             print(f"  AIC_LEROBOT_REPO_ID={lerobot_repo_id}-{lerobot_run_id}")
@@ -662,6 +679,56 @@ def start_policy(
         print(f"[에러] aic_model 프로세스가 즉시 종료됨 (returncode={proc.returncode}). "
               "policy 초기화 에러일 수 있습니다.")
     return proc
+
+
+def stop_policy_gracefully(policy_proc, timeout: int = 120) -> None:
+    """stop-file을 써서 policy_proc가 finalize() 후 스스로 종료하도록 유도한다."""
+    if policy_proc is None or policy_proc.poll() is not None:
+        return
+    print(f"[종료] Policy 정상 종료 신호 전송 (최대 {timeout}초 대기)...")
+    POLICY_STOP_FILE.touch()
+    try:
+        policy_proc.wait(timeout=timeout)
+        print("[종료] Policy 정상 종료 완료")
+    except subprocess.TimeoutExpired:
+        print("[강제종료] Policy timeout → kill")
+        policy_proc.kill()
+    finally:
+        POLICY_STOP_FILE.unlink(missing_ok=True)
+
+
+def push_dataset_to_hub(
+    lerobot_out_dir: Path,
+    lerobot_repo_id: str,
+    lerobot_version: str = "master",
+) -> None:
+    """수집이 끝난 LeRobot 데이터셋을 HuggingFace Hub에 업로드한다."""
+    dataset_root = lerobot_out_dir / lerobot_version
+    if not dataset_root.exists():
+        print(f"[HF Hub] 데이터셋 디렉터리 없음: {dataset_root}")
+        return
+    print(f"\n[HF Hub] 업로드 시작: {lerobot_repo_id}@{lerobot_version}")
+    push_script = (
+        "from huggingface_hub import HfApi; "
+        f"api = HfApi(); "
+        f"api.create_repo(repo_id='{lerobot_repo_id}', repo_type='dataset', "
+        "private=True, exist_ok=True); "
+        f"api.create_branch(repo_id='{lerobot_repo_id}', repo_type='dataset', "
+        f"branch='{lerobot_version}', exist_ok=True); "
+        f"api.upload_folder(repo_id='{lerobot_repo_id}', repo_type='dataset', "
+        f"folder_path='{dataset_root}', revision='{lerobot_version}'); "
+        f"print('[HF Hub] 업로드 완료: {lerobot_repo_id}@{lerobot_version}')"
+    )
+    lerobot_python = str(LEROBOT_VENV / "bin" / "python3")
+    result = subprocess.run(
+        [lerobot_python, "-c", push_script],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        print(f"[HF Hub] https://huggingface.co/datasets/{lerobot_repo_id}/tree/{lerobot_version}")
+    else:
+        print(f"[HF Hub] 업로드 실패:\n{result.stderr.strip()}")
 
 
 def terminate_processes(*procs, stop_zenoh: bool = False):
@@ -746,7 +813,6 @@ def terminate_processes(*procs, stop_zenoh: bool = False):
 
 def run_collection_loop(
     n_sets: int,
-    trials_per_set: int,
     diversify: bool,
     gazebo_wait: int,
     step_hz: float,
@@ -754,6 +820,9 @@ def run_collection_loop(
     dry_run: bool,
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
+    lerobot_version: str = "master",
+    yolo_model_path: "Path | None" = None,
+    push_to_hub: bool = False,
 ):
     EPISODE_TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -762,10 +831,15 @@ def run_collection_loop(
 
     print("=== AIC 데이터 수집 시작 (aarch64 소스 빌드 환경) ===")
     print(f"  세트 수        : {n_sets}")
-    print(f"  세트당 에피소드: {trials_per_set}")
-    print(f"  저장 모드      : {'LeRobot → ' + lerobot_repo_id if use_lerobot else 'raw'}")
+
+    if use_lerobot:
+        push_str = f"LeRobot → {lerobot_repo_id} (hub 업로드: {'ON' if push_to_hub else 'OFF — 로컬만'})"
+    else:
+        push_str = "raw"
+    print(f"  저장 모드      : {push_str}")
     print(f"  engine config  : {ENGINE_CONFIG_TMP}")
     print(f"  ws setup       : {WS_AIC_SETUP}")
+    print(f"  YOLO 모델      : {yolo_model_path or YOLO_MODEL_DEFAULT}")
     print(f"  diversify      : {diversify}")
     print(f"  headless       : {headless}")
     print(f"  dry-run        : {dry_run}")
@@ -777,19 +851,6 @@ def run_collection_loop(
         terminate_processes()
         print("[정리] 완료\n")
 
-        # data_gen_node + lerobot import 가능 여부 사전 확인
-        print("[확인] data_gen_node / lerobot import 체크 중...")
-        check_env = _ros2_env()
-        _apply_pixi_env(check_env)
-        chk = subprocess.run(
-            f"source {WS_AIC_SETUP} && python3 -c 'import data_gen_node; import lerobot'",
-            shell=True, executable="/bin/bash", env=check_env, capture_output=True, text=True,
-        )
-        if chk.returncode != 0:
-            print(f"[경고] data_gen_node / lerobot import 실패:\n{chk.stderr.strip()}")
-        else:
-            print("[확인] data_gen_node / lerobot import 완료\n")
-
     total_collected = 0
 
     for set_idx in range(1, n_sets + 1):
@@ -799,6 +860,8 @@ def run_collection_loop(
 
         # 1. aic_engine config YAML 생성
         config, all_scenario_params = generate_engine_config(diversify=diversify)
+        trials_per_set = len(config["trials"])
+        print(f"  세트당 에피소드: {trials_per_set} (자동 감지)")
 
         # 2. YAML 저장
         if not dry_run:
@@ -832,6 +895,8 @@ def run_collection_loop(
             lerobot_out_dir=lerobot_out_dir,
             lerobot_repo_id=lerobot_repo_id,
             lerobot_run_id=lerobot_run_id,
+            lerobot_version=lerobot_version,
+            yolo_model_path=yolo_model_path,
             dry_run=dry_run,
         )
         if not dry_run:
@@ -843,53 +908,30 @@ def run_collection_loop(
             print("[DRY-RUN] 실제 실행 없이 종료.")
             continue
 
-        # 6. 에피소드 완료 대기 (프로세스 조기 종료 감지 포함)
-        MAX_RETRIES = 3
-        retry = 0
-        completed = 0
-        while retry <= MAX_RETRIES:
-            try:
-                completed, reason = wait_for_episodes(
-                    episodes_before, trials_per_set,
-                    timeout=EPISODE_TIMEOUT,
-                    watch_procs=[gazebo_proc, policy_proc],
-                )
-            except KeyboardInterrupt:
-                print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
-                terminate_processes(policy_proc, gazebo_proc, zenoh_proc)
-                print(f"[중단] 총 수집 에피소드: {total_collected}")
-                sys.exit(0)
+        try:
+            completed, reason = wait_for_episodes(
+                episodes_before, trials_per_set,
+                timeout=EPISODE_TIMEOUT,
+                watch_procs=[gazebo_proc, policy_proc],
+            )
+        except KeyboardInterrupt:
+            print("\n[중단] Ctrl+C 감지. 프로세스 종료 중...")
+            stop_policy_gracefully(policy_proc, timeout=60)
+            terminate_processes(gazebo_proc, zenoh_proc)
+            if use_lerobot and not dry_run and push_to_hub:
+                push_dataset_to_hub(lerobot_out_dir, lerobot_repo_id, lerobot_version)
+            print(f"[중단] 총 수집 에피소드: {total_collected}")
+            sys.exit(0)
 
-            if reason == "ok":
-                break
-
-            if reason == "proc_died" and retry < MAX_RETRIES:
-                retry += 1
-                print(f"[재시도] 프로세스 비정상 종료 감지 → 세트 {set_idx} 재시도 "
-                      f"({retry}/{MAX_RETRIES})")
-                terminate_processes(policy_proc, gazebo_proc)
-
-                # 재시작
-                episodes_before = count_completed_episodes()
-                gazebo_proc  = start_gazebo(ENGINE_CONFIG_TMP, headless=headless)
-                time.sleep(GAZEBO_HEAD_START)
-                policy_proc  = start_policy(
-                    step_hz=step_hz,
-                    lerobot_out_dir=lerobot_out_dir,
-                    lerobot_repo_id=lerobot_repo_id,
-                    lerobot_run_id=lerobot_run_id,
-                )
-                remaining = max(0, gazebo_wait - GAZEBO_HEAD_START)
-                time.sleep(remaining)
-            else:
-                print(f"[포기] 세트 {set_idx}: 재시도 한도 초과 또는 timeout — 다음 세트로.")
-                break
+        if reason == "proc_died":
+            print(f"[경고] 세트 {set_idx}: 프로세스 조기 종료로 스킵합니다.")
 
         total_collected += completed
         print(f"[완료] 세트 {set_idx}: {completed}개 에피소드 수집 (누적: {total_collected})")
 
-        # 7. 프로세스 종료
-        terminate_processes(policy_proc, gazebo_proc, zenoh_proc)
+        # 7. 프로세스 종료 — policy는 stop-file로 정상 종료(finalize 보장), 나머지는 강제 종료
+        stop_policy_gracefully(policy_proc)
+        terminate_processes(gazebo_proc, zenoh_proc)
 
         if set_idx < n_sets:
             print("[대기] 다음 세트 준비 중... (5초)")
@@ -898,6 +940,12 @@ def run_collection_loop(
     print(f"\n{'='*60}")
     print(f"=== 수집 완료: {n_sets} 세트, 총 {total_collected} 에피소드 ===")
     print(f"{'='*60}")
+
+    if use_lerobot and not dry_run and push_to_hub:
+        push_dataset_to_hub(lerobot_out_dir, lerobot_repo_id, lerobot_version)
+    elif use_lerobot and not dry_run:
+        print(f"\n[HF Hub] 업로드 생략 (--push-to-hub 미지정). "
+              f"로컬 경로: {lerobot_out_dir / lerobot_version}")
 
 
 # ──────────────────────────────────────────
@@ -915,19 +963,17 @@ def main():
         python3 collect_data_aarch.py --sets 5 --dry-run                           # 명령어만 출력
         python3 collect_data_aarch.py --headless                                   # GUI 없이 백그라운드 실행
         python3 collect_data_aarch.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds
-""",
+    """,
     )
     parser.add_argument("--sets",             type=int,  default=10,
                         help="수집할 세트 수 (기본: 10)")
-    parser.add_argument("--episodes-per-set", type=int,  default=7,
-                        help="세트당 에피소드 수 / 완료 감지 기준 (기본: 7 = NIC×5 + SC×2)")
     parser.add_argument("--diversify",        action="store_true",
                         help="보드 위치/yaw도 범위 내에서 랜덤화")
     parser.add_argument("--gazebo-wait",      type=int,  default=GAZEBO_INIT_WAIT,
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
     parser.add_argument("--step-hz",          type=float, default=10.0,
                         help="스텝 샘플링 주파수 Hz (기본: 10Hz)")
-    parser.add_argument("--headless",          action="store_true",
+    parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",
                         help="명령어만 출력하고 실제 실행하지 않음")
@@ -935,13 +981,19 @@ def main():
                         help="LeRobot 데이터셋 로컬 저장 경로 (미지정 시 raw 포맷)")
     parser.add_argument("--lerobot-repo-id",  type=str,  default="aic-sejong-team/aic-dataset",
                         help="HuggingFace repo ID (예: aic-sejong-team/aic-dataset)")
+    parser.add_argument("--lerobot-version",  type=str,  default="v1.0",
+                        help="데이터셋 버전/브랜치 이름 (예: v1.0)")
+    parser.add_argument("--yolo-model",       type=Path, default=None,
+                        help=f"YOLO 모델 .pt 경로 (기본: {YOLO_MODEL_DEFAULT})")
+    parser.add_argument("--push-to-hub",      action="store_false", default=True,
+                        help="수집 완료 후 HuggingFace Hub에 데이터셋 업로드 (기본: 활성, 제외하려면 --push-to-hub 사용)")
 
     args = parser.parse_args()
     # 상대 경로를 절대 경로로 변환 (subprocess 환경에서도 안전하게 동작)
     lerobot_out_dir = Path(args.lerobot_out_dir).resolve() if args.lerobot_out_dir else None
+    yolo_model_path = Path(args.yolo_model).resolve() if args.yolo_model else None
     run_collection_loop(
         n_sets          = args.sets,
-        trials_per_set  = args.episodes_per_set,
         diversify       = args.diversify,
         gazebo_wait     = args.gazebo_wait,
         step_hz         = args.step_hz,
@@ -949,6 +1001,9 @@ def main():
         dry_run         = args.dry_run,
         lerobot_out_dir = lerobot_out_dir,
         lerobot_repo_id = args.lerobot_repo_id,
+        lerobot_version = args.lerobot_version,
+        yolo_model_path = yolo_model_path,
+        push_to_hub     = args.push_to_hub,
     )
 
 if __name__ == "__main__":
