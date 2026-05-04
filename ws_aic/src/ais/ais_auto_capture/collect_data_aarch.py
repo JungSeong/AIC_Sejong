@@ -604,7 +604,7 @@ def start_gazebo(
 
 
 def start_policy(
-    step_hz: float = 10.0,
+    step_hz: float = 20.0,
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
     lerobot_run_id: str = "",
@@ -843,6 +843,7 @@ def run_collection_loop(
     print(f"  diversify      : {diversify}")
     print(f"  headless       : {headless}")
     print(f"  dry-run        : {dry_run}")
+    print(f"  카메라 주기    : {step_hz}Hz")
 
     if not dry_run:
         # 시작 전 잔존 프로세스 정리 (이전 수동 실행 또는 비정상 종료 대비)
@@ -971,8 +972,8 @@ def main():
                         help="보드 위치/yaw도 범위 내에서 랜덤화")
     parser.add_argument("--gazebo-wait",      type=int,  default=GAZEBO_INIT_WAIT,
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
-    parser.add_argument("--step-hz",          type=float, default=10.0,
-                        help="스텝 샘플링 주파수 Hz (기본: 10Hz)")
+    parser.add_argument("--step-hz",          type=float, default=20.0,
+                        help="스텝 샘플링 주파수 Hz (기본: 20Hz)")
     parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",
