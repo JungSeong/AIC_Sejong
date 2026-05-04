@@ -12,6 +12,10 @@ AIC_Sejong/
 ├── README.md
 │
 └── ws_aic/                  ← 워크스페이스 루트
+    ├── weight/              ← 훈련된 모델 가중치
+    │   └── ais_yolo/        ← YOLO 모델 가중치
+    │       └── weights/
+    │
     └── src/                 ← 소스 루트 (pixi.toml 위치)
         ├── pixi.toml        ← 전체 워크스페이스 환경 정의
         ├── pixi.lock        ← 의존성 고정 파일
@@ -44,10 +48,6 @@ AIC_Sejong/
         │   └── ais_ours_policy/        ← ROS 2 노드 래퍼
         │       ├── data_gen_node/      ← 데이터 생성 노드
         │       └── motion_planning_node/ ← 모션 플래닝 노드
-        │
-        ├── model/           ← 훈련된 모델 가중치
-        │   ├── ais_act/     ← ACT 모델 체크포인트
-        │   └── ais_yolo/    ← YOLO 모델 가중치
         │
         ├── data/            ← 데이터셋
         │   ├── lerobot/     ← LeRobot 형식 데이터셋 (master 브랜치)

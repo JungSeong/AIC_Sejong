@@ -18,9 +18,10 @@ import argparse
 from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]  # ws_aic/src/
+_WS_ROOT = _SRC_ROOT.parent
 
 _DEFAULT_DATA   = _SRC_ROOT / "data" / "yolo" / "20260426" / "data.yaml"
-_DEFAULT_OUTPUT = _SRC_ROOT / "model" / "ais_yolo"
+_DEFAULT_OUTPUT = _WS_ROOT / "weight" / "ais_yolo"
 
 
 def main():

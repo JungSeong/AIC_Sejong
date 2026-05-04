@@ -17,16 +17,21 @@ def _resolve_src_root() -> Path:
 
 # ws_aic/src/ 루트
 _SRC_ROOT = _resolve_src_root()
+_WS_ROOT = _SRC_ROOT.parent
 
 
 def _resolve_yolo_model_path() -> str:
     # 1순위: 환경 변수 (팀원마다 경로가 다를 수 있으므로 권장)
     env = os.environ.get("AIC_YOLO_MODEL_PATH")
-    if env and os.path.isfile(env):
-        return env
+    if env:
+        env_path = Path(env).expanduser()
+        if env_path.is_file():
+            return str(env_path)
 
     # 2순위: 워크스페이스 기준 상대 경로
     candidates = [
+        _WS_ROOT / "weight" / "ais_yolo" / "weights" / "best.pt",
+        _WS_ROOT / "weight" / "ais_yolo" / "weight" / "best.pt",
         _SRC_ROOT / "model" / "ais_yolo" / "weight" / "best.pt",
     ]
     for p in candidates:
@@ -122,4 +127,3 @@ class Stage1Config:
     BOARD_CENTER: tuple = (-0.38, 0.22, 0.13)
     BOARD_RADIUS: float = 0.5  # 보드 중심 반경 50cm 이내
     Z_RANGE: tuple = (-0.1, 0.5)  # z 좌표 범위
-
