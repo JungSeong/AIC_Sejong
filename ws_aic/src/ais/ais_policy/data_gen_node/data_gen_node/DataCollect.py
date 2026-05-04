@@ -67,8 +67,8 @@ class DataCollect(Policy):
     _SFP_INSERT_DAMPING   = [10.0, 10.0, 60.0, 5.0, 5.0, 15.0]
 
     # SC 커넥터 (미끄러짐 유도를 위한 Compliance를 유지하되, 케이블 저항을 이길 수 있도록 강성/감쇠 상향)
-    _SC_INSERT_STIFFNESS = [50.0, 50.0, 250.0, 15.0, 15.0, 40.0]
-    _SC_INSERT_DAMPING   = [30.0, 30.0, 80.0, 8.0, 8.0, 15.0]
+    _SC_INSERT_STIFFNESS = [51.0, 50.0, 300.0, 15.0, 15.0, 40.0]
+    _SC_INSERT_DAMPING   = [31.0, 30.0, 87.0, 8.0, 8.0, 15.0]
 
     # ── 모션 플래닝 상수 ──────────────────────────────────────────────────
     _SC_INSERT_MIN_Z_OFFSET: float = -0.025  
@@ -244,10 +244,10 @@ class DataCollect(Policy):
         if _port_kw == "sc":
             # SC: 나선형 진동 방지를 위해 적분 이득/한계를 대폭 낮추고, 
             # 대신 접근 단계의 강성을 올려 물리적으로 케이블 장력을 이겨내도록 함.
-            self._planner.i_gain = 0.07 
-            self._planner.max_integrator_windup = 0.08
-            approach_stiffness = [250.0, 250.0, 250.0, 50.0, 50.0, 50.0]
-            approach_damping = [80.0, 80.0, 80.0, 20.0, 20.0, 20.0]
+            self._planner.i_gain = 0.07
+            self._planner.max_integrator_windup = 0.06
+            approach_stiffness = [280.0, 250.0, 250.0, 50.0, 50.0, 50.0]
+            approach_damping = [87.0, 80.0, 80.0, 20.0, 20.0, 20.0]
             insert_stiffness = self._SC_INSERT_STIFFNESS
             insert_damping = self._SC_INSERT_DAMPING
         else:
@@ -259,6 +259,8 @@ class DataCollect(Policy):
             insert_stiffness = self._SFP_INSERT_STIFFNESS
             insert_damping = self._SFP_INSERT_DAMPING
 
+        current_approach_z = 0.180 if _port_kw == "sfp" else 0.050
+
         def _check_and_start(obs) -> None:
             nonlocal recording_started
             if recording_started or obs is None: return
@@ -269,8 +271,6 @@ class DataCollect(Policy):
             results = self._yolo_model(bgr, verbose=False, conf=self._yolo_trigger_conf)
             if any(_port_kw in r.names.get(int(box.cls[0]), "").lower() for r in results for box in r.boxes):
                 recording_started = True; self.get_logger().info("[DataCollect] YOLO Detected Port -> Recording Started")
-
-        current_approach_z = 0.180 if _port_kw == "sfp" else 0.150
 
         # Phase 1-A: Alignment at High Z (Dynamic Tracking + Early Lock-on)
         self.get_logger().info(f"━━━ Phase 1-A: Alignment at {current_approach_z*100:.0f}cm ━━━")
