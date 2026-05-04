@@ -8,9 +8,3 @@ ros-controls/
 ros/
 model/
 data/
-ais/ais_early_prediction/__pycache__
-ais/ais_motion_planning/__pycache__
-ais/ais_port_detection/__pycache__
-ais/ais_policy/data_gen_node.egg-info
-ais/ais_policy/data_gen_node/data_gen_node/__pycache__/
-ais/ais_policy/data_gen_node/data_gen_node/lib/__pycache__/
