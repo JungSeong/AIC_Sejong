@@ -1,7 +1,7 @@
 """
-DataCollect policy
+DataCollect2 policy (YOLO-guided Phase 1-A)
 ──────────────────────────
-모든 데이터 수집 로직(AutoCapture + LeRobot)이 통합된 단일 정책 파일.
+Phase 1-A 접근 정렬을 포트 TF 대신 YOLO bbox 기반 이미지 오차로 수행하는 정책 파일.
 """
 
 import atexit
@@ -53,9 +53,9 @@ def interp_profile(t: float, quintic: bool = True) -> float:
     return s_curve_quintic(t) if quintic else (3.0 * t**2 - 2.0 * t**3)
 
 
-class DataCollect(Policy):
+class DataCollect2(Policy):
     """
-    통합 데이터 수집 정책 클래스.
+    YOLO 기반 접근 정렬 데이터 수집 정책 클래스.
     """
 
     # ── 임피던스 설정 (성공률 최적화) ──────────────────────────────────────────
@@ -105,6 +105,13 @@ class DataCollect(Policy):
         self._lerobot_full_repo_id = os.environ.get("AIC_LEROBOT_REPO_ID", "").strip()
         self._lerobot_version = os.environ.get("AIC_LEROBOT_VERSION", "master").strip()
         self._yolo_trigger_conf = float(os.environ.get("AIC_YOLO_TRIGGER_CONF", "0.7"))
+        self._yolo_align_conf = float(os.environ.get("AIC_YOLO_ALIGN_CONF", str(self._yolo_trigger_conf)))
+        self._yolo_align_gain_x = float(os.environ.get("AIC_YOLO_ALIGN_GAIN_X", "0.035"))
+        self._yolo_align_gain_y = float(os.environ.get("AIC_YOLO_ALIGN_GAIN_Y", "0.035"))
+        self._yolo_align_sign_x = float(os.environ.get("AIC_YOLO_ALIGN_SIGN_X", "1.0"))
+        self._yolo_align_sign_y = float(os.environ.get("AIC_YOLO_ALIGN_SIGN_Y", "1.0"))
+        self._yolo_align_max_step = float(os.environ.get("AIC_YOLO_ALIGN_MAX_STEP", "0.006"))
+        self._yolo_model_wait_sec = float(os.environ.get("AIC_YOLO_MODEL_WAIT_SEC", "5.0"))
         
         _lerobot_out = os.environ.get("AIC_LEROBOT_OUT_DIR", "lerobot")
         self._debug_image_dir = Path(_lerobot_out) / self._lerobot_version / "debug"
@@ -125,7 +132,7 @@ class DataCollect(Policy):
         self._stop_file = Path(os.environ.get("AIC_STOP_FILE", "/tmp/aic_policy_stop"))
         threading.Thread(target=self._watch_stop_file, daemon=True).start()
 
-        self.get_logger().info(f"[DataCollect] Unified Policy Initialized. Root: {self.capture_root}")
+        self.get_logger().info(f"[DataCollect2] YOLO-guided Policy Initialized. Root: {self.capture_root}")
 
     # ── 인프라 로직 ──────────────────────────────────────────────────────────
 
@@ -194,10 +201,19 @@ class DataCollect(Policy):
         port_frame = f"task_board/{task.target_module_name}/{task.port_name}_link"
         entrance_frame = f"{port_frame}_entrance"
         if self._wait_for_tf("base_link", entrance_frame, timeout_sec=2.0):
-            self.get_logger().info(f"[DataCollect] Using port entrance frame: {entrance_frame}")
+            self.get_logger().info(f"[DataCollect2] Using port entrance frame: {entrance_frame}")
             return entrance_frame
-        self.get_logger().warn(f"[DataCollect] Port entrance TF unavailable, falling back to: {port_frame}")
+        self.get_logger().warn(f"[DataCollect2] Port entrance TF unavailable, falling back to: {port_frame}")
         return port_frame
+
+    def _wait_for_yolo_model(self) -> bool:
+        start = time.time()
+        while self._yolo_model is None and (time.time() - start) < self._yolo_model_wait_sec:
+            self.sleep_for(0.1)
+        if self._yolo_model is None:
+            self.get_logger().warn("[DataCollect2] YOLO model is not available; Phase 1-A will remain TF-guided")
+            return False
+        return True
 
     def set_pose_target(self, move_robot, pose, stiffness=None, damping=None):
         _s = stiffness if stiffness is not None else self._STIFFNESS_DEFAULT
@@ -231,6 +247,164 @@ class DataCollect(Policy):
             stiffness=stiffness, damping=damping
         )
 
+    def _image_msg_to_bgr(self, img_msg) -> Optional[np.ndarray]:
+        if img_msg is None or img_msg.width == 0 or img_msg.height == 0:
+            return None
+        try:
+            img = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(img_msg.height, img_msg.width, 3)
+        except ValueError:
+            self.get_logger().warn("[DataCollect2] Invalid center_image buffer size")
+            return None
+        if img_msg.encoding == "rgb8":
+            return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        return img.copy()
+
+    def _detect_port_from_bgr(self, bgr: np.ndarray, port_kw: str, conf: float) -> tuple[Optional[dict[str, Any]], Any]:
+        if self._yolo_model is None or bgr is None:
+            return None, None
+        results = self._yolo_model(bgr, verbose=False, conf=conf)
+        best_detection = None
+        for result in results:
+            names = getattr(result, "names", {})
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                class_name = names.get(class_id, "").lower()
+                if port_kw not in class_name:
+                    continue
+                x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
+                score = float(box.conf[0]) if getattr(box, "conf", None) is not None else 0.0
+                detection = {
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "confidence": score,
+                    "bbox_xyxy": [x1, y1, x2, y2],
+                    "center_x": 0.5 * (x1 + x2),
+                    "center_y": 0.5 * (y1 + y2),
+                    "area_ratio": ((x2 - x1) * (y2 - y1)) / float(bgr.shape[0] * bgr.shape[1]),
+                }
+                if best_detection is None or detection["confidence"] > best_detection["confidence"]:
+                    best_detection = detection
+        return best_detection, results
+
+    def _detect_port_from_obs(self, obs, port_kw: str, conf: float) -> tuple[Optional[dict[str, Any]], Any, Optional[np.ndarray]]:
+        if obs is None:
+            return None, None, None
+        bgr = self._image_msg_to_bgr(obs.center_image)
+        if bgr is None:
+            return None, None, None
+        detection, results = self._detect_port_from_bgr(bgr, port_kw, conf)
+        return detection, results, bgr
+
+    def _log_yolo_detection(self, detection: dict[str, Any], prefix: str) -> None:
+        x1, y1, x2, y2 = detection["bbox_xyxy"]
+        self.get_logger().info(
+            f"{prefix} class={detection['class_name']} "
+            f"conf={detection['confidence']:.3f} "
+            f"bbox=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}) "
+            f"center=({detection['center_x']:.1f},{detection['center_y']:.1f})"
+        )
+
+    def _save_yolo_debug_frame(
+        self,
+        bgr: np.ndarray,
+        results,
+        detection: dict[str, Any],
+        task: Task,
+        phase: str,
+        step_idx: int,
+    ) -> None:
+        try:
+            self._debug_image_dir.mkdir(parents=True, exist_ok=True)
+            annotated = bgr.copy()
+            for result in results or []:
+                names = getattr(result, "names", {})
+                for box in result.boxes:
+                    x1, y1, x2, y2 = [int(round(v)) for v in box.xyxy[0].tolist()]
+                    cls_id = int(box.cls[0])
+                    cls_name = names.get(cls_id, str(cls_id))
+                    conf = float(box.conf[0]) if getattr(box, "conf", None) is not None else 0.0
+                    color = (0, 255, 0) if cls_name.lower() == detection["class_name"] else (0, 180, 255)
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                    label = f"{cls_name} {conf:.2f}"
+                    cv2.putText(annotated, label, (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+            h, w = annotated.shape[:2]
+            cx, cy = int(round(detection["center_x"])), int(round(detection["center_y"]))
+            cv2.drawMarker(annotated, (w // 2, h // 2), (255, 0, 0), markerType=cv2.MARKER_CROSS, markerSize=18, thickness=2)
+            cv2.drawMarker(annotated, (cx, cy), (0, 0, 255), markerType=cv2.MARKER_TILTED_CROSS, markerSize=18, thickness=2)
+            stem = f"{time.strftime('%Y%m%d_%H%M%S')}_{task.id}_{phase}_{step_idx:04d}"
+            image_path = self._debug_image_dir / f"{stem}.jpg"
+            meta_path = self._debug_image_dir / f"{stem}.json"
+            cv2.imwrite(str(image_path), annotated)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "task_id": task.id,
+                        "phase": phase,
+                        "step": step_idx,
+                        "image": image_path.name,
+                        "detection": detection,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            self.get_logger().info(f"[DataCollect] YOLO debug frame saved: {image_path}")
+        except Exception as exc:
+            self.get_logger().warn(f"[DataCollect] Failed to save YOLO debug frame: {exc}")
+
+    def _build_yolo_guided_pose(
+        self,
+        gripper_tf: Transform,
+        detection: Optional[dict[str, Any]],
+        image_shape: tuple[int, int, int],
+        z_offset: float,
+        position_fraction: float,
+    ) -> tuple[Pose, dict[str, Any]]:
+        gripper_xyz = gripper_tf.translation
+        q = gripper_tf.rotation
+        target_x, target_y = float(gripper_xyz.x), float(gripper_xyz.y)
+        x_error_norm = 0.0
+        y_error_norm = 0.0
+        area_ratio = 0.0
+
+        if detection is not None:
+            height, width = image_shape[:2]
+            x_error_norm = ((width * 0.5) - detection["center_x"]) / max(width * 0.5, 1.0)
+            y_error_norm = ((height * 0.5) - detection["center_y"]) / max(height * 0.5, 1.0)
+            area_ratio = float(detection["area_ratio"])
+            dx = float(np.clip(self._yolo_align_sign_x * self._yolo_align_gain_x * x_error_norm, -self._yolo_align_max_step, self._yolo_align_max_step))
+            dy = float(np.clip(self._yolo_align_sign_y * self._yolo_align_gain_y * y_error_norm, -self._yolo_align_max_step, self._yolo_align_max_step))
+            target_x += dx
+            target_y += dy
+
+        target_z = float(gripper_xyz.z)
+        pose = Pose(
+            position=Point(
+                x=float((1.0 - position_fraction) * gripper_xyz.x + position_fraction * target_x),
+                y=float((1.0 - position_fraction) * gripper_xyz.y + position_fraction * target_y),
+                z=target_z,
+            ),
+            orientation=Quaternion(w=float(q.w), x=float(q.x), y=float(q.y), z=float(q.z)),
+        )
+        extras = {
+            "yolo_detected": detection is not None,
+            "yolo_class": detection["class_name"] if detection is not None else "",
+            "yolo_confidence": detection["confidence"] if detection is not None else 0.0,
+            "yolo_bbox_xyxy": detection["bbox_xyxy"] if detection is not None else [],
+            "yolo_center_x": detection["center_x"] if detection is not None else 0.0,
+            "yolo_center_y": detection["center_y"] if detection is not None else 0.0,
+            "yolo_x_error_norm": float(x_error_norm),
+            "yolo_y_error_norm": float(y_error_norm),
+            "yolo_area_ratio": float(area_ratio),
+            "target_x": float(pose.position.x),
+            "target_y": float(pose.position.y),
+            "target_z": float(pose.position.z),
+            "z_offset": float(z_offset),
+            "position_fraction": float(position_fraction),
+        }
+        return pose, extras
+
     # ── 메인 에피소드 수집 로직 ───────────────────────────────────────────────
 
     def insert_cable(self, task: Task, get_observation: GetObservationCallback, move_robot: MoveRobotCallback, send_feedback: SendFeedbackCallback):
@@ -244,9 +418,11 @@ class DataCollect(Policy):
         
         port_frame, plug_frame = self._select_port_frame(task), f"{task.cable_name}/{task.plug_name}_link"
         if not self._wait_for_tf("base_link", port_frame) or not self._wait_for_tf("base_link", plug_frame): return False
+        self._wait_for_yolo_model()
 
         start_time = time.time(); phase_step_counts = {"approach": 0, "insert": 0, "stabilize": 0}
-        recording_started = (self._yolo_model is None)
+        recording_started = False
+        yolo_tracking_started = False
         _port_kw = "sfp" if "sfp" in task.port_type.lower() else "sc"
 
         # 포트 타입에 따른 파라미터 분기 (SFP는 기존 설정 유지, SC만 별도 튜닝)
@@ -270,59 +446,64 @@ class DataCollect(Policy):
 
         current_approach_z = 0.180 if _port_kw == "sfp" else 0.050
 
-        def _check_and_start(obs) -> None:
+        def _check_and_start(obs, phase: str = "trigger", step_idx: int = 0, detection=None, results=None, bgr=None) -> bool:
             nonlocal recording_started
             if recording_started or obs is None: return
-            img_msg = obs.center_image
-            if img_msg.width == 0: return
-            img = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(img_msg.height, img_msg.width, 3)
-            bgr = img if img_msg.encoding != "rgb8" else cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            results = self._yolo_model(bgr, verbose=False, conf=self._yolo_trigger_conf)
-            best_detection = None
-            for result in results:
-                names = getattr(result, "names", {})
-                for box in result.boxes:
-                    class_id = int(box.cls[0])
-                    class_name = names.get(class_id, "").lower()
-                    if _port_kw not in class_name:
-                        continue
-                    x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
-                    confidence = float(box.conf[0]) if getattr(box, "conf", None) is not None else 0.0
-                    detection = (confidence, class_name, x1, y1, x2, y2)
-                    if best_detection is None or confidence > best_detection[0]:
-                        best_detection = detection
-            if best_detection is not None:
-                confidence, class_name, x1, y1, x2, y2 = best_detection
+            if detection is None or results is None or bgr is None:
+                detection, results, bgr = self._detect_port_from_obs(obs, _port_kw, self._yolo_trigger_conf)
+            if detection is not None:
+                self._save_yolo_debug_frame(bgr, results, detection, task, phase, step_idx)
                 recording_started = True
-                self.get_logger().info(
-                    "[DataCollect] YOLO DETECTION -> Recording Started "
-                    f"class={class_name} conf={confidence:.3f} "
-                    f"bbox=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}) "
-                    f"center=({0.5 * (x1 + x2):.1f},{0.5 * (y1 + y2):.1f})"
+                self._log_yolo_detection(
+                    detection,
+                    "[DataCollect2] YOLO DETECTION -> Recording Started",
                 )
+                return True
+            return False
 
-        # Phase 1-A: Alignment at High Z (Dynamic Tracking + Early Lock-on)
-        self.get_logger().info(f"━━━ Phase 1-A: Alignment at {current_approach_z*100:.0f}cm ━━━")
+        # Phase 1-A: TF alignment first, then YOLO bbox tracking after detection.
+        self.get_logger().info(f"━━━ Phase 1-A: TF -> YOLO Alignment at {current_approach_z*100:.0f}cm ━━━")
         for t in range(self.approach_steps):
             t_norm = (t + 1) / float(self.approach_steps); t_smooth = interp_profile(t_norm, quintic=True)
             try:
                 current_port_tf = self._lookup_transform("base_link", port_frame)
                 plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
-                
-                # 조기 락온: 마지막 2초(60스텝 이후) 적분기 가동
-                should_reset = (t < 60)
+                obs = get_observation()
+                detection, results, bgr = self._detect_port_from_obs(obs, _port_kw, self._yolo_align_conf)
+                if detection is not None and not yolo_tracking_started:
+                    yolo_tracking_started = True
+                    _check_and_start(obs, "approach_yolo_handoff", t, detection, results, bgr)
+                    self.get_logger().info("[DataCollect2] Phase 1-A handoff: TF-guided -> YOLO-guided")
 
-                pose, extras = self._planner.build_pose(
-                    port_transform=current_port_tf, plug_transform=plug_tf, gripper_transform=gripper_tf, 
-                    slerp_fraction=t_smooth, position_fraction=t_smooth, z_offset=current_approach_z,
-                    reset_xy_integrator=should_reset
-                )
-
-                # 텔레메트리 로깅
-                self.get_logger().info(f"pfrac: {extras['position_fraction']:.3} xy_error: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
-
+                if yolo_tracking_started:
+                    pose, extras = self._build_yolo_guided_pose(
+                        gripper_tf=gripper_tf,
+                        detection=detection,
+                        image_shape=bgr.shape if bgr is not None else (1, 1, 3),
+                        z_offset=current_approach_z,
+                        position_fraction=t_smooth,
+                    )
+                    extras["phase1a_guidance"] = "yolo"
+                    self.get_logger().info(
+                        f"pfrac: {extras['position_fraction']:.3} guide: yolo "
+                        f"det: {extras['yolo_detected']} err: {extras['yolo_x_error_norm']:0.3} {extras['yolo_y_error_norm']:0.3} "
+                        f"conf: {extras['yolo_confidence']:0.3}"
+                    )
+                else:
+                    should_reset = (t < 60)
+                    pose, extras = self._planner.build_pose(
+                        port_transform=current_port_tf, plug_transform=plug_tf, gripper_transform=gripper_tf,
+                        slerp_fraction=t_smooth, position_fraction=t_smooth, z_offset=current_approach_z,
+                        reset_xy_integrator=should_reset
+                    )
+                    extras["phase1a_guidance"] = "tf"
+                    self.get_logger().info(
+                        f"pfrac: {extras['position_fraction']:.3} guide: tf "
+                        f"xy_error: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} "
+                        f"ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}"
+                    )
                 self.set_pose_target(move_robot, pose, stiffness=approach_stiffness, damping=approach_damping)
-                obs = get_observation(); _check_and_start(obs)
+                _check_and_start(obs, "approach_yolo", t, detection, results, bgr)
                 if recording_started:
                     self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=approach_stiffness, damping=approach_damping)
                     phase_step_counts["approach"] += 1
@@ -343,7 +524,7 @@ class DataCollect(Policy):
                 pose, extras = self._planner.build_pose(current_port_tf, plug_tf, gripper_tf, z_offset=cur_z_offset, reset_xy_integrator=False)
                 self.get_logger().info(f"z_off: {cur_z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
                 self.set_pose_target(move_robot, pose, stiffness=approach_stiffness, damping=approach_damping)
-                obs = get_observation(); _check_and_start(obs)
+                obs = get_observation(); _check_and_start(obs, "approach_descent", t)
                 if recording_started:
                     self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=approach_stiffness, damping=approach_damping)
                     phase_step_counts["approach"] += 1
@@ -363,7 +544,7 @@ class DataCollect(Policy):
                 pose, extras = self._planner.build_pose(current_port_tf, plug_tf, gripper_tf, z_offset=z_offset)
                 self.get_logger().info(f"INSERT z: {z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
                 self.set_pose_target(move_robot, pose, stiffness=insert_stiffness, damping=insert_damping)
-                obs = get_observation(); _check_and_start(obs)
+                obs = get_observation(); _check_and_start(obs, "insert", phase_step_counts["insert"])
                 if recording_started:
                     self._record_motion_step(recorder, "insert", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=insert_stiffness, damping=insert_damping)
                     phase_step_counts["insert"] += 1
@@ -405,3 +586,7 @@ class DataCollect(Policy):
                              p["gripper_offset_x"], p["gripper_offset_y"], p["gripper_offset_z"],
                              p["nic_translation"], p["nic_yaw"], p["sc_translation"]], dtype=np.float32)
         except Exception: return zero
+
+
+# 기존 로더가 파일 안의 DataCollect 심볼을 찾는 경우도 같이 지원한다.
+DataCollect = DataCollect2

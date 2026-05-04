@@ -12,6 +12,10 @@ src/ais/data/
 src/ais/ais_early_prediction/__pycache__
 src/ais/ais_motion_planning/__pycache__
 src/ais/ais_port_detection/__pycache__
-
+src/model/
+src/build/
+src/install/
+src/data/
+src/log/
 
 __pycache__

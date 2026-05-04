@@ -17,3 +17,7 @@ GEMINI.md
 .idea/
 
 *.pt
+*.npy
+
+aic_venv/
+lerobot_venv/

@@ -33,6 +33,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -226,13 +227,22 @@ class DatasetCollector(Node):
         return (len(self._cam_info) == 3
                 and len(self._latest_image) == 3)
 
+    def _lookup_port_tf(self, frame):
+        entrance_frame = f"{frame}_entrance"
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                "base_link", entrance_frame, Time())
+            return tf, entrance_frame
+        except TransformException:
+            tf = self._tf_buffer.lookup_transform("base_link", frame, Time())
+            return tf, frame
+
     def discover_existing_ports(self):
         found = []
         for class_id, class_name, candidate_frames, size_m in PORT_DEFINITIONS:
             for frame in candidate_frames:
                 try:
-                    tf = self._tf_buffer.lookup_transform(
-                        "base_link", frame, Time())
+                    tf, resolved_frame = self._lookup_port_tf(frame)
                     pos = np.array([
                         tf.transform.translation.x,
                         tf.transform.translation.y,
@@ -241,7 +251,8 @@ class DatasetCollector(Node):
                     found.append({
                         "class_id": class_id,
                         "class_name": class_name,
-                        "frame": frame,
+                        "frame": resolved_frame,
+                        "base_frame": frame,
                         "pos_3d": pos,
                         "size_m": size_m,
                     })
@@ -349,7 +360,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=500)
     parser.add_argument("--n_viewpoints", type=int, default=15,
                         help="로봇 자세 뷰포인트 수")
-    parser.add_argument("--output", type=str, default="~/aic_yolo_dataset")
+    parser.add_argument("--output", type=str, default="../../data/yolo")
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--move_settle_s", type=float, default=2.5,
                         help="로봇 이동 후 안정화 대기 시간")
@@ -357,7 +368,8 @@ def main():
                         help="뷰포인트당 수집 프레임 수 (기본: episodes/n_viewpoints)")
     args = parser.parse_args()
 
-    out_dir = Path(os.path.expanduser(args.output))
+    date_dir = datetime.now().strftime("%Y%m%d")
+    out_dir = Path(os.path.expanduser(args.output)) / date_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 뷰포인트 생성

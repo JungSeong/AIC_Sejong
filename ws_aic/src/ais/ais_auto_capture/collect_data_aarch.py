@@ -77,6 +77,19 @@ SCENARIO_PARAMS_TMP  = Path("/tmp/aic_scenario_params.json")
 EPISODE_TRACKING_DIR = Path("/tmp/aic_episodes")
 POLICY_STOP_FILE     = Path("/tmp/aic_policy_stop")
 
+POLICY_MODULES = {
+    "DataCollect": "data_gen_node.DataCollect",
+    "DataCollect2": "data_gen_node.DataCollect2",
+}
+DEFAULT_REPO_IDS = {
+    "DataCollect": "aic-sejong-team/aic-dataset",
+    "DataCollect2": "aic-sejong-team/aic-entrance-dataset",
+}
+DEFAULT_LEROBOT_OUT_DIRS = {
+    "DataCollect": Path("../../data/lerobot"),
+    "DataCollect2": Path("../../data/lerobot_entrance"),
+}
+
 # 소스 빌드된 ROS2 워크스페이스
 WS_AIC_SETUP = ROOT / "ws_aic" / "install" / "setup.bash"
 
@@ -421,10 +434,10 @@ def generate_engine_config(diversify: bool = True) -> tuple[dict, dict]:
     trials: dict = {}
     all_scenario_params: dict = {}
 
-    # for rail in range(5):
-    #     cfg, params = _make_nic_trial(rail, diversify)
-    #     trials[f"trial_nic{rail}"] = cfg
-    #     all_scenario_params[f"nic_rail{rail}_task_1"] = params
+    for rail in range(5):
+        cfg, params = _make_nic_trial(rail, diversify)
+        trials[f"trial_nic{rail}"] = cfg
+        all_scenario_params[f"nic_rail{rail}_task_1"] = params
 
     for rail in range(2):
         cfg, params = _make_sc_trial(rail, diversify)
@@ -605,6 +618,7 @@ def start_gazebo(
 
 def start_policy(
     step_hz: float = 20.0,
+    data_policy: str = "DataCollect",
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
     lerobot_run_id: str = "",
@@ -613,7 +627,7 @@ def start_policy(
     dry_run: bool = False,
 ) -> "subprocess.Popen | None":
     """
-    aic_model + DataCollect 정책 노드 시작.
+    aic_model + DataCollect 계열 정책 노드 시작.
 
     DataCollect = AutoCapture + F/T 센서 Tare + LeRobot 직접 저장.
     lerobot_out_dir / lerobot_repo_id 미지정 시 raw 포맷으로 fallback.
@@ -622,6 +636,7 @@ def start_policy(
     설치본을 공유한다. pixi run을 쓰면 Zenoh 버전이 달라 노드가 서로를 발견하지 못한다.
     """
     env = _ros2_env()
+    policy_module = POLICY_MODULES[data_policy]
 
     # data_gen_node + pixi site-packages(lerobot 등)를 소스 빌드 Python에서 찾도록
     # PYTHONPATH + LD_LIBRARY_PATH 설정 (pixi cv2의 OpenSSL 무버전 충돌 방지 포함).
@@ -654,7 +669,7 @@ def start_policy(
     cmd = (
         f"source {WS_AIC_SETUP} && "
         f"ros2 run aic_model aic_model "
-        "--ros-args -p policy:=data_gen_node.DataCollect"
+        f"--ros-args -p policy:={policy_module}"
     )
 
     if dry_run:
@@ -665,12 +680,13 @@ def start_policy(
         print(f"  AIC_YOLO_MODEL_PATH={env.get('AIC_YOLO_MODEL_PATH', '(미설정 — 모델 없음)')}")
         if lerobot_out_dir and lerobot_repo_id:
             print(f"  AIC_LEROBOT_OUT_DIR={lerobot_out_dir}")
-            print(f"  AIC_LEROBOT_REPO_ID={lerobot_repo_id}-{lerobot_run_id}")
+            print(f"  AIC_LEROBOT_REPO_ID={lerobot_repo_id}")
+        print(f"  data_policy={data_policy}")
         print(f"  {cmd}")
         return None
 
     mode = f"LeRobot → {lerobot_out_dir}" if (lerobot_out_dir and lerobot_repo_id) else "raw"
-    print(f"[Policy] DataCollect 시작. 모드: {mode} / {step_hz}Hz")
+    print(f"[Policy] {data_policy} 시작. 모드: {mode} / {step_hz}Hz")
     proc = subprocess.Popen(
         cmd, shell=True, executable="/bin/bash", env=env, stderr=subprocess.STDOUT
     )
@@ -816,6 +832,7 @@ def run_collection_loop(
     diversify: bool,
     gazebo_wait: int,
     step_hz: float,
+    data_policy: str,
     headless: bool,
     dry_run: bool,
     lerobot_out_dir: "Path | None" = None,
@@ -831,6 +848,7 @@ def run_collection_loop(
 
     print("=== AIC 데이터 수집 시작 (aarch64 소스 빌드 환경) ===")
     print(f"  세트 수        : {n_sets}")
+    print(f"  정책           : {data_policy} ({POLICY_MODULES[data_policy]})")
 
     if use_lerobot:
         push_str = f"LeRobot → {lerobot_repo_id} (hub 업로드: {'ON' if push_to_hub else 'OFF — 로컬만'})"
@@ -893,6 +911,7 @@ def run_collection_loop(
 
         policy_proc = start_policy(
             step_hz=step_hz,
+            data_policy=data_policy,
             lerobot_out_dir=lerobot_out_dir,
             lerobot_repo_id=lerobot_repo_id,
             lerobot_run_id=lerobot_run_id,
@@ -974,14 +993,16 @@ def main():
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
     parser.add_argument("--step-hz",          type=float, default=20.0,
                         help="스텝 샘플링 주파수 Hz (기본: 20Hz)")
+    parser.add_argument("--data-policy",      choices=sorted(POLICY_MODULES), default="DataCollect2",
+                        help="수집 정책 선택")
     parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",
                         help="명령어만 출력하고 실제 실행하지 않음")
-    parser.add_argument("--lerobot-out-dir",  type=Path, default="../../data/lerobot",
-                        help="LeRobot 데이터셋 로컬 저장 경로 (미지정 시 raw 포맷)")
-    parser.add_argument("--lerobot-repo-id",  type=str,  default="aic-sejong-team/aic-dataset",
-                        help="HuggingFace repo ID (예: aic-sejong-team/aic-dataset)")
+    parser.add_argument("--lerobot-out-dir",  type=Path, default=None,
+                        help="LeRobot 데이터셋 로컬 저장 경로 (미지정 시 정책별 기본 경로 사용)")
+    parser.add_argument("--lerobot-repo-id",  type=str,  default=None,
+                        help="HuggingFace repo ID (미지정 시 정책별 기본 repo 사용)")
     parser.add_argument("--lerobot-version",  type=str,  default="v1.0",
                         help="데이터셋 버전/브랜치 이름 (예: v1.0)")
     parser.add_argument("--yolo-model",       type=Path, default=None,
@@ -991,17 +1012,19 @@ def main():
 
     args = parser.parse_args()
     # 상대 경로를 절대 경로로 변환 (subprocess 환경에서도 안전하게 동작)
-    lerobot_out_dir = Path(args.lerobot_out_dir).resolve() if args.lerobot_out_dir else None
+    lerobot_out_dir = (args.lerobot_out_dir or DEFAULT_LEROBOT_OUT_DIRS[args.data_policy]).resolve()
     yolo_model_path = Path(args.yolo_model).resolve() if args.yolo_model else None
+    lerobot_repo_id = args.lerobot_repo_id or DEFAULT_REPO_IDS[args.data_policy]
     run_collection_loop(
         n_sets          = args.sets,
         diversify       = args.diversify,
         gazebo_wait     = args.gazebo_wait,
         step_hz         = args.step_hz,
+        data_policy     = args.data_policy,
         headless        = args.headless,
         dry_run         = args.dry_run,
         lerobot_out_dir = lerobot_out_dir,
-        lerobot_repo_id = args.lerobot_repo_id,
+        lerobot_repo_id = lerobot_repo_id,
         lerobot_version = args.lerobot_version,
         yolo_model_path = yolo_model_path,
         push_to_hub     = args.push_to_hub,
