@@ -15,3 +15,6 @@ src/ais/ais_port_detection/__pycache__
 
 
 __pycache__
+.venv
+data/
+weight/
