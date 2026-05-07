@@ -129,9 +129,9 @@ class Stage23Controller:
         return None
 
     def align(self, move_robot, send_feedback,
-              port_pose_vision=None):
-        self.get_logger().info("━━━ Stage 2: 정렬 시작 ━━━")
-        send_feedback("Stage 2: aligning to port")
+              port_pose_vision=None, get_observation=None):
+        self.get_logger().info("━━━ Stage 2: Vision offset 정렬 시작 ━━━")
+        send_feedback("Stage 2: aligning to port with vision offset")
         self._reset_integrator()
 
         Z_START, Z_END, N = 0.10, 0.005, 100
@@ -143,6 +143,22 @@ class Stage23Controller:
                 port_pose_vision=port_pose_vision,
             )
             if pose is not None:
+                pred_offset = None
+                if get_observation is not None and hasattr(self._policy, "predict_distance_offset"):
+                    pred_offset = self._policy.predict_distance_offset(get_observation())
+                if pred_offset is not None:
+                    dx = float(np.clip(-pred_offset[0], -0.004, 0.004))
+                    dy = float(np.clip(-pred_offset[1], -0.004, 0.004))
+                    pose.position.x = float(pose.position.x + dx)
+                    pose.position.y = float(pose.position.y + dy)
+                    self.get_logger().info(
+                        f"Stage 2 vision offset xyz="
+                        f"{pred_offset[0]:+.4f},{pred_offset[1]:+.4f},{pred_offset[2]:+.4f}m "
+                        f"cmd_xy={dx:+.4f},{dy:+.4f}"
+                    )
+                    if float(np.linalg.norm(pred_offset[:2])) < 0.002:
+                        self.set_pose_target(move_robot=move_robot, pose=pose)
+                        break
                 self.set_pose_target(move_robot=move_robot, pose=pose)
             self.sleep_for(0.05)
 

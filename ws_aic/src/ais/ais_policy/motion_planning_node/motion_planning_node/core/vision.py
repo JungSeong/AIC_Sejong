@@ -29,7 +29,7 @@ class VisionPortEstimator:
                ("center", "center_camera/optical"),
                ("right", "right_camera/optical")]
 
-    CLASS_NAMES = {0: "sfp_port", 1: "sc_port"}
+    CLASS_NAMES = {0: "sfp_port", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
 
     # 디버그 이미지 저장 디렉토리 (None이면 저장 안 함)
     # Docker: AIC_DEBUG_SAVE_DIR=/debug/yolo_detections (docker-compose에서 volume mount)

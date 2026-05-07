@@ -607,43 +607,33 @@ def main():
         description="Run YOLO dataset collection without distrobox."
     )
     parser.add_argument("--episodes", type=int, default=2000)
-    parser.add_argument("--n_viewpoints", type=int, default=15)
     parser.add_argument("--output", type=str, default="../../data/yolo")
-    parser.add_argument("--val_ratio", type=float, default=0.2)
-    parser.add_argument("--move_settle_s", type=float, default=2.5)
-    parser.add_argument("--frames_per_viewpoint", type=int, default=None)
-    parser.add_argument("--gazebo-wait", type=int, default=25)
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--no-start-gazebo", action="store_true")
-    parser.add_argument("--no-start-zenoh", action="store_true")
-    parser.add_argument("--stop-zenoh-on-exit", action="store_true")
     parser.add_argument("--scenario-sets", type=int, default=0,
                         help="Generate diverse NIC/SC scenarios. 0 keeps the original single static scene.")
     parser.add_argument("--episodes-per-scenario", type=int, default=None,
                         help="Frames per generated scenario. Default: episodes / scenario_count.")
     parser.add_argument("--diversify", action="store_true",
                         help="Randomize board position as well as rail/module positions.")
-    parser.add_argument("--scenario-cooldown", type=float, default=5.0,
-                        help="Delay between generated scenarios after Gazebo cleanup.")
-    parser.add_argument("--aic-model-pre-wait", type=int, default=5,
-                        help="Seconds to wait after Gazebo launch before starting aic_model in generated scenarios.")
     parser.add_argument("--dry-run", action="store_true")
-    
-    # Newly added arguments for DataCollect policy and LeRobot HF hub upload
-    parser.add_argument("--data-policy", type=str, default="SpawnHold",
-                        help="Policy to use for data collection (e.g. DataCollect2). Defaults to SpawnHold.")
-    parser.add_argument("--no-run-collector", action="store_true",
-                        help="Do not run the collect_dataset_v2.py script (useful if using DataCollect2).")
-    parser.add_argument("--lerobot-out-dir", type=str, default=None,
-                        help="Output directory for LeRobot dataset format.")
-    parser.add_argument("--lerobot-repo-id", type=str, default=None,
-                        help="HuggingFace Hub repository ID for LeRobot dataset.")
-    parser.add_argument("--lerobot-version", type=str, default="master",
-                        help="LeRobot dataset version (branch).")
-    parser.add_argument("--push-to-hub", action="store_true",
-                        help="Push to HuggingFace Hub at the end.")
 
     args = parser.parse_args()
+    args.n_viewpoints = 15
+    args.val_ratio = 0.3
+    args.move_settle_s = 2.5
+    args.frames_per_viewpoint = None
+    args.gazebo_wait = 25
+    args.no_start_gazebo = False
+    args.no_start_zenoh = False
+    args.stop_zenoh_on_exit = False
+    args.scenario_cooldown = 5.0
+    args.aic_model_pre_wait = 5
+    args.data_policy = "SpawnHold"
+    args.no_run_collector = False
+    args.lerobot_out_dir = None
+    args.lerobot_repo_id = None
+    args.lerobot_version = "master"
+    args.push_to_hub = False
 
     print("=== YOLO / Policy dataset collection (source-built ROS2, no distrobox) ===")
     print(f"  ws setup : {WS_AIC_SETUP}")

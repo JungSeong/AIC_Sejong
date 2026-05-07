@@ -27,7 +27,7 @@ v1 대비 추가:
     --episodes 500 --n_viewpoints 20
 
 라벨 형식 (YOLO): class_id x_center y_center width height
-Classes: 0=sfp_port, 1=sc_port
+Classes: 0=sfp_port, 1=sc_port, 2=sfp_tip, 3=sc_tip
 """
 import argparse
 import os
@@ -52,7 +52,7 @@ from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
 
 
 # ───────────────────────────────────────────────
-#  수집 대상 포트 + 클래스
+#  수집 대상 포트/케이블 끝단 + 클래스
 # ───────────────────────────────────────────────
 PORT_DEFINITIONS = [
     (0, "sfp_port", [
@@ -70,6 +70,12 @@ PORT_DEFINITIONS = [
     (1, "sc_port", [
         "task_board/sc_port_0/sc_port_base_link",
         "task_board/sc_port_1/sc_port_base_link",
+    ], (0.012, 0.025)),
+    (2, "sfp_tip", [
+        "cable_0/sfp_tip_link",
+    ], (0.014, 0.010)),
+    (3, "sc_tip", [
+        "cable_1/sc_tip_link",
     ], (0.012, 0.025)),
 ]
 
@@ -463,6 +469,8 @@ def main():
         f"names:\n"
         f"  0: sfp_port\n"
         f"  1: sc_port\n"
+        f"  2: sfp_tip\n"
+        f"  3: sc_tip\n"
     )
 
     # 최종 통계

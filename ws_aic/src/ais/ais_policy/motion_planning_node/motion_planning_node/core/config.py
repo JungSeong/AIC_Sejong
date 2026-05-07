@@ -9,6 +9,9 @@ from pathlib import Path
 
 def _resolve_src_root() -> Path:
     for parent in Path(__file__).resolve().parents:
+        sibling_src = parent / "src"
+        if (sibling_src / "aic").is_dir() and (sibling_src / "ais").is_dir():
+            return sibling_src
         if (parent / "aic").is_dir() and (parent / "ais").is_dir():
             return parent
     # Fallback for the editable source layout.
@@ -21,7 +24,11 @@ _WS_ROOT = _SRC_ROOT.parent
 
 
 def _resolve_yolo_model_path() -> str:
-    # 1순위: 환경 변수 (팀원마다 경로가 다를 수 있으므로 권장)
+    requested = _SRC_ROOT / "model" / "yolo" / "weight" / "ais_yolo_0507" / "weights" / "best.pt"
+    if requested.is_file():
+        return str(requested)
+
+    # fallback: 환경 변수 (팀원마다 경로가 다를 수 있으므로 권장)
     env = os.environ.get("AIC_YOLO_MODEL_PATH")
     if env:
         env_path = Path(env).expanduser()
@@ -123,6 +130,10 @@ class Stage1Config:
     # --- Vision 설정 ---
     YOLO_MODEL_PATH: str = _resolve_yolo_model_path()
     YOLO_CONF_THRESH: float = 0.7
+    DISTANCE_MODEL_PATH: str = os.environ.get(
+        "AIC_DISTANCE_MODEL_PATH",
+        str(_WS_ROOT / "model" / "weight" / "ais_distance_prediction" / "vision_offset_resnet50_center" / "best.pt"),
+    )
     # 3D 타당성 검증 범위 (base_link)
     BOARD_CENTER: tuple = (-0.38, 0.22, 0.13)
     BOARD_RADIUS: float = 0.5  # 보드 중심 반경 50cm 이내

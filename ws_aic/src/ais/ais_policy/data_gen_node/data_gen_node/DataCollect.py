@@ -237,10 +237,12 @@ class DataCollect(Policy):
         self._task = task; self._latest_insertion_event = None; self._planner.reset(); send_feedback("data collect running")
         episode_name = time.strftime("%Y%m%d_%H%M%S") + f"_{task.id}"
         episode_dir = self.capture_root / episode_name; episode_dir.mkdir(parents=True, exist_ok=True)
-        if self._lerobot_dataset is None: return False
-        
         scenario_params_vec = self._load_scenario_params(task)
-        recorder = LeRobotRecorder(self._lerobot_dataset, scenario_params_vec)
+        recorder = None
+        if self._lerobot_dataset is not None:
+            recorder = LeRobotRecorder(self._lerobot_dataset, scenario_params_vec)
+        else:
+            self.get_logger().info("[DataCollect] LeRobot dataset disabled; running motion without episode recording.")
         
         port_frame, plug_frame = self._select_port_frame(task), f"{task.cable_name}/{task.plug_name}_link"
         if not self._wait_for_tf("base_link", port_frame) or not self._wait_for_tf("base_link", plug_frame): return False
@@ -323,7 +325,7 @@ class DataCollect(Policy):
 
                 self.set_pose_target(move_robot, pose, stiffness=approach_stiffness, damping=approach_damping)
                 obs = get_observation(); _check_and_start(obs)
-                if recording_started:
+                if recorder is not None and recording_started:
                     self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=approach_stiffness, damping=approach_damping)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
@@ -344,7 +346,7 @@ class DataCollect(Policy):
                 self.get_logger().info(f"z_off: {cur_z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
                 self.set_pose_target(move_robot, pose, stiffness=approach_stiffness, damping=approach_damping)
                 obs = get_observation(); _check_and_start(obs)
-                if recording_started:
+                if recorder is not None and recording_started:
                     self._record_motion_step(recorder, "approach", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=approach_stiffness, damping=approach_damping)
                     phase_step_counts["approach"] += 1
             except TransformException: pass
@@ -364,7 +366,7 @@ class DataCollect(Policy):
                 self.get_logger().info(f"INSERT z: {z_offset:0.4} xy_err: {extras['tip_x_error']:0.3} {extras['tip_y_error']:0.3} ints: {extras['tip_x_error_integrator']:.3} , {extras['tip_y_error_integrator']:.3}")
                 self.set_pose_target(move_robot, pose, stiffness=insert_stiffness, damping=insert_damping)
                 obs = get_observation(); _check_and_start(obs)
-                if recording_started:
+                if recorder is not None and recording_started:
                     self._record_motion_step(recorder, "insert", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=insert_stiffness, damping=insert_damping)
                     phase_step_counts["insert"] += 1
                 z_offset -= self.insert_z_step
@@ -376,7 +378,7 @@ class DataCollect(Policy):
         try:
             plug_tf, gripper_tf = self._lookup_transform("base_link", plug_frame), self._lookup_transform("base_link", "gripper/tcp")
             obs = get_observation()
-            if obs and recording_started:
+            if recorder is not None and obs and recording_started:
                 recorder.record_terminal_step(
                     phase="stabilize", task=task, obs=obs, port_tf=current_port_tf,
                     plug_tf=plug_tf, gripper_tf=gripper_tf, extras={"z_offset": z_offset},
@@ -388,8 +390,9 @@ class DataCollect(Policy):
 
         success = self._has_successful_insertion(task)
         self.sleep_for(0.5 if success else self.stabilize_sec)
-        recorder.save_episode(insertion_success=success)
-        self._write_episode_summary(episode_dir, {"task_id": task.id, "success": success, "mode": "lerobot"})
+        if recorder is not None:
+            recorder.save_episode(insertion_success=success)
+        self._write_episode_summary(episode_dir, {"task_id": task.id, "success": success, "mode": "lerobot" if recorder is not None else "yolo_only"})
         self.get_logger().info(f"DataCollect complete. Success: {success}")
         return True
 

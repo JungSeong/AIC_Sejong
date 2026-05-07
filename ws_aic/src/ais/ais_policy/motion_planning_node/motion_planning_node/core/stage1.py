@@ -124,7 +124,8 @@ class Stage1Approach:
 
     def _compute_approach_pose(
         self, port_pose: Pose, plug_tf: Optional[Transform],
-        gripper_tf: Transform, port_source: str
+        gripper_tf: Transform, port_source: str,
+        z_offset: Optional[float] = None,
     ) -> tuple[Pose, np.ndarray]:
         """접근점 pose 계산. (approach_pose, port_axis_world)
 
@@ -138,7 +139,8 @@ class Stage1Approach:
             port_pose.position.y,
             port_pose.position.z,
         ])
-        approach_pos = port_pos + port_axis_world * Stage1Config.Z_OFFSET
+        target_z_offset = Stage1Config.Z_OFFSET if z_offset is None else z_offset
+        approach_pos = port_pos + port_axis_world * target_z_offset
 
         # 플러그-그리퍼 오프셋 (TF 가능한 경우만)
         if plug_tf is not None:
@@ -181,6 +183,26 @@ class Stage1Approach:
             orientation=tuple_to_quat(q_target),
         )
         return approach_pose, port_axis_world
+
+    def _estimate_tip_z_offset(self, get_observation, port_pose: Pose) -> Optional[float]:
+        obs = get_observation()
+        if obs is None:
+            return None
+        target_class_id = 3 if "sc" in self._task.plug_name.lower() else 2
+        tip_3d = self._vision.estimate(
+            obs,
+            self._parent_node._tf_buffer,
+            target_class_id,
+        )
+        if tip_3d is None:
+            return None
+        z_offset = float(tip_3d[2] - port_pose.position.z)
+        z_offset = float(np.clip(z_offset, Stage1Config.Z_OFFSET_MID, Stage1Config.Z_OFFSET))
+        self.get_logger().info(
+            f"Vision tip z_offset: tip_z={tip_3d[2]:+.3f}, "
+            f"port_z={port_pose.position.z:+.3f}, target={z_offset:+.3f}"
+        )
+        return z_offset
 
     def _check_stage1_termination(
         self,
@@ -285,9 +307,10 @@ class Stage1Approach:
                 port_source=port_source,
             )
 
-        # 3. 접근점 계산
+        # 3. 접근점 계산. YOLO tip class가 보이면 TF tip 대신 vision 기반 z_offset 사용.
+        vision_z_offset = self._estimate_tip_z_offset(get_observation, port_pose)
         approach_pose, port_axis = self._compute_approach_pose(
-            port_pose, plug_tf, gripper_tf, port_source
+            port_pose, plug_tf, gripper_tf, port_source, z_offset=vision_z_offset
         )
         self.get_logger().info(
             f"  접근점: ({approach_pose.position.x:+.3f}, "

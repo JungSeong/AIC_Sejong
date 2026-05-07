@@ -22,6 +22,7 @@ Stage 2/3: 임시 (ground_truth 기반, 추후 AI 교체)
 from typing import Optional
 
 import numpy as np
+import cv2
 
 from aic_model.policy import (
     GetObservationCallback,
@@ -77,16 +78,25 @@ class StagedPolicy(Policy):
 
         self._stage1 = Stage1Approach(self, self._vision)
         self._stage23 = Stage23Controller(self)
+        self._distance_model = None
+        self._distance_device = None
+        self._distance_target_mean = np.zeros(3, dtype=np.float32)
+        self._distance_target_std = np.ones(3, dtype=np.float32)
+        self._load_distance_model()
 
     # ─────────────────────────────────────────────────────
     #  프레임 이름 / TF 조회
     # ─────────────────────────────────────────────────────
 
     def _port_frame(self) -> str:
-        return (
+        port_frame = (
             f"task_board/{self._task.target_module_name}"
             f"/{self._task.port_name}_link"
         )
+        entrance_frame = f"{port_frame}_entrance"
+        if self._lookup_tf(entrance_frame) is not None:
+            return entrance_frame
+        return port_frame
 
     def _plug_frame(self) -> str:
         return f"{self._task.cable_name}/{self._task.plug_name}_link"
@@ -132,6 +142,88 @@ class StagedPolicy(Policy):
                 z=tf.rotation.z, w=tf.rotation.w,
             ),
         )
+
+    def _load_distance_model(self) -> None:
+        model_path = Stage1Config.DISTANCE_MODEL_PATH
+        try:
+            import torch
+            import torch.nn as nn
+            from torchvision.models import resnet50
+
+            checkpoint = torch.load(model_path, map_location="cpu")
+            config = checkpoint.get("config", {})
+            self._distance_target_mean = np.asarray(
+                config.get("target_mean", [0.0, 0.0, 0.0]), dtype=np.float32
+            )
+            self._distance_target_std = np.asarray(
+                config.get("target_std", [1.0, 1.0, 1.0]), dtype=np.float32
+            )
+            encoder = resnet50(weights=None)
+            in_features = encoder.fc.in_features
+            encoder.fc = nn.Identity()
+
+            class PositionModel(nn.Module):
+                def __init__(self, encoder, in_dim):
+                    super().__init__()
+                    self.encoder = encoder
+                    self.head = nn.Sequential(
+                        nn.Linear(in_dim, 256),
+                        nn.ReLU(inplace=True),
+                        nn.Dropout(0.1),
+                        nn.Linear(256, 128),
+                        nn.ReLU(inplace=True),
+                        nn.Dropout(0.1),
+                        nn.Linear(128, 3),
+                    )
+
+                def forward(self, x):
+                    return self.head(self.encoder(x))
+
+            self._distance_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self._distance_model = PositionModel(encoder, in_features).to(self._distance_device)
+            self._distance_model.load_state_dict(checkpoint["model_state_dict"])
+            self._distance_model.eval()
+            self.get_logger().info(f"Distance model loaded: {model_path}")
+        except Exception as ex:
+            self._distance_model = None
+            self.get_logger().warn(f"Distance model unavailable: {ex}")
+
+    @staticmethod
+    def _image_msg_to_bgr(img_msg):
+        if img_msg is None or img_msg.width == 0 or img_msg.height == 0:
+            return None
+        img = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(
+            img_msg.height, img_msg.width, 3
+        )
+        if img_msg.encoding == "rgb8":
+            return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        return img.copy()
+
+    def predict_distance_offset(self, obs) -> Optional[np.ndarray]:
+        """Return predicted plug-tip-to-port offset [x,y,z] in meters."""
+        if self._distance_model is None or obs is None:
+            return None
+        bgr = self._image_msg_to_bgr(obs.center_image)
+        if bgr is None:
+            return None
+        try:
+            import torch
+
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_AREA)
+            image = resized.astype(np.float32) / 255.0
+            image = (
+                image - np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
+            ) / np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
+            tensor = torch.from_numpy(image.transpose(2, 0, 1)).unsqueeze(0)
+            tensor = tensor.to(self._distance_device)
+            with torch.no_grad():
+                pred_norm = self._distance_model(tensor).detach().cpu().numpy()[0]
+            pred_mm = pred_norm * self._distance_target_std + self._distance_target_mean
+            return pred_mm.astype(np.float32) / 1000.0
+        except Exception as ex:
+            self.get_logger().warn(f"Distance prediction failed: {ex}")
+            return None
 
     # ─────────────────────────────────────────────────────
     #  메인
@@ -192,7 +284,8 @@ class StagedPolicy(Policy):
 
         try:
             self._stage23.align(move_robot, send_feedback,
-                                port_pose_vision=port_pose_for_23)
+                                port_pose_vision=port_pose_for_23,
+                                get_observation=get_observation)
             self._stage23.insert(get_observation, move_robot, send_feedback,
                                  port_pose_vision=port_pose_for_23)
         except Exception as ex:
