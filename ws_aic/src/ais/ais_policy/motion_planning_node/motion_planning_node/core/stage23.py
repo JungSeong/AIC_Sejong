@@ -3,11 +3,9 @@
 from typing import Optional
 
 import numpy as np
-from geometry_msgs.msg import Point, Pose, Transform
-from transforms3d._gohlketransforms import quaternion_multiply
+from geometry_msgs.msg import Point, Pose, Transform, Vector3
 
 from motion_planning_node.core.geometry import (
-    quat_inverse,
     quat_to_tuple,
     tuple_to_quat,
 )
@@ -36,17 +34,24 @@ class Stage23Controller:
     def set_pose_target(self, *args, **kwargs):
         return self._policy.set_pose_target(*args, **kwargs)
 
-    def _port_frame(self) -> str:
-        return self._policy._port_frame()
-
-    def _plug_frame(self) -> str:
-        return self._policy._plug_frame()
-
-    def _lookup_tf(self, frame: str) -> Optional[Transform]:
-        return self._policy._lookup_tf(frame)
-
     def _transform_to_pose(self, tf: Transform) -> Pose:
         return self._policy._transform_to_pose(tf)
+
+    @staticmethod
+    def _tcp_transform_from_obs(obs) -> Optional[Transform]:
+        if obs is None:
+            return None
+        pose = getattr(getattr(obs, "controller_state", None), "tcp_pose", None)
+        if pose is None:
+            return None
+        return Transform(
+            translation=Vector3(
+                x=pose.position.x,
+                y=pose.position.y,
+                z=pose.position.z,
+            ),
+            rotation=pose.orientation,
+        )
 
     # ─────────────────────────────────────────────────────
     #  Stage 2/3: 임시 (기존과 동일)
@@ -57,81 +62,33 @@ class Stage23Controller:
         self._y_integrator = 0.0
 
     def _compute_stage23_pose(self, z_offset, use_integrator=False,
+                              obs=None,
                               port_pose_vision: Optional[Pose] = None):
         """Stage 2/3용 목표 pose.
 
-        port_pose_vision이 제공되면 Vision 결과 사용 (ground_truth=false 환경).
-        아니면 TF 기반 CheatCode 방식 (ground_truth=true 환경).
+        포트 좌표는 Stage 1의 Vision 결과만 사용한다.
         """
-        gripper_tf = self._lookup_tf("gripper/tcp")
-        if gripper_tf is None:
+        gripper_tf = self._tcp_transform_from_obs(obs)
+        if gripper_tf is None or port_pose_vision is None:
             return None
 
-        # Vision 모드라면 TF lookup 건너뛰기 (무한 재시도 방지)
-        if port_pose_vision is not None:
-            port_tf = None
-            plug_tf = None
-        else:
-            port_tf = self._lookup_tf(self._port_frame())
-            plug_tf = self._lookup_tf(self._plug_frame())
+        q_gripper = quat_to_tuple(
+            self._transform_to_pose(gripper_tf).orientation
+        )
+        # 포트 위치 + z_offset + 그리퍼-플러그 대략 오프셋
+        tx = port_pose_vision.position.x
+        ty = port_pose_vision.position.y + 0.015
+        tz = port_pose_vision.position.z + z_offset + 0.045
 
-        if port_tf is not None and plug_tf is not None:
-            # ── TF 경로 (ground_truth=true) ──
-            q_port = quat_to_tuple(self._transform_to_pose(port_tf).orientation)
-            q_plug = quat_to_tuple(self._transform_to_pose(plug_tf).orientation)
-            q_gripper = quat_to_tuple(
-                self._transform_to_pose(gripper_tf).orientation
-            )
-            q_diff = quaternion_multiply(q_port, quat_inverse(q_plug))
-            q_target = quaternion_multiply(q_diff, q_gripper)
-
-            offset_z = gripper_tf.translation.z - plug_tf.translation.z
-            tip_x_err = port_tf.translation.x - plug_tf.translation.x
-            tip_y_err = port_tf.translation.y - plug_tf.translation.y
-
-            if use_integrator:
-                self._x_integrator = np.clip(
-                    self._x_integrator + tip_x_err,
-                    -self._max_windup, self._max_windup,
-                )
-                self._y_integrator = np.clip(
-                    self._y_integrator + tip_y_err,
-                    -self._max_windup, self._max_windup,
-                )
-                tx = port_tf.translation.x + self._i_gain * self._x_integrator
-                ty = port_tf.translation.y + self._i_gain * self._y_integrator
-            else:
-                tx = port_tf.translation.x
-                ty = port_tf.translation.y
-            tz = port_tf.translation.z + z_offset + offset_z
-
-            return Pose(
-                position=Point(x=float(tx), y=float(ty), z=float(tz)),
-                orientation=tuple_to_quat(q_target),
-            )
-
-        elif port_pose_vision is not None:
-            # ── Vision 경로 (ground_truth=false) ──
-            # 플러그 TF 없음 → 대략적 오프셋으로 그리퍼 목표 생성
-            q_gripper = quat_to_tuple(
-                self._transform_to_pose(gripper_tf).orientation
-            )
-            # 포트 위치 + z_offset + 그리퍼-플러그 대략 오프셋
-            tx = port_pose_vision.position.x
-            ty = port_pose_vision.position.y + 0.015  # 플러그-그리퍼 y 오프셋
-            tz = port_pose_vision.position.z + z_offset + 0.045  # z 오프셋
-
-            return Pose(
-                position=Point(x=float(tx), y=float(ty), z=float(tz)),
-                orientation=tuple_to_quat(q_gripper),
-            )
-
-        return None
+        return Pose(
+            position=Point(x=float(tx), y=float(ty), z=float(tz)),
+            orientation=tuple_to_quat(q_gripper),
+        )
 
     def align(self, move_robot, send_feedback,
-              port_pose_vision=None):
-        self.get_logger().info("━━━ Stage 2: 정렬 시작 ━━━")
-        send_feedback("Stage 2: aligning to port")
+              port_pose_vision=None, get_observation=None):
+        self.get_logger().info("━━━ Stage 2: Vision offset 정렬 시작 ━━━")
+        send_feedback("Stage 2: aligning to port with vision offset")
         self._reset_integrator()
 
         Z_START, Z_END, N = 0.10, 0.005, 100
@@ -140,9 +97,26 @@ class Stage23Controller:
             z = Z_START + t * (Z_END - Z_START)
             pose = self._compute_stage23_pose(
                 z_offset=z, use_integrator=True,
+                obs=get_observation() if get_observation is not None else None,
                 port_pose_vision=port_pose_vision,
             )
             if pose is not None:
+                pred_offset = None
+                if get_observation is not None and hasattr(self._policy, "predict_distance_offset"):
+                    pred_offset = self._policy.predict_distance_offset(get_observation())
+                if pred_offset is not None:
+                    dx = float(np.clip(-pred_offset[0], -0.004, 0.004))
+                    dy = float(np.clip(-pred_offset[1], -0.004, 0.004))
+                    pose.position.x = float(pose.position.x + dx)
+                    pose.position.y = float(pose.position.y + dy)
+                    self.get_logger().info(
+                        f"Stage 2 vision offset xyz="
+                        f"{pred_offset[0]:+.4f},{pred_offset[1]:+.4f},{pred_offset[2]:+.4f}m "
+                        f"cmd_xy={dx:+.4f},{dy:+.4f}"
+                    )
+                    if float(np.linalg.norm(pred_offset[:2])) < 0.002:
+                        self.set_pose_target(move_robot=move_robot, pose=pose)
+                        break
                 self.set_pose_target(move_robot=move_robot, pose=pose)
             self.sleep_for(0.05)
 
@@ -169,6 +143,7 @@ class Stage23Controller:
 
             pose = self._compute_stage23_pose(
                 z_offset=z, use_integrator=True,
+                obs=obs,
                 port_pose_vision=port_pose_vision,
             )
             if pose is not None:

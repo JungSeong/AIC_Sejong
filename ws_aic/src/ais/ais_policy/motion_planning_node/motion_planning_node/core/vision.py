@@ -1,17 +1,16 @@
 """YOLO and stereo-based port localization."""
 
 import os
+import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
-from rclpy.time import Time
-from tf2_ros import TransformException
 
 from motion_planning_node.core.config import Stage1Config
 from motion_planning_node.core.geometry import (
     _project_3d_to_pixel,
-    transform_to_matrix,
 )
 
 
@@ -22,14 +21,29 @@ from motion_planning_node.core.geometry import (
 class VisionPortEstimator:
     """카메라 영상에서 포트 3D 좌표를 추정.
 
-    첫 호출 시에만 YOLO 모델 로드 (지연 초기화).
+    YOLO 모델 로드와 추론은 백그라운드 스레드에서 수행한다.
     """
 
     CAMERAS = [("left", "left_camera/optical"),
                ("center", "center_camera/optical"),
                ("right", "right_camera/optical")]
 
-    CLASS_NAMES = {0: "sfp_port", 1: "sc_port"}
+    CLASS_NAMES = {0: "sfp_port", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
+    TOOL0_TO_TCP_Z = 0.1965
+    TOOL0_TO_OPTICAL = {
+        "left": (
+            [-0.100516584, -0.058032593, -0.008935891],
+            [-0.113039947, 0.065265728, -0.495722390, 0.858616135],
+        ),
+        "center": (
+            [-0.000000001, -0.116079183, -0.008937891],
+            [-0.130528330, 0.000001827, -0.000000288, 0.991444580],
+        ),
+        "right": (
+            [0.100516583, -0.058032595, -0.008935891],
+            [-0.113041775, -0.065262563, 0.495721890, 0.858616424],
+        ),
+    }
 
     # 디버그 이미지 저장 디렉토리 (None이면 저장 안 함)
     # Docker: AIC_DEBUG_SAVE_DIR=/debug/yolo_detections (docker-compose에서 volume mount)
@@ -45,7 +59,30 @@ class VisionPortEstimator:
         self._logger = logger
         self._model = None
         self._loaded = False
+        self._load_lock = threading.Lock()
         self._debug_call_count = 0  # 호출 횟수 (파일명 중복 방지)
+        self._cache_max_age_sec = float(os.environ.get("AIC_YOLO_CACHE_MAX_AGE_SEC", "0.75"))
+        self._async_wait_sec = float(os.environ.get("AIC_YOLO_ASYNC_WAIT_SEC", "2.0"))
+        self._async_poll_sec = float(os.environ.get("AIC_YOLO_ASYNC_POLL_SEC", "0.02"))
+        self._request_lock = threading.Lock()
+        self._request_event = threading.Event()
+        self._request: Optional[dict[str, Any]] = None
+        self._cache_lock = threading.Lock()
+        self._cache: dict[str, Any] = {
+            "target_class_id": None,
+            "candidates": [],
+            "updated_at": 0.0,
+            "request_id": 0,
+        }
+        self._t_tool0_tcp = np.eye(4, dtype=float)
+        self._t_tool0_tcp[2, 3] = float(os.environ.get("AIC_TOOL0_TO_TCP_Z", str(self.TOOL0_TO_TCP_Z)))
+        self._t_tool0_to_optical = {
+            name: self._matrix_from_translation_quat(translation, quat)
+            for name, (translation, quat) in self.TOOL0_TO_OPTICAL.items()
+        }
+        self._request_seq = 0
+        threading.Thread(target=self._ensure_loaded, daemon=True).start()
+        threading.Thread(target=self._estimate_worker, daemon=True).start()
 
         # 디버그 디렉토리 생성
         if self.DEBUG_SAVE_DIR:
@@ -60,33 +97,84 @@ class VisionPortEstimator:
                 self.__class__.DEBUG_SAVE_DIR = None
 
     def _ensure_loaded(self):
-        if self._loaded:
-            return
-        if not os.path.isfile(self._model_path):
-            if self._logger:
-                self._logger.error(
-                    f"YOLO 모델 파일 없음: {self._model_path}\n"
-                    "  해결 방법:\n"
-                    "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
-                    "  2) ws_aic/weight/ais_yolo/weights/best.pt 에 배치\n"
-                    "  3) YOLO 학습 스크립트의 --output 경로 확인"
+        with self._load_lock:
+            if self._loaded:
+                return
+            if not os.path.isfile(self._model_path):
+                if self._logger:
+                    self._logger.error(
+                        f"YOLO 모델 파일 없음: {self._model_path}\n"
+                        "  해결 방법:\n"
+                        "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
+                        "  2) ws_aic/weight/ais_yolo/weights/best.pt 에 배치\n"
+                        "  3) YOLO 학습 스크립트의 --output 경로 확인"
+                    )
+                return
+            try:
+                from ultralytics import YOLO
+                import cv2  # noqa: F401
+            except ImportError as e:
+                if self._logger:
+                    self._logger.error(f"Vision 의존성 없음: {e}")
+                return
+            try:
+                self._model = YOLO(self._model_path)
+                self._loaded = True
+                if self._logger:
+                    self._logger.info(f"YOLO 모델 로드: {self._model_path}")
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(f"YOLO 로드 실패: {e}")
+
+    def _estimate_worker(self) -> None:
+        while True:
+            self._request_event.wait()
+            with self._request_lock:
+                request = self._request
+                self._request = None
+                self._request_event.clear()
+            if request is None:
+                continue
+
+            try:
+                candidates = self._estimate_all_sync(
+                    request["obs"],
+                    request["target_class_id"],
                 )
-            return
-        try:
-            from ultralytics import YOLO
-            import cv2  # noqa: F401
-        except ImportError as e:
-            if self._logger:
-                self._logger.error(f"Vision 의존성 없음: {e}")
-            return
-        try:
-            self._model = YOLO(self._model_path)
-            self._loaded = True
-            if self._logger:
-                self._logger.info(f"YOLO 모델 로드: {self._model_path}")
-        except Exception as e:
-            if self._logger:
-                self._logger.error(f"YOLO 로드 실패: {e}")
+            except Exception as ex:
+                candidates = []
+                if self._logger:
+                    self._logger.warn(f"Vision: 비동기 YOLO 추론 실패: {ex}")
+            with self._cache_lock:
+                self._cache = {
+                    "target_class_id": request["target_class_id"],
+                    "candidates": candidates,
+                    "updated_at": time.time(),
+                    "request_id": request["request_id"],
+                }
+
+    def _submit_estimate(self, obs, target_class_id: int) -> int:
+        with self._request_lock:
+            self._request_seq += 1
+            request_id = self._request_seq
+            self._request = {
+                "obs": obs,
+                "target_class_id": target_class_id,
+                "request_id": request_id,
+            }
+            self._request_event.set()
+            return request_id
+
+    def _cached_candidates(self, target_class_id: int, min_request_id: int = 0) -> Optional[list]:
+        with self._cache_lock:
+            cache = dict(self._cache)
+        if cache.get("target_class_id") != target_class_id:
+            return None
+        if int(cache.get("request_id", 0)) < min_request_id:
+            return None
+        if (time.time() - float(cache.get("updated_at", 0.0))) > self._cache_max_age_sec:
+            return None
+        return list(cache.get("candidates") or [])
 
     @staticmethod
     def _image_from_msg(img_msg):
@@ -96,6 +184,53 @@ class VisionPortEstimator:
         if img_msg.encoding == "rgb8":
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         return img
+
+    @staticmethod
+    def _quat_to_matrix_xyzw(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
+        norm = float(np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw))
+        if norm < 1e-12:
+            return np.eye(3, dtype=float)
+        qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+        xx, yy, zz = qx * qx, qy * qy, qz * qz
+        xy, xz, yz = qx * qy, qx * qz, qy * qz
+        wx, wy, wz = qw * qx, qw * qy, qw * qz
+        return np.array([
+            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+            [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+            [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+        ], dtype=float)
+
+    @classmethod
+    def _matrix_from_translation_quat(cls, translation, quat_xyzw) -> np.ndarray:
+        matrix = np.eye(4, dtype=float)
+        matrix[:3, :3] = cls._quat_to_matrix_xyzw(*quat_xyzw)
+        matrix[:3, 3] = np.asarray(translation, dtype=float)
+        return matrix
+
+    @classmethod
+    def _matrix_from_pose(cls, pose) -> np.ndarray:
+        matrix = np.eye(4, dtype=float)
+        matrix[:3, :3] = cls._quat_to_matrix_xyzw(
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+        matrix[:3, 3] = [pose.position.x, pose.position.y, pose.position.z]
+        return matrix
+
+    def _base_to_camera_optical_matrix(self, obs, camera_name: str) -> Optional[np.ndarray]:
+        try:
+            t_base_tcp = self._matrix_from_pose(obs.controller_state.tcp_pose)
+            t_base_tool0 = t_base_tcp @ np.linalg.inv(self._t_tool0_tcp)
+            t_base_optical = t_base_tool0 @ self._t_tool0_to_optical[camera_name]
+            return np.linalg.inv(t_base_optical)
+        except Exception as ex:
+            if self._logger:
+                self._logger.warn(
+                    f"Vision: {camera_name} camera extrinsic 계산 실패: {ex}"
+                )
+            return None
 
     def _detect(self, image: np.ndarray, cam_name: str = "") -> list:
         import cv2
@@ -184,13 +319,13 @@ class VisionPortEstimator:
         )
         return (pts_4d[:3] / pts_4d[3]).flatten()
 
-    def estimate(self, obs, tf_buffer, target_class_id: int,
+    def estimate(self, obs, target_class_id: int,
                  port_hint: Optional[str] = None) -> Optional[np.ndarray]:
         """포트 3D 좌표 추정 (호환성 유지).
 
         단일 best 결과를 반환. 세밀한 선택이 필요하면 estimate_all() 사용.
         """
-        candidates = self.estimate_all(obs, tf_buffer, target_class_id)
+        candidates = self.estimate_all(obs, target_class_id)
         if not candidates:
             return None
 
@@ -204,7 +339,36 @@ class VisionPortEstimator:
         return candidates[0]["pos"]
 
     def estimate_all(
-        self, obs, tf_buffer, target_class_id: int
+        self, obs, target_class_id: int
+    ) -> list:
+        """가능한 모든 유효 후보 반환.
+
+        무거운 YOLO 추론은 워커 스레드에 제출하고, 최신 캐시가 갱신될 때까지
+        짧게 폴링한다. 캐시가 아직 없으면 빈 리스트를 반환한다.
+        """
+        if obs is None:
+            return []
+
+        request_id = self._submit_estimate(obs, target_class_id)
+        deadline = time.time() + max(0.0, self._async_wait_sec)
+        while time.time() < deadline:
+            cached = self._cached_candidates(target_class_id, min_request_id=request_id)
+            if cached is not None:
+                return cached
+            time.sleep(max(0.001, self._async_poll_sec))
+
+        cached = self._cached_candidates(target_class_id)
+        if cached is not None:
+            return cached
+        if self._logger:
+            self._logger.warn(
+                f"Vision: 비동기 YOLO 결과 대기 시간 초과 "
+                f"(target_class_id={target_class_id})"
+            )
+        return []
+
+    def _estimate_all_sync(
+        self, obs, target_class_id: int
     ) -> list:
         """가능한 모든 유효 후보 반환. score 낮은 순(= 보드 중심 가까운 순) 정렬.
 
@@ -215,7 +379,7 @@ class VisionPortEstimator:
         if not self._loaded:
             return []
 
-        # 1. 카메라별 이미지 + 내부 파라미터 + 외부 TF
+        # 1. 카메라별 이미지 + 내부 파라미터 + 고정 extrinsic
         images = {
             "left": self._image_from_msg(obs.left_image),
             "center": self._image_from_msg(obs.center_image),
@@ -226,15 +390,12 @@ class VisionPortEstimator:
             "center": obs.center_camera_info,
             "right": obs.right_camera_info,
         }
-        cam_T_in_base = {}
-        for name, frame in self.CAMERAS:
-            try:
-                tf = tf_buffer.lookup_transform("base_link", frame, Time())
-                cam_T_in_base[name] = transform_to_matrix(tf.transform)
-            except TransformException:
-                if self._logger:
-                    self._logger.warn(f"Vision: 카메라 {name} TF 없음")
+        T_base_to = {}
+        for name, _ in self.CAMERAS:
+            t_base_to_camera = self._base_to_camera_optical_matrix(obs, name)
+            if t_base_to_camera is None:
                 return []
+            T_base_to[name] = t_base_to_camera
 
         # 2. 각 카메라에서 검출 (타겟 클래스만)
         if self._logger:
@@ -267,7 +428,7 @@ class VisionPortEstimator:
         # 카메라 정보 사전 캐시
         K = {n: np.array(cam_infos[n].k).reshape(3, 3) for n, _ in self.CAMERAS
              if n in cams_with_dets}
-        T_base_to = {n: np.linalg.inv(cam_T_in_base[n]) for n, _ in self.CAMERAS
+        T_base_to = {n: T_base_to[n] for n, _ in self.CAMERAS
                      if n in cams_with_dets}
 
         # 4. 각 카메라 쌍으로 후보 삼각측량

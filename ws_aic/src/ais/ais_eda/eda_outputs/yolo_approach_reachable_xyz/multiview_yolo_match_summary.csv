@@ -1,0 +1,5 @@
+checkpoint,task_type,n,at_least_2_views_pct,all_3_views_pct,at_least_2_ok_conf_pct,all_3_ok_conf_pct,conf_min_mean
+first_insert,nic,5,100.0,80.0,100.0,60.0,0.44540627151727674
+first_insert,sc,2,100.0,100.0,0.0,0.0,0.06615785975009203
+last_approach,nic,5,100.0,80.0,100.0,40.0,0.47324304580688475
+last_approach,sc,2,100.0,100.0,0.0,0.0,0.1621945621445775

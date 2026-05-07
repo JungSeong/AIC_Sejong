@@ -15,6 +15,5 @@ class Stage1Result:
     port_axis: Optional[np.ndarray]
     elapsed_time: float
     failure_reason: Optional[str] = None
-    port_source: str = "unknown"  # "tf" | "vision" | "fallback"
-
+    port_source: str = "unknown"  # "vision" | "none"
 

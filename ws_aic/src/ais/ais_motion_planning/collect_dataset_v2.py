@@ -27,12 +27,13 @@ v1 대비 추가:
     --episodes 500 --n_viewpoints 20
 
 라벨 형식 (YOLO): class_id x_center y_center width height
-Classes: 0=sfp_port, 1=sc_port
+Classes: 0=sfp_port, 1=sc_port, 2=sfp_tip, 3=sc_tip
 """
 import argparse
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -51,7 +52,7 @@ from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
 
 
 # ───────────────────────────────────────────────
-#  수집 대상 포트 + 클래스
+#  수집 대상 포트/케이블 끝단 + 클래스
 # ───────────────────────────────────────────────
 PORT_DEFINITIONS = [
     (0, "sfp_port", [
@@ -69,6 +70,12 @@ PORT_DEFINITIONS = [
     (1, "sc_port", [
         "task_board/sc_port_0/sc_port_base_link",
         "task_board/sc_port_1/sc_port_base_link",
+    ], (0.012, 0.025)),
+    (2, "sfp_tip", [
+        "cable_0/sfp_tip_link",
+    ], (0.014, 0.010)),
+    (3, "sc_tip", [
+        "cable_1/sc_tip_link",
     ], (0.012, 0.025)),
 ]
 
@@ -226,13 +233,22 @@ class DatasetCollector(Node):
         return (len(self._cam_info) == 3
                 and len(self._latest_image) == 3)
 
+    def _lookup_port_tf(self, frame):
+        entrance_frame = f"{frame}_entrance"
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                "base_link", entrance_frame, Time())
+            return tf, entrance_frame
+        except TransformException:
+            tf = self._tf_buffer.lookup_transform("base_link", frame, Time())
+            return tf, frame
+
     def discover_existing_ports(self):
         found = []
         for class_id, class_name, candidate_frames, size_m in PORT_DEFINITIONS:
             for frame in candidate_frames:
                 try:
-                    tf = self._tf_buffer.lookup_transform(
-                        "base_link", frame, Time())
+                    tf, resolved_frame = self._lookup_port_tf(frame)
                     pos = np.array([
                         tf.transform.translation.x,
                         tf.transform.translation.y,
@@ -241,7 +257,8 @@ class DatasetCollector(Node):
                     found.append({
                         "class_id": class_id,
                         "class_name": class_name,
-                        "frame": frame,
+                        "frame": resolved_frame,
+                        "base_frame": frame,
                         "pos_3d": pos,
                         "size_m": size_m,
                     })
@@ -280,7 +297,8 @@ class DatasetCollector(Node):
         )
         self._motion_pub.publish(msg)
 
-    def collect_one_frame(self, episode_id, out_dir, is_val=False, debug=False):
+    def collect_one_frame(self, episode_id, out_dir, is_val=False, debug=False,
+                          stem_prefix=""):
         split = "val" if is_val else "train"
 
         cam_T_in_base = {}
@@ -328,7 +346,7 @@ class DatasetCollector(Node):
             if not yolo_labels:
                 continue
 
-            stem = f"ep{episode_id:05d}_{name}"
+            stem = f"{stem_prefix}ep{episode_id:05d}_{name}"
             img_path = out_dir / "images" / split / f"{stem}.jpg"
             lbl_path = out_dir / "labels" / split / f"{stem}.txt"
             img_path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,15 +367,18 @@ def main():
     parser.add_argument("--episodes", type=int, default=500)
     parser.add_argument("--n_viewpoints", type=int, default=15,
                         help="로봇 자세 뷰포인트 수")
-    parser.add_argument("--output", type=str, default="~/aic_yolo_dataset")
+    parser.add_argument("--output", type=str, default="../../data/yolo")
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--move_settle_s", type=float, default=2.5,
                         help="로봇 이동 후 안정화 대기 시간")
     parser.add_argument("--frames_per_viewpoint", type=int, default=None,
                         help="뷰포인트당 수집 프레임 수 (기본: episodes/n_viewpoints)")
+    parser.add_argument("--stem_prefix", type=str, default="",
+                        help="저장 파일명 prefix (시나리오 반복 수집 시 덮어쓰기 방지)")
     args = parser.parse_args()
 
-    out_dir = Path(os.path.expanduser(args.output))
+    date_dir = datetime.now().strftime("%Y%m%d")
+    out_dir = Path(os.path.expanduser(args.output)) / date_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 뷰포인트 생성
@@ -426,7 +447,8 @@ def main():
                 is_val = (episode_id % int(1 / args.val_ratio) == 0
                           if args.val_ratio > 0 else False)
                 if node.collect_one_frame(episode_id, out_dir, is_val=is_val,
-                                          debug=(episode_id == 0)):
+                                          debug=(episode_id == 0),
+                                          stem_prefix=args.stem_prefix):
                     saved_count += 1
                 episode_id += 1
                 time.sleep(0.1)
@@ -447,6 +469,8 @@ def main():
         f"names:\n"
         f"  0: sfp_port\n"
         f"  1: sc_port\n"
+        f"  2: sfp_tip\n"
+        f"  3: sc_tip\n"
     )
 
     # 최종 통계

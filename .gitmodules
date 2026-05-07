@@ -1,6 +1,0 @@
-[submodule "ws_aic/src/aic"]
-	path = ws_aic/src/aic
-	url = https://github.com/intrinsic-dev/aic.git
-[submodule "code/transformer"]
-	path = code/transformer
-	url = https://github.com/hyunwoongko/transformer.git

@@ -25,6 +25,11 @@ ws_aic/.venv
 ws_aic/src/ais/ais_distance_prediction/.venv
 
 *.pt
+*.npy
+
 ws_aic/.vscode/settings.json
 ws_aic/src/ais/ais_distance_prediction/.vscode/settings.json
 .codex/AGENTS.md
+
+aic_venv/
+lerobot_venv/
