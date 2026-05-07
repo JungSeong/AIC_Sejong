@@ -1,0 +1,11 @@
+metric,value
+samples,1120
+episodes,7
+tasks,7
+collect_patterns,gaussian
+left_image_exists_pct,100.0
+left_detected_pct,63.83928571428571
+center_image_exists_pct,100.0
+center_detected_pct,70.35714285714286
+right_image_exists_pct,100.0
+right_detected_pct,8.035714285714286

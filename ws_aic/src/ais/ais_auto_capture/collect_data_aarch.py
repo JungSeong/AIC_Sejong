@@ -306,6 +306,8 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> tuple[dict, dict]:
     offset_x = LIMITS["nic_gripper_offset_x"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_y = LIMITS["nic_gripper_offset_y"] + rnd(*LIMITS["gripper_offset_noise"])
     offset_z = LIMITS["nic_gripper_offset_z"] + rnd(*LIMITS["gripper_offset_noise"])
+    sfp_port_idx = random.choice([0, 1])
+    sfp_port_name = f"sfp_port_{sfp_port_idx}"
 
     task_board = {"pose": board}
     task_board.update(_nic_rails(nic_rail, nic_t, nic_y))
@@ -324,6 +326,7 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> tuple[dict, dict]:
         "nic_translation":  nic_t,
         "nic_yaw":          nic_y,
         "sc_translation":   sc_bg_t,
+        "sfp_port_idx":     sfp_port_idx,
     }
 
     config = {
@@ -341,13 +344,13 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> tuple[dict, dict]:
             },
         },
         "tasks": {
-            f"nic_rail{nic_rail}_task_1": {
+            f"nic_rail{nic_rail}_{sfp_port_name}_task_1": {
                 "cable_type": "sfp_sc",
                 "cable_name": "cable_0",
                 "plug_type": "sfp",
                 "plug_name": "sfp_tip",
                 "port_type": "sfp",
-                "port_name": "sfp_port_0",
+                "port_name": sfp_port_name,
                 "target_module_name": f"nic_card_mount_{nic_rail}",
                 "time_limit": 180,
             }
@@ -718,34 +721,31 @@ def push_dataset_to_hub(
     lerobot_repo_id: str,
     lerobot_version: str = "master",
 ) -> None:
-    """수집이 끝난 LeRobot 데이터셋을 HuggingFace Hub에 업로드한다."""
-    dataset_root = lerobot_out_dir / lerobot_version
-    if not dataset_root.exists():
-        print(f"[HF Hub] 데이터셋 디렉터리 없음: {dataset_root}")
+    dataset_root = Path(lerobot_out_dir).resolve() / lerobot_version
+    if not (dataset_root / "meta" / "info.json").exists():
+        print(f"[HF Hub] LeRobot dataset missing at {dataset_root}")
         return
-    print(f"\n[HF Hub] 업로드 시작: {lerobot_repo_id}@{lerobot_version}")
-    push_script = (
-        "from huggingface_hub import HfApi; "
-        f"api = HfApi(); "
-        f"api.create_repo(repo_id='{lerobot_repo_id}', repo_type='dataset', "
-        "private=True, exist_ok=True); "
-        f"api.create_branch(repo_id='{lerobot_repo_id}', repo_type='dataset', "
-        f"branch='{lerobot_version}', exist_ok=True); "
-        f"api.upload_folder(repo_id='{lerobot_repo_id}', repo_type='dataset', "
-        f"folder_path='{dataset_root}', revision='{lerobot_version}'); "
-        f"print('[HF Hub] 업로드 완료: {lerobot_repo_id}@{lerobot_version}')"
+
+    print(f"\n[HF Hub] Pushing standard LeRobot dataset to {lerobot_repo_id} (branch: {lerobot_version})")
+    
+    inline_script = (
+        f"from lerobot.datasets.lerobot_dataset import LeRobotDataset\n"
+        f"ds = LeRobotDataset.resume(repo_id='{lerobot_repo_id}', root='{str(dataset_root)}')\n"
+        f"ds.push_to_hub(branch='{lerobot_version}')\n"
     )
+    
     lerobot_python = str(LEROBOT_VENV / "bin" / "python3")
+    
     result = subprocess.run(
-        [lerobot_python, "-c", push_script],
-        capture_output=True, text=True,
+        [lerobot_python, "-c", inline_script],
+        capture_output=True,
+        text=True,
     )
     if result.returncode == 0:
         print(result.stdout.strip())
-        print(f"[HF Hub] https://huggingface.co/datasets/{lerobot_repo_id}/tree/{lerobot_version}")
+        print(f"[HF Hub] Successfully uploaded LeRobot format to https://huggingface.co/datasets/{lerobot_repo_id}/tree/{lerobot_version}")
     else:
-        print(f"[HF Hub] 업로드 실패:\n{result.stderr.strip()}")
-
+        print(f"[HF Hub] Upload failed:\n{result.stderr.strip()}")
 
 def terminate_processes(*procs, stop_zenoh: bool = False):
     """
@@ -964,7 +964,7 @@ def run_collection_loop(
     if use_lerobot and not dry_run and push_to_hub:
         push_dataset_to_hub(lerobot_out_dir, lerobot_repo_id, lerobot_version)
     elif use_lerobot and not dry_run:
-        print(f"\n[HF Hub] 업로드 생략 (--push-to-hub 미지정). "
+        print(f"\n[HF Hub] 업로드 생략 (--no-push-to-hub 지정). "
               f"로컬 경로: {lerobot_out_dir / lerobot_version}")
 
 
@@ -1007,8 +1007,10 @@ def main():
                         help="데이터셋 버전/브랜치 이름 (예: v1.0)")
     parser.add_argument("--yolo-model",       type=Path, default=None,
                         help=f"YOLO 모델 .pt 경로 (기본: {YOLO_MODEL_DEFAULT})")
-    parser.add_argument("--push-to-hub",      action="store_false", default=True,
-                        help="수집 완료 후 HuggingFace Hub에 데이터셋 업로드 (기본: 활성, 제외하려면 --push-to-hub 사용)")
+    parser.add_argument("--push-to-hub",      dest="push_to_hub", action="store_true", default=True,
+                        help="수집 완료 후 HuggingFace Hub에 vision offset 데이터셋 업로드 (기본: 활성)")
+    parser.add_argument("--no-push-to-hub",   dest="push_to_hub", action="store_false",
+                        help="HuggingFace Hub 업로드 비활성화")
 
     args = parser.parse_args()
     # 상대 경로를 절대 경로로 변환 (subprocess 환경에서도 안전하게 동작)

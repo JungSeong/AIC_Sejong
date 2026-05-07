@@ -17,20 +17,81 @@ requirements:
 import argparse
 from pathlib import Path
 
+import yaml
+
 _SRC_ROOT = Path(__file__).resolve().parents[2]  # ws_aic/src/
-_WS_ROOT = _SRC_ROOT.parent
+_DEFAULT_DATA   = _SRC_ROOT / "data" / "yolo" / "20260504" / "data.yaml"
+_DEFAULT_OUTPUT = _SRC_ROOT / "model" / "yolo" / "weight" / "ais_yolo"
 
-_DEFAULT_DATA   = _SRC_ROOT / "data" / "yolo" / "20260426" / "data.yaml"
-_DEFAULT_OUTPUT = _WS_ROOT / "weight" / "ais_yolo"
+IMAGE_EXTS = {".bmp", ".dng", ".jpeg", ".jpg", ".mpo", ".png", ".tif", ".tiff", ".webp"}
 
+
+def _resolve_dataset_path(data_yaml: Path, dataset_cfg: dict, split: str) -> Path | None:
+    split_value = dataset_cfg.get(split)
+    if not split_value:
+        return None
+
+    split_path = Path(split_value).expanduser()
+    if split_path.is_absolute():
+        return split_path
+
+    base_candidates = []
+    base = dataset_cfg.get("path")
+    if base:
+        base_path = Path(base).expanduser()
+        base_candidates.append(base_path if base_path.is_absolute() else data_yaml.parent / base_path)
+    base_candidates.append(data_yaml.parent)
+
+    for base_path in base_candidates:
+        candidate = (base_path / split_path).resolve()
+        if candidate.exists():
+            return candidate
+
+    return (base_candidates[0] / split_path).resolve()
+
+
+def _count_images(image_dir: Path | None) -> int:
+    if image_dir is None or not image_dir.exists():
+        return 0
+    return sum(
+        1
+        for path in image_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    )
+
+
+def _count_labels(image_dir: Path | None) -> int:
+    if image_dir is None:
+        return 0
+    parts = list(image_dir.parts)
+    if "images" in parts:
+        parts[parts.index("images")] = "labels"
+        label_dir = Path(*parts)
+    else:
+        label_dir = image_dir.parent.parent / "labels" / image_dir.name
+    if not label_dir.exists():
+        return 0
+    return sum(1 for path in label_dir.rglob("*.txt") if path.is_file())
+
+
+def print_dataset_counts(data_path: Path) -> None:
+    with data_path.open("r", encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+
+    print("데이터셋 개수:")
+    for split, title in [("train", "훈련"), ("val", "검증")]:
+        image_dir = _resolve_dataset_path(data_path, dataset_cfg, split)
+        image_count = _count_images(image_dir)
+        label_count = _count_labels(image_dir)
+        print(f"  {title}: 이미지 {image_count}장, 라벨 {label_count}개")
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data",   type=str, default=str(_DEFAULT_DATA))
     parser.add_argument("--model",  type=str, default="yolov8s.pt")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz",  type=int, default=640)
-    parser.add_argument("--batch",  type=int, default=16)
+    parser.add_argument("--batch",  type=int, default=32)
     parser.add_argument("--output", type=str, default=str(_DEFAULT_OUTPUT))
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--resume", type=str, default=None,
@@ -45,10 +106,12 @@ def main():
 
     if args.val_only:
         model_pt = Path(args.val_only).expanduser().resolve()
-        data_path = str(Path(args.data).expanduser().resolve())
+        data_yaml = Path(args.data).expanduser().resolve()
+        data_path = str(data_yaml)
         print(f"검증 실행")
         print(f"  모델: {model_pt}")
         print(f"  데이터: {data_path}")
+        print_dataset_counts(data_yaml)
         model = YOLO(str(model_pt))
         metrics = model.val(data=data_path, imgsz=args.imgsz, device=args.device)
         print(f"\n검증 결과:")
@@ -58,10 +121,12 @@ def main():
         print(f"  Recall:       {metrics.box.mr:.4f}")
         return
 
-    data_path    = str(Path(args.data).expanduser().resolve())
+    data_yaml    = Path(args.data).expanduser().resolve()
+    data_path    = str(data_yaml)
     out          = Path(args.output).expanduser().resolve()
     project_path = str(out.parent)
     run_name     = out.name
+    print_dataset_counts(data_yaml)
 
     if args.resume:
         resume_pt = Path(args.resume).expanduser().resolve()

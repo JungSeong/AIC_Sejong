@@ -122,7 +122,7 @@ class Stage1Config:
 
     # --- Vision 설정 ---
     YOLO_MODEL_PATH: str = _resolve_yolo_model_path()
-    YOLO_CONF_THRESH: float = 0.2
+    YOLO_CONF_THRESH: float = 0.7
     # 3D 타당성 검증 범위 (base_link)
     BOARD_CENTER: tuple = (-0.38, 0.22, 0.13)
     BOARD_RADIUS: float = 0.5  # 보드 중심 반경 50cm 이내

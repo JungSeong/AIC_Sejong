@@ -291,7 +291,8 @@ class DatasetCollector(Node):
         )
         self._motion_pub.publish(msg)
 
-    def collect_one_frame(self, episode_id, out_dir, is_val=False, debug=False):
+    def collect_one_frame(self, episode_id, out_dir, is_val=False, debug=False,
+                          stem_prefix=""):
         split = "val" if is_val else "train"
 
         cam_T_in_base = {}
@@ -339,7 +340,7 @@ class DatasetCollector(Node):
             if not yolo_labels:
                 continue
 
-            stem = f"ep{episode_id:05d}_{name}"
+            stem = f"{stem_prefix}ep{episode_id:05d}_{name}"
             img_path = out_dir / "images" / split / f"{stem}.jpg"
             lbl_path = out_dir / "labels" / split / f"{stem}.txt"
             img_path.parent.mkdir(parents=True, exist_ok=True)
@@ -366,6 +367,8 @@ def main():
                         help="로봇 이동 후 안정화 대기 시간")
     parser.add_argument("--frames_per_viewpoint", type=int, default=None,
                         help="뷰포인트당 수집 프레임 수 (기본: episodes/n_viewpoints)")
+    parser.add_argument("--stem_prefix", type=str, default="",
+                        help="저장 파일명 prefix (시나리오 반복 수집 시 덮어쓰기 방지)")
     args = parser.parse_args()
 
     date_dir = datetime.now().strftime("%Y%m%d")
@@ -438,7 +441,8 @@ def main():
                 is_val = (episode_id % int(1 / args.val_ratio) == 0
                           if args.val_ratio > 0 else False)
                 if node.collect_one_frame(episode_id, out_dir, is_val=is_val,
-                                          debug=(episode_id == 0)):
+                                          debug=(episode_id == 0),
+                                          stem_prefix=args.stem_prefix):
                     saved_count += 1
                 episode_id += 1
                 time.sleep(0.1)

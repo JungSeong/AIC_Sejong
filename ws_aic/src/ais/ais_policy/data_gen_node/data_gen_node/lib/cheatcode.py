@@ -10,6 +10,19 @@ from geometry_msgs.msg import Point, Pose, Quaternion, Transform
 from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 
 
+def _rotate_vector(q_wxyz: tuple[float, float, float, float], vec_xyz: np.ndarray) -> np.ndarray:
+    # Rotate a local-frame vector into the parent/world frame using the frame quaternion.
+    q_vec = (0.0, float(vec_xyz[0]), float(vec_xyz[1]), float(vec_xyz[2]))
+    q_inv = (q_wxyz[0], -q_wxyz[1], -q_wxyz[2], -q_wxyz[3])
+    rotated = quaternion_multiply(quaternion_multiply(q_wxyz, q_vec), q_inv)
+    return np.array([rotated[1], rotated[2], rotated[3]], dtype=float)
+
+
+def _project_perpendicular(vec_xyz: np.ndarray, axis_xyz: np.ndarray) -> np.ndarray:
+    # Keep only the part of vec_xyz that is perpendicular to axis_xyz.
+    return vec_xyz - axis_xyz * float(np.dot(vec_xyz, axis_xyz))
+
+
 class CheatCodePlanner:
     def __init__(self, i_gain: float = 0.15, max_integrator_windup: float = 0.05):
         self.i_gain = float(i_gain)
@@ -59,28 +72,45 @@ class CheatCodePlanner:
         q_gripper_target = quaternion_multiply(q_diff, q_gripper)
         q_gripper_slerp = quaternion_slerp(q_gripper, q_gripper_target, slerp_fraction)
 
-        gripper_xyz = (
-            gripper_transform.translation.x,
-            gripper_transform.translation.y,
-            gripper_transform.translation.z,
+        gripper_xyz = np.array(
+            [
+                gripper_transform.translation.x,
+                gripper_transform.translation.y,
+                gripper_transform.translation.z,
+            ],
+            dtype=float,
         )
-        port_xy = (
-            port_transform.translation.x,
-            port_transform.translation.y,
+        port_xyz = np.array(
+            [
+                port_transform.translation.x,
+                port_transform.translation.y,
+                port_transform.translation.z,
+            ],
+            dtype=float,
         )
-        plug_xyz = (
-            plug_transform.translation.x,
-            plug_transform.translation.y,
-            plug_transform.translation.z,
+        plug_xyz = np.array(
+            [
+                plug_transform.translation.x,
+                plug_transform.translation.y,
+                plug_transform.translation.z,
+            ],
+            dtype=float,
         )
-        plug_tip_gripper_offset = (
-            gripper_xyz[0] - plug_xyz[0],
-            gripper_xyz[1] - plug_xyz[1],
-            gripper_xyz[2] - plug_xyz[2],
-        )
+        plug_tip_gripper_offset = gripper_xyz - plug_xyz
+        port_axis = _rotate_vector(q_port, np.array([0.0, 0.0, -1.0], dtype=float)) # port 바깥쪽 접근축을 baselink 좌표계에 정렬
+        norm = float(np.linalg.norm(port_axis))
+        if norm <= 1e-9:
+            port_axis = np.array([0.0, 0.0, -1.0], dtype=float)
+        else:
+            port_axis /= norm
 
-        tip_x_error = port_xy[0] - plug_xyz[0]
-        tip_y_error = port_xy[1] - plug_xyz[1]
+        target_plug_xyz = port_xyz + port_axis * float(z_offset)
+
+        tip_x_error = port_xyz[0] - plug_xyz[0]
+        tip_y_error = port_xyz[1] - plug_xyz[1]
+        tip_delta = plug_xyz - port_xyz
+        tip_axis_distance = float(np.dot(tip_delta, port_axis))
+        tip_distance = float(np.linalg.norm(tip_delta))
 
         if reset_xy_integrator:
             self.reset()
@@ -100,18 +130,27 @@ class CheatCodePlanner:
                 )
             )
 
-        # [수정] 오프셋 피드포워드 적용: 그리퍼가 아닌 '플러그 끝단'이 포트에 정렬되도록 함
-        # 그리퍼 좌표에 (그리퍼-플러그) 오프셋을 더해주어야 플러그가 목표 지점에 안착함
-        target_x = port_xy[0] + plug_tip_gripper_offset[0] + self.i_gain * self.tip_x_error_integrator
-        target_y = port_xy[1] + plug_tip_gripper_offset[1] + self.i_gain * self.tip_y_error_integrator
-        
-        # Z축 또한 플러그 끝단 높이를 맞추기 위해 오프셋만큼 그리퍼를 위로(+) 보정
-        target_z = port_transform.translation.z + z_offset + plug_tip_gripper_offset[2]
+        # z_offset is the intended port-to-plug-tip distance along the outward port approach axis.
+        # Apply the current gripper-to-plug offset so the commanded TCP pose puts the plug
+        # tip, not the gripper frame, at that point.
+        correction_xyz = _project_perpendicular(
+            np.array(
+                [
+                    self.i_gain * self.tip_x_error_integrator,
+                    self.i_gain * self.tip_y_error_integrator,
+                    0.0,
+                ],
+                dtype=float,
+            ),
+            port_axis,
+        )
+        corrected_target_plug_xyz = target_plug_xyz + correction_xyz
+        target_xyz = corrected_target_plug_xyz + plug_tip_gripper_offset
 
         blend_xyz = (
-            position_fraction * target_x + (1.0 - position_fraction) * gripper_xyz[0],
-            position_fraction * target_y + (1.0 - position_fraction) * gripper_xyz[1],
-            position_fraction * target_z + (1.0 - position_fraction) * gripper_xyz[2],
+            position_fraction * target_xyz[0] + (1.0 - position_fraction) * gripper_xyz[0],
+            position_fraction * target_xyz[1] + (1.0 - position_fraction) * gripper_xyz[1],
+            position_fraction * target_xyz[2] + (1.0 - position_fraction) * gripper_xyz[2],
         )
 
         pose = Pose(
@@ -130,14 +169,30 @@ class CheatCodePlanner:
         extras = {
             "tip_x_error": float(tip_x_error),
             "tip_y_error": float(tip_y_error),
+            "tip_z_error": float(port_xyz[2] - plug_xyz[2]),
+            "tip_distance": tip_distance,
+            "tip_axis_distance": tip_axis_distance,
             "tip_x_error_integrator": float(self.tip_x_error_integrator),
             "tip_y_error_integrator": float(self.tip_y_error_integrator),
-            "target_x": float(target_x),
-            "target_y": float(target_y),
-            "target_z": float(target_z),
+            "target_x": float(target_xyz[0]),
+            "target_y": float(target_xyz[1]),
+            "target_z": float(target_xyz[2]),
+            "target_plug_x": float(corrected_target_plug_xyz[0]),
+            "target_plug_y": float(corrected_target_plug_xyz[1]),
+            "target_plug_z": float(corrected_target_plug_xyz[2]),
             "z_offset": float(z_offset),
             "slerp_fraction": float(slerp_fraction),
             "position_fraction": float(position_fraction),
+            "axis_perpendicular_correction": {
+                "x": float(correction_xyz[0]),
+                "y": float(correction_xyz[1]),
+                "z": float(correction_xyz[2]),
+            },
+            "port_axis": {
+                "x": float(port_axis[0]),
+                "y": float(port_axis[1]),
+                "z": float(port_axis[2]),
+            },
             # [수정 이유] 매 스텝의 실제 파지 오프셋(gripper/tcp와 plug 사이의 상대 포즈)을 기록하여 
             # 학습 데이터셋(steps.jsonl)에서 그리퍼 상태를 정확히 추적할 수 있도록 함.
             "gripper_offset": {

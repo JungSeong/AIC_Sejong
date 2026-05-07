@@ -108,7 +108,7 @@ LEROBOT_FEATURES = {
     "phase": {
         "dtype": "string",
         "shape": (1,),
-        "names": None,  # "approach" | "descent" | "insert" | "stabilize"
+        "names": None,  # "approach" | "collect"
     },
 }
 
