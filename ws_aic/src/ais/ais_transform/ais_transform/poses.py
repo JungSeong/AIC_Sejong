@@ -44,6 +44,15 @@ class Pose3D:
     def rotation_matrix(self) -> np.ndarray:
         return _rotation_matrix_xyzw(self.orientation)
 
+    @property
+    def transform_matrix(self) -> np.ndarray:
+        """4x4 동차 변환행렬."""
+
+        matrix = np.eye(4, dtype=float)
+        matrix[:3, :3] = self.rotation_matrix
+        matrix[:3, 3] = self.position
+        return matrix
+
 
 @dataclass(frozen=True)
 class PlugToPort:

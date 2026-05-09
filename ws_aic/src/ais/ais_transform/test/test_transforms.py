@@ -36,6 +36,22 @@ def test_port_and_camera_can_be_converted_to_baselink():
     np.testing.assert_allclose(camera.position, [0.1, 0.5, 0.7], atol=1e-9)
 
 
+def test_pose_has_transform_matrix():
+    pose = Pose3D.from_xyz_quat([1.0, 2.0, 3.0], _quat_z_90())
+
+    np.testing.assert_allclose(pose.position, [1.0, 2.0, 3.0], atol=1e-9)
+    np.testing.assert_allclose(
+        pose.transform_matrix,
+        [
+            [0.0, -1.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 2.0],
+            [0.0, 0.0, 1.0, 3.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        atol=1e-9,
+    )
+
+
 def test_plug_to_port_baselink_is_port_minus_plug():
     plug = Pose3D.from_xyz_quat([0.9, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0])
     port = Pose3D.from_xyz_quat([1.0, 2.2, 2.7], _quat_z_90())
