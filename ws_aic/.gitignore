@@ -23,3 +23,6 @@ __pycache__
 .venv
 data/
 weight/
+notebook/
+.vscode
+model
