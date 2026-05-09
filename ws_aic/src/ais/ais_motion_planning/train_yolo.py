@@ -20,8 +20,9 @@ from pathlib import Path
 import yaml
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]  # ws_aic/src/
+_WS_ROOT = _SRC_ROOT.parent
 _DEFAULT_DATA   = _SRC_ROOT / "data" / "yolo" / "20260507" / "data.yaml"
-_DEFAULT_OUTPUT = _SRC_ROOT / "model" / "yolo" / "weight" / "ais_yolo_0507"
+_DEFAULT_OUTPUT = _WS_ROOT / "model" / "ais_yolo_0507"
 
 IMAGE_EXTS = {".bmp", ".dng", ".jpeg", ".jpg", ".mpo", ".png", ".tif", ".tiff", ".webp"}
 

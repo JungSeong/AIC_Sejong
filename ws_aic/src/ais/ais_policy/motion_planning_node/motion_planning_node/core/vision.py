@@ -106,7 +106,7 @@ class VisionPortEstimator:
                         f"YOLO 모델 파일 없음: {self._model_path}\n"
                         "  해결 방법:\n"
                         "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
-                        "  2) ws_aic/weight/ais_yolo/weights/best.pt 에 배치\n"
+                        "  2) ws_aic/model/ais_yolo/weights/best.pt 에 배치\n"
                         "  3) YOLO 학습 스크립트의 --output 경로 확인"
                     )
                 return

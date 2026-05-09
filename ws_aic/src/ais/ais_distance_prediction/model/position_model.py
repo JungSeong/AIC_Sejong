@@ -7,7 +7,7 @@ from torch import nn
 from torchvision import models
 
 
-Aggregation = Literal["mean", "max"]
+Aggregation = Literal["mean", "max", "concat"]
 
 
 def _resolve_weights(backbone_name: str, pretrained: bool | str | None):
@@ -62,6 +62,18 @@ def _build_backbone(backbone_name: str, pretrained: bool | str | None) -> tuple[
     )
 
 
+def _make_regression_head(feature_dim: int, hidden_dim: int, output_dim: int, dropout: float) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(feature_dim, hidden_dim),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(hidden_dim, max(hidden_dim // 2, output_dim)),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout),
+        nn.Linear(max(hidden_dim // 2, output_dim), output_dim),
+    )
+
+
 class ResNetPositionRegressor(nn.Module):
     """ResNet encoder with a regression head for 3D offset prediction.
 
@@ -80,10 +92,14 @@ class ResNetPositionRegressor(nn.Module):
         dropout: float = 0.1,
         aggregation: Aggregation = "mean",
         freeze_backbone: bool = False,
+        num_port_heads: int = 2,
+        num_views: int = 1,
     ) -> None:
         super().__init__()
-        if aggregation not in {"mean", "max"}:
-            raise ValueError("aggregation must be 'mean' or 'max'.")
+        if aggregation not in {"mean", "max", "concat"}:
+            raise ValueError("aggregation must be 'mean', 'max', or 'concat'.")
+        if num_views < 1:
+            raise ValueError("num_views must be >= 1.")
         if not backbone_name.startswith("resnet"):
             raise ValueError(
                 "ResNetPositionRegressor expects a torchvision ResNet backbone, "
@@ -92,25 +108,52 @@ class ResNetPositionRegressor(nn.Module):
 
         self.encoder, feature_dim = _build_backbone(backbone_name, pretrained)
         self.aggregation = aggregation
+        self.num_views = int(num_views)
+        head_feature_dim = feature_dim * self.num_views if aggregation == "concat" else feature_dim
 
         if freeze_backbone:
             for parameter in self.encoder.parameters():
                 parameter.requires_grad = False
 
-        self.head = nn.Sequential(
-            nn.Linear(feature_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, max(hidden_dim // 2, output_dim)),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(max(hidden_dim // 2, output_dim), output_dim),
-        )
+        if num_port_heads < 1:
+            raise ValueError("num_port_heads must be >= 1.")
+        self.num_port_heads = int(num_port_heads)
+        if self.num_port_heads == 1:
+            self.head = _make_regression_head(head_feature_dim, hidden_dim, output_dim, dropout)
+        else:
+            self.heads = nn.ModuleList(
+                _make_regression_head(head_feature_dim, hidden_dim, output_dim, dropout)
+                for _ in range(self.num_port_heads)
+            )
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        if image.ndim == 4:
-            features = self.encoder(image)
+    def _predict_from_features(
+        self,
+        features: torch.Tensor,
+        port_id: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if self.num_port_heads == 1:
             return self.head(features)
+
+        if port_id is None:
+            port_id = torch.zeros(features.shape[0], device=features.device, dtype=torch.long)
+        port_id = port_id.to(device=features.device, dtype=torch.long).view(-1)
+        if port_id.shape[0] != features.shape[0]:
+            raise ValueError(
+                f"Expected {features.shape[0]} port ids, got {port_id.shape[0]}."
+            )
+        port_id = port_id.clamp(0, self.num_port_heads - 1)
+        all_outputs = torch.stack([head(features) for head in self.heads], dim=1)
+        return all_outputs[torch.arange(features.shape[0], device=features.device), port_id]
+
+    def forward(self, image: torch.Tensor, port_id: torch.Tensor | None = None) -> torch.Tensor:
+        if image.ndim == 4:
+            if self.aggregation == "concat" and self.num_views != 1:
+                raise ValueError(
+                    "Concat aggregation expects a multi-view image tensor with shape "
+                    f"[B, {self.num_views}, C, H, W]."
+                )
+            features = self.encoder(image)
+            return self._predict_from_features(features, port_id)
 
         if image.ndim != 5:
             raise ValueError(
@@ -122,11 +165,15 @@ class ResNetPositionRegressor(nn.Module):
         flat_features = self.encoder(flat_images)
         features = flat_features.reshape(batch_size, num_views, -1)
 
-        if self.aggregation == "mean":
+        if self.aggregation == "concat":
+            if num_views != self.num_views:
+                raise ValueError(f"Expected {self.num_views} views, got {num_views}.")
+            features = features.reshape(batch_size, num_views * features.shape[-1])
+        elif self.aggregation == "mean":
             features = features.mean(dim=1)
         else:
             features = features.max(dim=1).values
-        return self.head(features)
+        return self._predict_from_features(features, port_id)
 
 
 ImagePositionRegressor = ResNetPositionRegressor

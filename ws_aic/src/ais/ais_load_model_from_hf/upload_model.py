@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload a local model/weight directory to Hugging Face Hub."""
+"""Upload a local model directory to Hugging Face Hub."""
 
 import argparse
 import os
@@ -8,8 +8,8 @@ from pathlib import Path
 from huggingface_hub import HfApi
 
 
-_SRC_ROOT = Path(__file__).resolve().parents[2]  # ws_aic/src/
-DEFAULT_MODEL_DIR = _SRC_ROOT / "model" / "yolo" / "weight" / "ais_yolo"
+_WS_ROOT = Path(__file__).resolve().parents[3]  # ws_aic/
+DEFAULT_MODEL_DIR = _WS_ROOT / "model" / "ais_yolo"
 DEFAULT_REPO_ID = "aic-sejong-team/port_detection_yolo"
 
 

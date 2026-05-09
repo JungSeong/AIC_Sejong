@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -15,7 +16,7 @@ from torchvision.transforms import functional as TF
 
 
 REPO_ID = "aic-sejong-team/aic-entrance-dataset"
-REVISION = "v1.1"
+REVISION = "v1.2"
 DATASET_DIRNAME = "vision_offset_dataset"
 
 
@@ -198,6 +199,53 @@ def filter_samples(
     return filtered
 
 
+def port_id_from_text(value: str) -> int | None:
+    matches = re.findall(r"port_(\d+)", value)
+    if matches:
+        return int(matches[-1])
+    match = re.search(r"_(\d+)$", value)
+    if match is not None:
+        return int(match.group(1))
+    return None
+
+
+def port_id_from_sample(sample: Mapping[str, Any]) -> int:
+    """Return the local port index used by the multi-head distance model."""
+    explicit_port_id = sample.get("_port_id")
+    if explicit_port_id is not None:
+        return int(explicit_port_id)
+    for key in ("port_name", "target_module_name"):
+        port_id = port_id_from_text(str(sample.get(key, "")))
+        if port_id is not None:
+            return port_id
+    return 0
+
+
+def expand_samples_by_available_ports(
+    samples: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand v1.2 samples so one image can supervise each available port head."""
+    expanded: list[dict[str, Any]] = []
+    for sample in samples:
+        ports = sample.get("label", {}).get("ports", {})
+        added = False
+        for port_key, port_info in ports.items():
+            if not port_info.get("available", False):
+                continue
+            label = port_info.get("plug_tip_in_port")
+            if label is None:
+                continue
+            row = dict(sample)
+            row["_port_id"] = port_id_from_text(str(port_key)) or 0
+            row["_port_key"] = port_key
+            row["_port_label"] = dict(label)
+            expanded.append(row)
+            added = True
+        if not added:
+            expanded.append(dict(sample))
+    return expanded
+
+
 class VisionOffsetDataset(Dataset):
     """Image dataset for predicting plug-tip-to-port offsets.
 
@@ -217,13 +265,19 @@ class VisionOffsetDataset(Dataset):
         target_mean: Sequence[float] | torch.Tensor | None = None,
         target_std: Sequence[float] | torch.Tensor | None = None,
         always_return_views: bool = False,
+        expand_all_ports: bool = True,
         validate_files: bool = False,
     ) -> None:
         self.dataset_root = _normalize_dataset_root(dataset_root)
-        self.samples = (
+        raw_samples = (
             [dict(sample) for sample in samples]
             if samples is not None
             else load_samples(self.dataset_root)
+        )
+        self.samples = (
+            expand_samples_by_available_ports(raw_samples)
+            if expand_all_ports
+            else raw_samples
         )
         self.cameras = tuple(cameras)
         self.target_keys = tuple(target_keys)
@@ -268,12 +322,15 @@ class VisionOffsetDataset(Dataset):
 
         return {
             "image": image_tensor,
+            "port_id": torch.tensor(port_id_from_sample(sample), dtype=torch.long),
             "target": target.float(),
             "raw_target": raw_target.float(),
             "sample_id": sample["sample_id"],
             "episode_name": sample["episode_name"],
             "task_type": sample["task_type"],
             "port_type": sample["port_type"],
+            "port_name": sample.get("port_name", ""),
+            "port_key": sample.get("_port_key", ""),
             "cameras": self.cameras,
         }
 
@@ -295,7 +352,7 @@ class VisionOffsetDataset(Dataset):
             return TF.to_tensor(image)
 
     def _target_tensor(self, sample: Mapping[str, Any]) -> torch.Tensor:
-        label = sample["label"]["plug_tip_to_port"]
+        label = sample.get("_port_label") or sample["label"]["plug_tip_to_port"]
         return torch.tensor([float(label[key]) for key in self.target_keys], dtype=torch.float32)
 
     @staticmethod

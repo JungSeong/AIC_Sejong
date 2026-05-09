@@ -4,8 +4,11 @@ from .dataset import (
     DEFAULT_DATASET_ROOT,
     VisionOffsetDataset,
     download_vision_offset_dataset,
+    expand_samples_by_available_ports,
     filter_samples,
     load_samples,
+    port_id_from_sample,
+    port_id_from_text,
 )
 from .position_model import (
     ImagePositionRegressor,
@@ -20,6 +23,7 @@ from .utils import (
     fit,
     seed_everything,
     split_samples_by_episode,
+    split_samples_by_stratified_group_kfold,
     train_one_epoch,
 )
 
@@ -33,11 +37,15 @@ __all__ = [
     "build_resnet_position_model",
     "compute_target_stats",
     "download_vision_offset_dataset",
+    "expand_samples_by_available_ports",
     "evaluate",
     "filter_samples",
     "fit",
     "load_samples",
+    "port_id_from_sample",
+    "port_id_from_text",
     "seed_everything",
     "split_samples_by_episode",
+    "split_samples_by_stratified_group_kfold",
     "train_one_epoch",
 ]

@@ -17,8 +17,9 @@ def _resolve_src_root() -> Path:
 
 # ws_aic/src/ 루트
 _SRC_ROOT = _resolve_src_root()
+_WS_ROOT = _SRC_ROOT.parent
 
-_MODEL_ROOT = _SRC_ROOT / "model"
+_MODEL_ROOT = _WS_ROOT / "model"
 
 
 def _env_or_default(env_key: str, default: Path) -> str:
@@ -74,7 +75,7 @@ class Stage1Config:
     # ═════════════════════════════════════════════════════════
     DETECTION_MODEL_PATH: str = _env_or_default(
         "AIC_YOLO_MODEL_PATH",
-        _MODEL_ROOT / "port_and_tip_detection_yolo" / "best.pt",
+        _MODEL_ROOT / "ais_yolo" / "weights" / "best.pt",
     )
     DETECTION_CONF_THRESH: float = 0.7
 

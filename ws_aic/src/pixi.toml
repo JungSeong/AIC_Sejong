@@ -55,6 +55,7 @@ tqdm = "*"
 # ──────────────────────────────────────────
 [pypi-dependencies]
 torch = ">=2.0"
+torchvision = ">=0.15"
 huggingface-hub = { version = "~=1.7" }
 lerobot = ">=0.5.1"
 lerobot_robot_ros = { git = "https://github.com/koonpeng/lerobot-ros", rev = "87708d0ae14a724bca78f8ae9d55448332509a57", subdirectory = "lerobot_robot_ros" }
@@ -70,8 +71,9 @@ draccus = "*"
 transforms3d = "*"
 
 # ais 로컬 패키지 (editable)
-data-gen-node        = { path = "ais/ais_policy/data_gen_node",        editable = true }
-motion-planning-node = { path = "ais/ais_policy/motion_planning_node", editable = true }
+data-gen-node              = { path = "ais/ais_policy/data_gen_node",        editable = true }
+motion-planning-node       = { path = "ais/ais_policy/motion_planning_node", editable = true }
+distance-prediction-policy = { path = "ais/ais_policy/distance_prediction", editable = true }
 
 [activation]
 scripts = ["aic/pixi_env_setup.sh"]

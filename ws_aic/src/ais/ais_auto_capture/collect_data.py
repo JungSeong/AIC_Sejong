@@ -63,7 +63,8 @@ def rnd(low: float, high: float) -> float:
     return random.uniform(low, high)
 
 GAZEBO_INIT_WAIT = 60   # Gazebo 초기화 대기 (초) — Zenoh peer 안정화 포함
-EPISODE_TIMEOUT  = 600  # 세트당 최대 대기 시간 (초)
+EPISODE_TIMEOUT  = 1200 # 세트당 최대 대기 시간 (초)
+TASK_TIME_LIMIT   = 600  # 데이터 저장까지 포함한 task별 최대 실행 시간 (초)
 
 # ──────────────────────────────────────────
 # 경로 설정
@@ -88,8 +89,8 @@ DEFAULT_REPO_IDS = {
     "DataCollect2": "aic-sejong-team/aic-entrance-dataset",
 }
 DEFAULT_LEROBOT_OUT_DIRS = {
-    "DataCollect": Path("../../data/lerobot"),
-    "DataCollect2": Path("../../data/lerobot_entrance"),
+    "DataCollect": Path("ws_aic/data/lerobot"),
+    "DataCollect2": Path("ws_aic/data/aic-entrance-dataset"),
 }
 
 # ──────────────────────────────────────────
@@ -322,7 +323,7 @@ def _make_nic_trial(nic_rail: int, diversify: bool) -> tuple[dict, dict]:
                 "port_type": "sfp",
                 "port_name": sfp_port_name,
                 "target_module_name": f"nic_card_mount_{nic_rail}",
-                "time_limit": 180,
+                "time_limit": TASK_TIME_LIMIT,
             }
         },
     }
@@ -385,7 +386,7 @@ def _make_sc_trial(sc_rail: int, diversify: bool) -> tuple[dict, dict]:
                 "port_type": "sc",
                 "port_name": "sc_port_base",
                 "target_module_name": f"sc_port_{sc_rail}",
-                "time_limit": 180,
+                "time_limit": TASK_TIME_LIMIT,
             }
         },
     }
@@ -556,6 +557,9 @@ def start_policy(
         env["AIC_LEROBOT_RUN_ID"]       = lerobot_run_id
         env["AIC_LEROBOT_FPS"]          = str(int(step_hz))
         env["AIC_LEROBOT_VERSION"]      = lerobot_version
+        env["AIC_VISION_OFFSET_DATASET_DIR"] = str(
+            Path(lerobot_out_dir) / lerobot_version / "vision_offset_dataset"
+        )
         # 중복 방지: 정책 노드 레벨의 자동 업로드는 항상 끔
         env["AIC_LEROBOT_PUSH_TO_HUB"]  = "false"
 
@@ -573,6 +577,7 @@ def start_policy(
         if lerobot_out_dir and lerobot_repo_id:
             print(f"  AIC_LEROBOT_OUT_DIR={lerobot_out_dir}")
             print(f"  AIC_LEROBOT_REPO_ID={lerobot_repo_id}")
+            print(f"  AIC_VISION_OFFSET_DATASET_DIR={Path(lerobot_out_dir) / lerobot_version / 'vision_offset_dataset'}")
         print(f"  data_policy={data_policy}")
         print(f"  {cmd}")
         return None
@@ -766,7 +771,7 @@ def run_collection_loop(
         episodes_before = count_completed_episodes()
 
         # 5. Gazebo → Policy 순으로 시작
-        GAZEBO_HEAD_START = 25  # Gazebo/aic_engine 선행 기동 시간
+        GAZEBO_HEAD_START = 5  # aic_engine의 model discovery timeout 전에 policy를 띄운다.
 
         gazebo_proc = start_gazebo(ENGINE_CONFIG_TMP, headless=headless, dry_run=dry_run)
         if not dry_run:

@@ -19,6 +19,7 @@ src/data/
 src/log/
 
 __pycache__
+*.egg-info/
 .venv
 data/
 weight/

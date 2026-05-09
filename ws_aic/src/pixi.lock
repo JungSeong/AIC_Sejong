@@ -634,6 +634,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/40/37/558f5a90c0672fc9b4402dc25d87ac5b7406616e8969430c9ca4e52ee74d/xxhash-3.7.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/66/3e/868e5c3364b6cee19ff3e1a122194fa4ce51def02c61023970442162859e/yarl-1.23.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: ./ais/ais_policy/data_gen_node
+      - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
       linux-aarch64:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
@@ -1247,6 +1248,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/87/ee/2f9f2ed993e77206d1e66991290a1ebe22e843351ca3ebec8e49e01ba186/xxhash-3.7.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/99/30/58260ed98e6ff7f90ba84442c1ddd758c9170d70327394a6227b310cd60f/yarl-1.23.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: ./ais/ais_policy/data_gen_node
+      - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-7_kmp_llvm.conda
@@ -1787,6 +1789,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/b9/1b/0c2c933809421ffd9bf42b59315552c143c755db5d9a816b2f1ae273e884/xxhash-3.7.0-cp312-cp312-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/19/2a/725ecc166d53438bc88f76822ed4b1e3b10756e790bafd7b523fe97c322d/yarl-1.23.0-cp312-cp312-macosx_11_0_arm64.whl
       - pypi: ./ais/ais_policy/data_gen_node
+      - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -3603,6 +3606,11 @@ packages:
   - objgraph>=1.7.2 ; extra == 'graph'
   - gprof2dot>=2022.7.29 ; extra == 'profile'
   requires_python: '>=3.9'
+- pypi: ./ais/ais_policy/distance_prediction
+  name: distance-prediction-policy
+  version: 0.0.1
+  sha256: 9361461019d4ee91c5d7e94be239d9efcd9273c1c0026c4d1cf4bd6d787093c7
+  requires_python: '>=3.10'
 - conda: https://conda.anaconda.org/conda-forge/noarch/distro-1.9.0-pyhd8ed1ab_1.conda
   sha256: 5603c7d0321963bb9b4030eadabc3fd7ca6103a38475b4e0ed13ed6d97c86f4e
   md5: 0a2014fd9860f8b1eaa0b1f3d3771a08

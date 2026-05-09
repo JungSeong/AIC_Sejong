@@ -10,12 +10,14 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from .dataset import expand_samples_by_available_ports
+
 
 def _ws_aic_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-DEFAULT_WEIGHT_ROOT = _ws_aic_root() / "weight" / "ais_distance_prediction"
+DEFAULT_WEIGHT_ROOT = _ws_aic_root() / "model" / "ais_distance_prediction"
 
 
 def _progress_bar(
@@ -74,13 +76,118 @@ def split_samples_by_episode(
     return train_samples, val_samples, test_samples
 
 
+def split_samples_by_stratified_group_kfold(
+    samples: Sequence[Mapping[str, Any]],
+    *,
+    n_splits: int = 5,
+    fold_index: int = 0,
+    seed: int = 42,
+    group_key: str = "episode_name",
+    stratify_keys: Sequence[str] = ("task_type", "port_type"),
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split records with group isolation while matching label ratios across folds."""
+    if n_splits < 2:
+        raise ValueError("n_splits must be >= 2.")
+    if not 0 <= fold_index < n_splits:
+        raise ValueError("fold_index must be in [0, n_splits).")
+
+    rows = [dict(sample) for sample in samples]
+    groups = [str(sample[group_key]) for sample in rows]
+    labels = [
+        "|".join(str(sample.get(key, "")) for key in stratify_keys)
+        for sample in rows
+    ]
+
+    try:
+        from sklearn.model_selection import StratifiedGroupKFold
+    except ImportError:
+        val_groups = _greedy_stratified_group_fold(
+            groups,
+            labels,
+            n_splits=n_splits,
+            fold_index=fold_index,
+            seed=seed,
+        )
+    else:
+        splitter = StratifiedGroupKFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=seed,
+        )
+        folds = list(splitter.split(np.zeros(len(rows)), labels, groups))
+        _, val_indices = folds[fold_index]
+        val_groups = {groups[index] for index in val_indices}
+
+    train_samples: list[dict[str, Any]] = []
+    val_samples: list[dict[str, Any]] = []
+    for sample in rows:
+        if str(sample[group_key]) in val_groups:
+            val_samples.append(sample)
+        else:
+            train_samples.append(sample)
+    return train_samples, val_samples, []
+
+
+def _greedy_stratified_group_fold(
+    groups: Sequence[str],
+    labels: Sequence[str],
+    *,
+    n_splits: int,
+    fold_index: int,
+    seed: int,
+) -> set[str]:
+    group_label_counts: dict[str, dict[str, int]] = {}
+    for group, label in zip(groups, labels):
+        counts = group_label_counts.setdefault(group, {})
+        counts[label] = counts.get(label, 0) + 1
+
+    rng = random.Random(seed)
+    grouped_items = list(group_label_counts.items())
+    rng.shuffle(grouped_items)
+    grouped_items.sort(key=lambda item: sum(item[1].values()), reverse=True)
+
+    fold_counts: list[dict[str, int]] = [{} for _ in range(n_splits)]
+    fold_sizes = [0 for _ in range(n_splits)]
+    fold_groups: list[set[str]] = [set() for _ in range(n_splits)]
+
+    for group, label_counts in grouped_items:
+        best_fold = min(
+            range(n_splits),
+            key=lambda index: (
+                _fold_imbalance_after_add(fold_counts[index], label_counts),
+                fold_sizes[index],
+            ),
+        )
+        fold_groups[best_fold].add(group)
+        fold_sizes[best_fold] += sum(label_counts.values())
+        for label, count in label_counts.items():
+            fold_counts[best_fold][label] = fold_counts[best_fold].get(label, 0) + count
+
+    return fold_groups[fold_index]
+
+
+def _fold_imbalance_after_add(
+    fold_counts: Mapping[str, int],
+    label_counts: Mapping[str, int],
+) -> tuple[int, int]:
+    merged = dict(fold_counts)
+    for label, count in label_counts.items():
+        merged[label] = merged.get(label, 0) + count
+    values = list(merged.values())
+    return max(values) - min(values), sum(values)
+
+
 def compute_target_stats(
     samples: Sequence[Mapping[str, Any]],
     target_keys: Sequence[str] = ("x_mm", "y_mm", "z_mm"),
+    *,
+    expand_all_ports: bool = True,
 ) -> dict[str, torch.Tensor]:
+    if expand_all_ports:
+        samples = expand_samples_by_available_ports(samples)
     values = []
     for sample in samples:
-        label = sample["label"]["plug_tip_to_port"]
+        label = sample.get("_port_label") or sample["label"]["plug_tip_to_port"]
         values.append([float(label[key]) for key in target_keys])
     targets = torch.tensor(values, dtype=torch.float32)
     std = targets.std(dim=0, unbiased=False).clamp_min(1e-6)
@@ -90,10 +197,13 @@ def compute_target_stats(
 def _to_device(
     batch: Mapping[str, Any],
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     images = batch["image"].to(device, non_blocking=True)
     targets = batch["target"].to(device, non_blocking=True)
-    return images, targets
+    port_ids = batch.get("port_id")
+    if port_ids is not None:
+        port_ids = port_ids.to(device, non_blocking=True)
+    return images, targets, port_ids
 
 
 def _denormalize(
@@ -132,9 +242,9 @@ def train_one_epoch(
         leave=False,
     )
     for batch in progress:
-        images, targets = _to_device(batch, device)
+        images, targets, port_ids = _to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
-        predictions = model(images)
+        predictions = model(images, port_ids)
         loss = loss_fn(predictions, targets)
         loss.backward()
         if grad_clip_norm is not None:
@@ -180,8 +290,8 @@ def evaluate(
         leave=False,
     )
     for batch in progress:
-        images, targets = _to_device(batch, device)
-        predictions = model(images)
+        images, targets, port_ids = _to_device(batch, device)
+        predictions = model(images, port_ids)
         loss = loss_fn(predictions, targets)
 
         raw_targets = batch.get("raw_target", targets).to(device, non_blocking=True)
@@ -255,7 +365,7 @@ def fit(
     config: Mapping[str, Any] | None = None,
     show_progress: bool = True,
 ) -> list[dict[str, float]]:
-    """Train and save best/last checkpoints under ``ws_aic/weight``."""
+    """Train and save best/last checkpoints under ``ws_aic/model``."""
     device = torch.device(device)
     model.to(device)
     history: list[dict[str, float]] = []
