@@ -636,6 +636,7 @@ environments:
       - pypi: ./ais/ais_policy/data_gen_node
       - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
+      - pypi: ./ais/ais_reinforcement_learning
       linux-aarch64:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
@@ -1250,6 +1251,7 @@ environments:
       - pypi: ./ais/ais_policy/data_gen_node
       - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
+      - pypi: ./ais/ais_reinforcement_learning
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-7_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
@@ -1791,6 +1793,7 @@ environments:
       - pypi: ./ais/ais_policy/data_gen_node
       - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
+      - pypi: ./ais/ais_reinforcement_learning
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
@@ -1988,6 +1991,12 @@ packages:
   - frozenlist>=1.1.0
   - typing-extensions>=4.2 ; python_full_version < '3.13'
   requires_python: '>=3.9'
+- pypi: ./ais/ais_reinforcement_learning
+  name: ais-reinforcement-learning
+  version: 0.0.1
+  sha256: 66f3a09ca97ce4f31c1060eacc9365de76e82cb68caa0bf8e7a2ee3cc698629a
+  requires_dist:
+  - setuptools
 - conda: https://conda.anaconda.org/conda-forge/linux-64/alsa-lib-1.2.15.3-hb03c661_0.conda
   sha256: d88aa7ae766cf584e180996e92fef2aa7d8e0a0a5ab1d4d49c32390c1b5fff31
   md5: dcdc58c15961dbf17a0621312b01f5cb

@@ -309,20 +309,58 @@ class ModelFeedbackController:
                 return int(match.group(1))
         return 0
 
+    def _is_sfp_task(self) -> bool:
+        task = self._policy._task
+        tokens = " ".join(
+            str(value or "").lower()
+            for value in (
+                getattr(task, "plug_name", ""),
+                getattr(task, "port_name", ""),
+                getattr(task, "port_type", ""),
+                getattr(task, "task_type", ""),
+            )
+        )
+        return "sfp" in tokens
+
     def _port_frame(self) -> str:
         task = self._policy._task
-        return f"task_board/{task.target_module_name}/{task.port_name}_link"
+        base_frame = f"task_board/{task.target_module_name}/{task.port_name}_link"
+        mode = str(getattr(self._config, "LABEL_PORT_FRAME_MODE", "entrance")).lower()
+        if self._is_sfp_task() and mode in {"entrance", "auto"}:
+            return f"{base_frame}_entrance"
+        return base_frame
 
     def _lookup_port_rotation(self) -> Optional[Quaternion]:
+        frame = self._port_frame()
         try:
             transform = self._policy._parent_node._tf_buffer.lookup_transform(
                 "base_link",
-                self._port_frame(),
+                frame,
                 Time(),
             ).transform
         except TransformException as exc:
+            if (
+                self._is_sfp_task()
+                and str(getattr(self._config, "LABEL_PORT_FRAME_MODE", "entrance")).lower() == "auto"
+            ):
+                fallback_frame = f"task_board/{self._policy._task.target_module_name}/{self._policy._task.port_name}_link"
+                try:
+                    transform = self._policy._parent_node._tf_buffer.lookup_transform(
+                        "base_link",
+                        fallback_frame,
+                        Time(),
+                    ).transform
+                except TransformException:
+                    pass
+                else:
+                    return Quaternion(
+                        x=float(transform.rotation.x),
+                        y=float(transform.rotation.y),
+                        z=float(transform.rotation.z),
+                        w=float(transform.rotation.w),
+                    )
             self.get_logger().warn(
-                f"Port TF unavailable for distance correction ({self._port_frame()}): {exc}"
+                f"Port TF unavailable for distance correction ({frame}): {exc}"
             )
             return None
         return Quaternion(

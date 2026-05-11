@@ -28,7 +28,7 @@ class VisionPortEstimator:
                ("center", "center_camera/optical"),
                ("right", "right_camera/optical")]
 
-    CLASS_NAMES = {0: "sfp_port", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
+    CLASS_NAMES = {0: "port", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
     TOOL0_TO_TCP_Z = 0.1965
     TOOL0_TO_OPTICAL = {
         "left": (
@@ -239,17 +239,63 @@ class VisionPortEstimator:
         results = self._model(image, verbose=False, conf=0.01)
         raw_dets = []
         for r in results:
-            for box in r.boxes:
+            keypoints_xy = None
+            if r.keypoints is not None and r.keypoints.xy is not None:
+                keypoints_xy = r.keypoints.xy.detach().cpu().numpy()
+
+            for box_idx, box in enumerate(r.boxes):
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                xyxy = (int(x1), int(y1), int(x2), int(y2))
+
+                if keypoints_xy is not None and box_idx < len(keypoints_xy):
+                    kpts = np.asarray(keypoints_xy[box_idx], dtype=np.float64)
+                    if len(kpts) >= 8:
+                        for port_index, start in enumerate((0, 4)):
+                            group = kpts[start:start + 4]
+                            if not np.all(np.isfinite(group)):
+                                continue
+                            center = np.mean(group, axis=0)
+                            raw_dets.append({
+                                "class_id": cls,
+                                "class_name": f"sfp_port_{port_index}",
+                                "conf": conf,
+                                "u": float(center[0]),
+                                "v": float(center[1]),
+                                "xyxy": xyxy,
+                                "point_name": f"sfp_port_{port_index}",
+                                "port_index": port_index,
+                                "keypoints": group,
+                            })
+                        continue
+
+                    if len(kpts) >= 4:
+                        group = kpts[:4]
+                        if np.all(np.isfinite(group)):
+                            center = np.mean(group, axis=0)
+                            raw_dets.append({
+                                "class_id": cls,
+                                "class_name": "sc_port",
+                                "conf": conf,
+                                "u": float(center[0]),
+                                "v": float(center[1]),
+                                "xyxy": xyxy,
+                                "point_name": "sc_port",
+                                "port_index": None,
+                                "keypoints": group,
+                            })
+                            continue
+
                 raw_dets.append({
                     "class_id": cls,
                     "class_name": self.CLASS_NAMES.get(cls, "unknown"),
                     "conf": conf,
                     "u": float((x1 + x2) / 2),
                     "v": float((y1 + y2) / 2),
-                    "xyxy": (int(x1), int(y1), int(x2), int(y2)),
+                    "xyxy": xyxy,
+                    "point_name": "bbox_center",
+                    "port_index": None,
                 })
 
         # 진단 로그
@@ -259,6 +305,7 @@ class VisionPortEstimator:
                     flag = "✓" if d["conf"] >= self._conf_thresh else "✗(low conf)"
                     self._logger.info(
                         f"  [{cam_name}] {flag} {d['class_name']} "
+                        f"point={d.get('point_name', 'bbox_center')} "
                         f"conf={d['conf']:.3f} (thresh={self._conf_thresh}) "
                         f"uv=({d['u']:.0f},{d['v']:.0f})"
                     )
@@ -274,11 +321,14 @@ class VisionPortEstimator:
             for d in raw_dets:
                 x1, y1, x2, y2 = d["xyxy"]
                 color = COLOR.get(d["class_id"], COLOR[-1])
+                if d.get("port_index") == 1:
+                    color = (255, 0, 255)
                 passed = d["conf"] >= self._conf_thresh
 
                 # 통과한 것: 실선 두껍게, 실패한 것: 점선 얇게
                 thickness = 3 if passed else 1
                 cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, thickness)
+                cv2.circle(debug_img, (int(d["u"]), int(d["v"])), 5, color, -1)
 
                 # 라벨
                 label = f"{d['class_name']} {d['conf']:.2f}"
@@ -446,6 +496,8 @@ class VisionPortEstimator:
 
         for da in detections[cam_a]:
             for db in detections[cam_b]:
+                if da.get("point_name") != db.get("point_name"):
+                    continue
                 port_3d = self._triangulate(
                     da["u"], da["v"], K[cam_a], T_base_to[cam_a],
                     db["u"], db["v"], K[cam_b], T_base_to[cam_b],
@@ -470,10 +522,16 @@ class VisionPortEstimator:
                     u_proj, v_proj = _project_3d_to_pixel(
                         port_3d, K[third_cam], T_base_to[third_cam]
                     )
+                    same_point_dets = [
+                        d for d in detections[third_cam]
+                        if d.get("point_name") == da.get("point_name")
+                    ]
+                    if not same_point_dets:
+                        continue
                     # 제3카메라의 검출들 중 가장 가까운 것과의 거리
                     min_px_dist = min(
                         np.hypot(d["u"] - u_proj, d["v"] - v_proj)
-                        for d in detections[third_cam]
+                        for d in same_point_dets
                     )
                     if min_px_dist > PIXEL_MATCH_THRESH:
                         consistent = False
@@ -487,6 +545,8 @@ class VisionPortEstimator:
                     "pos": port_3d,
                     "score": score,
                     "conf_sum": conf_sum,
+                    "point_name": da.get("point_name"),
+                    "port_index": da.get("port_index"),
                 })
 
         # score 낮은 순 정렬 (보드 중심 가깝고 conf 높을수록 앞)
@@ -507,7 +567,8 @@ class VisionPortEstimator:
             self._logger.info(
                 f"Vision: {len(unique)}개 후보 포트 3D 추정 "
                 f"(best=({unique[0]['pos'][0]:+.3f}, "
-                f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}))"
+                f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}), "
+                f"point={unique[0].get('point_name')})"
             )
 
         return unique
@@ -531,6 +592,16 @@ class VisionPortEstimator:
 
         # SFP 포트 인덱스 기반 구분
         if "sfp_port" in port_name:
+            wanted = None
+            if port_name.endswith("_0") or port_name.endswith("0_link"):
+                wanted = 0
+            elif port_name.endswith("_1") or port_name.endswith("1_link"):
+                wanted = 1
+            if wanted is not None:
+                for candidate in candidates:
+                    if candidate.get("port_index") == wanted:
+                        return candidate["pos"]
+
             # 후보를 x 좌표 기준으로 정렬
             sorted_by_x = sorted(candidates, key=lambda c: c["pos"][0])
             # port_0: x가 큰 쪽 (리스트 끝)
