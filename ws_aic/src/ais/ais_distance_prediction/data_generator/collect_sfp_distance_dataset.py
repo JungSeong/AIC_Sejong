@@ -720,6 +720,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow appending to an existing samples.jsonl. Default is to fail to avoid mixing runs.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing --run-id by skipping sample_ids already present in samples.jsonl.",
+    )
     parser.add_argument("--max-correction-step-mm", type=float, default=DEFAULT_MAX_CORRECTION_STEP_MM)
     parser.add_argument("--stiffness", type=parse_csv, default=("200", "200", "200", "50", "50", "50"))
     parser.add_argument("--damping", type=parse_csv, default=("80", "80", "80", "20", "20", "20"))
@@ -745,6 +750,27 @@ def settle(node: SfpDistanceCollector, duration_s: float) -> None:
     start = time.time()
     while time.time() - start < duration_s:
         rclpy.spin_once(node, timeout_sec=0.1)
+
+
+def load_completed_sample_ids(samples_path: Path, run_id: str) -> set[str]:
+    if not samples_path.exists():
+        return set()
+
+    completed: set[str] = set()
+    with samples_path.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in {samples_path}:{line_number}: {exc}") from exc
+
+            sample_id = record.get("sample_id")
+            if isinstance(sample_id, str) and sample_id.startswith(f"{run_id}_"):
+                completed.add(sample_id)
+    return completed
 
 
 def label_xyz_mm(label: dict[str, float]) -> np.ndarray:
@@ -1004,6 +1030,7 @@ def collect_for_port(
     offsets: list[LocalOffset],
     stiffness: tuple[float, ...],
     damping: tuple[float, ...],
+    completed_sample_ids: set[str],
 ) -> int:
     target_port_frame = node.port_frame(module_name, port_name, args.port_frame_mode)
     if not node.wait_for_tf("base_link", target_port_frame, timeout_s=args.wait_s):
@@ -1023,6 +1050,13 @@ def collect_for_port(
     command_bias_base_m = np.zeros(3, dtype=np.float64)
 
     for step_index, offset in enumerate(offsets):
+        sample_id = f"{episode_name}_{step_index:06d}"
+        if sample_id in completed_sample_ids:
+            node.get_logger().info(
+                f"{port_name} sample {step_index + 1}/{len(offsets)} already saved; skipping"
+            )
+            continue
+
         port_tf = node.lookup_transform("base_link", target_port_frame)
         plug_tf = node.lookup_transform("base_link", cable_tip_frame)
         tcp_tf = node.tcp_transform(args.tcp_frame, args.tcp_pose_source)
@@ -1043,7 +1077,6 @@ def collect_for_port(
             time.sleep(0.1)
         settle(node, args.move_settle_s)
 
-        sample_id = f"{episode_name}_{step_index:06d}"
         placement_check: dict[str, Any] | None = None
         for attempt in range(args.placement_check_retries + 1):
             placement_check = measure_placement(
@@ -1114,7 +1147,9 @@ def main() -> None:
     output_dir = args.output.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     samples_path = output_dir / "samples.jsonl"
-    if samples_path.exists() and not args.allow_existing_samples:
+    if args.resume and args.run_id is None:
+        raise ValueError("--resume requires --run-id so the script knows which run to continue")
+    if samples_path.exists() and not args.allow_existing_samples and not args.resume:
         raise RuntimeError(
             f"{samples_path} already exists. Move it aside or pass "
             "--allow-existing-samples if you intentionally want to append."
@@ -1130,6 +1165,7 @@ def main() -> None:
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     offsets = build_offsets(args)
     write_generation_config(output_dir, run_id, args, offsets)
+    completed_sample_ids = load_completed_sample_ids(samples_path, run_id) if args.resume else set()
 
     stiffness = tuple(float(value) for value in args.stiffness)
     damping = tuple(float(value) for value in args.damping)
@@ -1173,7 +1209,7 @@ def main() -> None:
             f"Collecting distance dataset: output={output_dir}, "
             f"module={module_name}, ports={args.port_names}, "
             f"offsets_per_port={len(offsets)}, port_frame_mode={args.port_frame_mode}, "
-            f"cable_tip={cable_tip_frame}"
+            f"cable_tip={cable_tip_frame}, resume_skips={len(completed_sample_ids)}"
         )
         total_saved = 0
         for port_name in args.port_names:
@@ -1189,6 +1225,7 @@ def main() -> None:
                 offsets=offsets,
                 stiffness=stiffness,
                 damping=damping,
+                completed_sample_ids=completed_sample_ids,
             )
         node.get_logger().info(
             f"Done. saved_samples={total_saved}, samples_jsonl={output_dir / 'samples.jsonl'}"

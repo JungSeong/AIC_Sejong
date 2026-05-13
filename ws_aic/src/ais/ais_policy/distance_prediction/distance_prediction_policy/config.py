@@ -179,6 +179,9 @@ class DistancePredictionConfig:
     APPROACH_SFP_MANUAL_ROTATION_DEG: float = _env_float(
         "AIC_APPROACH_SFP_MANUAL_ROTATION_DEG", -21.21
     )
+    APPROACH_SC_MANUAL_ROTATION_DEG: float = _env_float(
+        "AIC_APPROACH_SC_MANUAL_ROTATION_DEG", -25.21
+    )
     APPROACH_SFP_MANUAL_ROTATION_AXIS: str = _env_str(
         "AIC_APPROACH_SFP_MANUAL_ROTATION_AXIS", "base_x"
     )
@@ -218,18 +221,31 @@ class DistancePredictionConfig:
     MAX_UP_STEP_M: float = _env_float("AIC_DISTANCE_MAX_UP_STEP_M", 0.0006)
     XY_DEADBAND_M: float = _env_float("AIC_DISTANCE_XY_DEADBAND_M", 0.00035)
     Z_DEADBAND_M: float = _env_float("AIC_DISTANCE_Z_DEADBAND_M", 0.00035)
+    ALIGN_USE_PORT_FRAME_ROTATION: bool = _env_bool(
+        "AIC_DISTANCE_ALIGN_USE_PORT_FRAME_ROTATION", False
+    )
+    ALIGN_CORRECTION_X_SIGN: float = _env_float(
+        "AIC_DISTANCE_ALIGN_CORRECTION_X_SIGN", -1.0
+    )
+    ALIGN_CORRECTION_Y_SIGN: float = _env_float(
+        "AIC_DISTANCE_ALIGN_CORRECTION_Y_SIGN", 1.0
+    )
 
     FINISH_DISTANCE_M: float = _env_float("AIC_DISTANCE_FINISH_M", 0.003)
     FINISH_STABLE_STEPS: int = _env_int("AIC_DISTANCE_FINISH_STABLE_STEPS", 4)
     MAX_INSERT_DEPTH_M: float = _env_float("AIC_DISTANCE_MAX_INSERT_DEPTH_M", 0.045)
 
     FORCE_LIMIT_N: float = _env_float("AIC_DISTANCE_FORCE_LIMIT_N", 18.0)
-    STIFFNESS: tuple = (80.0, 80.0, 80.0, 45.0, 45.0, 45.0)
-    DAMPING: tuple = (45.0, 45.0, 45.0, 18.0, 18.0, 18.0)
+    ALIGN_STIFFNESS: tuple = (80.0, 80.0, 80.0, 45.0, 45.0, 45.0)
+    ALIGN_DAMPING: tuple = (45.0, 45.0, 45.0, 18.0, 18.0, 18.0)
+    SFP_INSERTION_STIFFNESS: tuple = (20.0, 20.0, 250.0, 10.0, 10.0, 40.0)
+    SFP_INSERTION_DAMPING: tuple = (10.0, 10.0, 60.0, 5.0, 5.0, 15.0)
+    SC_INSERTION_STIFFNESS: tuple = (51.0, 50.0, 300.0, 15.0, 15.0, 40.0)
+    SC_INSERTION_DAMPING: tuple = (31.0, 30.0, 87.0, 8.0, 8.0, 15.0)
     ALIGN_MAX_STEPS: int = _env_int("AIC_DISTANCE_ALIGN_MAX_STEPS", 100)
     ALIGN_FINISH_XY_M: float = _env_float("AIC_DISTANCE_ALIGN_FINISH_XY_M", 0.002)
     ALIGN_STABLE_STEPS: int = _env_int("AIC_DISTANCE_ALIGN_STABLE_STEPS", 4)
     ALIGN_COMMAND_SETTLE_S: float = _env_float(
-        "AIC_DISTANCE_ALIGN_COMMAND_SETTLE_S", 3.00
+        "AIC_DISTANCE_ALIGN_COMMAND_SETTLE_S", 2.00
     )
     INSERT_MAX_STEPS: int = _env_int("AIC_DISTANCE_INSERT_MAX_STEPS", 120)

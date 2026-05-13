@@ -1,4 +1,4 @@
-"""Minimal SFP policy for debugging YOLO approach and distance alignment."""
+"""Minimal SFP/SC policy for debugging YOLO approach and distance alignment."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from aic_model.policy import (
 )
 from aic_task_interfaces.msg import Task
 from geometry_msgs.msg import Point, Pose, Quaternion
+from rclpy.time import Time
+from std_msgs.msg import String
+from tf2_ros import TransformException
 from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 
 from distance_prediction_policy.config import DistancePredictionConfig
@@ -25,24 +28,61 @@ from motion_planning_node.core.config import Stage1Config
 from motion_planning_node.core.geometry import (
     interp_profile,
     quat_to_tuple,
+    rotate_vector_by_quat,
     tuple_to_quat,
 )
 from motion_planning_node.core.vision import VisionPortEstimator
 
 
-WS_ROOT = Path(__file__).resolve().parents[5]
-DEFAULT_SFP_YOLO_MODEL_PATH = (
-    WS_ROOT / "model" / "ais_yolo" / "approach" / "SFP" / "weights" / "best.pt"
+SRC_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_SFP_YOLO_MODEL_PATHS = (
+    SRC_ROOT
+    / "model"
+    / "yolo-port-keypoint-detection"
+    / "approach"
+    / "SFP"
+    / "weights"
+    / "best.pt",
+    SRC_ROOT / "model" / "ais_yolo" / "approach" / "SFP" / "weights" / "best.pt",
+)
+DEFAULT_SC_YOLO_MODEL_PATHS = (
+    SRC_ROOT
+    / "model"
+    / "yolo-port-keypoint-detection"
+    / "approach"
+    / "SC"
+    / "weights"
+    / "best.pt",
+    SRC_ROOT / "model" / "ais_yolo" / "approach" / "SC" / "weights" / "best.pt",
 )
 
 
+def _first_existing_model_path(paths: tuple[Path, ...]) -> Optional[str]:
+    for path in paths:
+        if path.is_file():
+            return str(path)
+    return None
+
+
 def _resolve_sfp_yolo_model_path() -> str:
-    env_path = os.environ.get("AIC_YOLO_MODEL_PATH")
+    for env_name in ("AIC_SFP_YOLO_MODEL_PATH", "AIC_YOLO_MODEL_PATH"):
+        env_path = os.environ.get(env_name)
+        if env_path:
+            return env_path
+    default_path = _first_existing_model_path(DEFAULT_SFP_YOLO_MODEL_PATHS)
+    if default_path is not None:
+        return default_path
+    return Stage1Config.DETECTION_MODEL_PATH
+
+
+def _resolve_sc_yolo_model_path() -> str:
+    env_path = os.environ.get("AIC_SC_YOLO_MODEL_PATH")
     if env_path:
         return env_path
-    if DEFAULT_SFP_YOLO_MODEL_PATH.is_file():
-        return str(DEFAULT_SFP_YOLO_MODEL_PATH)
-    return Stage1Config.DETECTION_MODEL_PATH
+    default_path = _first_existing_model_path(DEFAULT_SC_YOLO_MODEL_PATHS)
+    if default_path is not None:
+        return default_path
+    return str(DEFAULT_SC_YOLO_MODEL_PATHS[0])
 
 
 class DebugSfpDistancePolicy(Policy):
@@ -57,32 +97,53 @@ class DebugSfpDistancePolicy(Policy):
     """
 
     TARGET_CLASS_ID_SFP = 0
+    TARGET_CLASS_ID_SC = 0
 
     def __init__(self, parent_node):
         super().__init__(parent_node)
         self._task: Optional[Task] = None
-        self._yolo_model_path = _resolve_sfp_yolo_model_path()
+        self._sfp_yolo_model_path = _resolve_sfp_yolo_model_path()
+        self._sc_yolo_model_path = _resolve_sc_yolo_model_path()
+        self._yolo_model_path = self._sfp_yolo_model_path
         self._cached_port_base: Optional[np.ndarray] = None
         self._target_orientation: Optional[Quaternion] = None
         self._fixed_target_orientation: Optional[Quaternion] = None
-        self._yolo_conf_thresh = float(
+        self._last_insertion_event: Optional[str] = None
+        self._insertion_events: list[str] = []
+        self._sfp_yolo_conf_thresh = float(
             os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5")
         )
-
-        self._vision = VisionPortEstimator(
-            model_path=self._yolo_model_path,
-            conf_thresh=self._yolo_conf_thresh,
-            logger=self.get_logger(),
+        self._sc_yolo_conf_thresh = float(
+            os.environ.get(
+                "AIC_DEBUG_SC_YOLO_CONF_THRESH",
+                os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5"),
+            )
         )
-        self._vision._ensure_loaded()
+        self._yolo_conf_thresh = self._sfp_yolo_conf_thresh
+        self._vision_by_port_type = {}
+
+        self._vision = self._vision_for_port_type("sfp")
         self._distance = VisionOffsetPredictor(logger=self.get_logger())
+        self._insertion_event_sub = parent_node.create_subscription(
+            String,
+            "/scoring/insertion_event",
+            self._on_insertion_event,
+            10,
+        )
 
         self.get_logger().info(
             "DebugSfpDistancePolicy ready: "
-            f"yolo={self._yolo_model_path}, "
+            f"sfp_yolo={self._sfp_yolo_model_path}, "
+            f"sc_yolo={self._sc_yolo_model_path}, "
             f"distance={DistancePredictionConfig.CHECKPOINT_PATH}, "
-            f"yolo_conf_thresh={self._yolo_conf_thresh}"
+            f"sfp_yolo_conf_thresh={self._sfp_yolo_conf_thresh}, "
+            f"sc_yolo_conf_thresh={self._sc_yolo_conf_thresh}"
         )
+
+    def _on_insertion_event(self, msg: String) -> None:
+        self._last_insertion_event = msg.data
+        self._insertion_events.append(msg.data)
+        self.get_logger().info(f"insertion_event: {msg.data}")
 
     @staticmethod
     def _copy_pose(pose: Pose) -> Pose:
@@ -153,6 +214,120 @@ class DebugSfpDistancePolicy(Policy):
         text = str(getattr(self._task, "port_name", "") or "")
         match = re.search(r"_(\d+)$", text)
         return int(match.group(1)) if match is not None else 0
+
+    def _port_type(self) -> str:
+        tokens = " ".join(
+            str(value or "").lower()
+            for value in (
+                getattr(self._task, "plug_name", ""),
+                getattr(self._task, "port_name", ""),
+                getattr(self._task, "port_type", ""),
+                getattr(self._task, "task_type", ""),
+            )
+        )
+        return "sc" if "sc" in tokens else "sfp"
+
+    def _target_class_id(self, port_type: str) -> int:
+        if port_type == "sc":
+            return int(
+                os.environ.get("AIC_DEBUG_SC_TARGET_CLASS_ID", self.TARGET_CLASS_ID_SC)
+            )
+        return int(
+            os.environ.get("AIC_DEBUG_SFP_TARGET_CLASS_ID", self.TARGET_CLASS_ID_SFP)
+        )
+
+    def _vision_for_port_type(self, port_type: str) -> VisionPortEstimator:
+        port_type = "sc" if port_type == "sc" else "sfp"
+        if port_type not in self._vision_by_port_type:
+            model_path = (
+                self._sc_yolo_model_path
+                if port_type == "sc"
+                else self._sfp_yolo_model_path
+            )
+            conf_thresh = (
+                self._sc_yolo_conf_thresh
+                if port_type == "sc"
+                else self._sfp_yolo_conf_thresh
+            )
+            self.get_logger().info(
+                f"Loading {port_type.upper()} YOLO model: {model_path}"
+            )
+            vision = VisionPortEstimator(
+                model_path=model_path,
+                conf_thresh=conf_thresh,
+                logger=self.get_logger(),
+            )
+            vision._ensure_loaded()
+            self._vision_by_port_type[port_type] = vision
+        return self._vision_by_port_type[port_type]
+
+    def _initial_approach_z_offset(self) -> float:
+        if self._port_type() == "sc":
+            return float(DistancePredictionConfig.APPROACH_Z_OFFSET_SC_M)
+        return float(DistancePredictionConfig.APPROACH_Z_OFFSET_SFP_M)
+
+    def _manual_rotation_deg(self) -> float:
+        if self._port_type() == "sc":
+            return float(DistancePredictionConfig.APPROACH_SC_MANUAL_ROTATION_DEG)
+        return float(DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_DEG)
+
+    def _insertion_stiffness(self) -> tuple:
+        if self._port_type() == "sc":
+            return DistancePredictionConfig.SC_INSERTION_STIFFNESS
+        return DistancePredictionConfig.SFP_INSERTION_STIFFNESS
+
+    def _insertion_damping(self) -> tuple:
+        if self._port_type() == "sc":
+            return DistancePredictionConfig.SC_INSERTION_DAMPING
+        return DistancePredictionConfig.SFP_INSERTION_DAMPING
+
+    def _port_frame(self) -> str:
+        task = self._task
+        base_frame = f"task_board/{task.target_module_name}/{task.port_name}_link"
+        mode = str(DistancePredictionConfig.LABEL_PORT_FRAME_MODE).lower()
+        if self._port_type() == "sfp" and mode in {"entrance", "auto"}:
+            return f"{base_frame}_entrance"
+        return base_frame
+
+    def _lookup_port_rotation(self) -> Optional[Quaternion]:
+        frame = self._port_frame()
+        try:
+            transform = self._parent_node._tf_buffer.lookup_transform(
+                "base_link",
+                frame,
+                Time(),
+            ).transform
+        except TransformException as exc:
+            self.get_logger().warn(
+                f"Port TF unavailable for align correction ({frame}): {exc}"
+            )
+            return None
+        return Quaternion(
+            x=float(transform.rotation.x),
+            y=float(transform.rotation.y),
+            z=float(transform.rotation.z),
+            w=float(transform.rotation.w),
+        )
+
+    def _align_correction_base(self, offset_m: np.ndarray) -> np.ndarray:
+        offset = np.asarray(offset_m, dtype=np.float64)
+        correction = np.array(
+            [
+                float(DistancePredictionConfig.ALIGN_CORRECTION_X_SIGN) * offset[0],
+                float(DistancePredictionConfig.ALIGN_CORRECTION_Y_SIGN) * offset[1],
+                -offset[2],
+            ],
+            dtype=np.float64,
+        )
+        if not DistancePredictionConfig.ALIGN_USE_PORT_FRAME_ROTATION:
+            # Manual sign mode: treats predicted x/y as base_link x/y, with tunable signs.
+            return correction
+
+        port_rotation = self._lookup_port_rotation()
+        if port_rotation is None:
+            return correction
+        self.get_logger().info(f"Align to correct base")
+        return rotate_vector_by_quat(correction, quat_to_tuple(port_rotation))
 
     def _axis(self, pose: Pose) -> np.ndarray:
         axis_name = str(DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS)
@@ -225,7 +400,7 @@ class DebugSfpDistancePolicy(Policy):
         if self._fixed_target_orientation is not None:
             return self._copy_quaternion(self._fixed_target_orientation)
 
-        angle_deg = float(DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_DEG)
+        angle_deg = self._manual_rotation_deg()
         if abs(angle_deg) < 1e-9:
             self._fixed_target_orientation = self._copy_quaternion(start_pose.orientation)
             return self._copy_quaternion(self._fixed_target_orientation)
@@ -238,6 +413,10 @@ class DebugSfpDistancePolicy(Policy):
         return self._copy_quaternion(self._fixed_target_orientation)
 
     def _stage_initial_lift(self, get_observation, move_robot) -> bool:
+        if self._port_type() == "sc":
+            self.get_logger().info("[stage 1/5] initial_lift skipped for SC task")
+            return True
+
         lift_m = float(DistancePredictionConfig.INITIAL_LIFT_M)
         self.get_logger().info(
             f"[stage 1/5] initial_lift start: dz={lift_m * 1000.0:.1f}mm"
@@ -292,24 +471,29 @@ class DebugSfpDistancePolicy(Policy):
             "detect cached: "
             f"port_base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f}), "
             f"axis={DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS}, "
-            f"angle={DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_DEG:+.2f}deg"
+            f"angle={self._manual_rotation_deg():+.2f}deg"
         )
         self.get_logger().info("[stage 2/5] detect done")
         return True
 
     def _estimate_port(self, get_observation) -> Optional[np.ndarray]:
         port_hint = str(getattr(self._task, "port_name", "") or "")
+        port_type = self._port_type()
+        target_class_id = self._target_class_id(port_type)
+        vision = self._vision_for_port_type(port_type)
         for attempt in range(DistancePredictionConfig.APPROACH_VISION_RETRIES):
             obs = get_observation()
-            port = self._vision.estimate(
+            port = vision.estimate(
                 obs,
-                self.TARGET_CLASS_ID_SFP,
+                target_class_id,
                 port_hint=port_hint,
             )
             if port is not None:
                 self.get_logger().info(
                     "YOLO port estimate: "
                     f"attempt={attempt + 1}, "
+                    f"type={port_type}, "
+                    f"class_id={target_class_id}, "
                     f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})"
                 )
                 return port
@@ -342,7 +526,7 @@ class DebugSfpDistancePolicy(Policy):
             ],
             dtype=np.float64,
         )
-        initial_z_offset = float(DistancePredictionConfig.APPROACH_Z_OFFSET_SFP_M)
+        initial_z_offset = self._initial_approach_z_offset()
         near_z_offset = float(DistancePredictionConfig.APPROACH_NEAR_Z_OFFSET_M)
 
         def make_approach_pose(z_offset: float) -> tuple[Pose, np.ndarray]:
@@ -418,19 +602,21 @@ class DebugSfpDistancePolicy(Policy):
                 self.sleep_for(DistancePredictionConfig.DT)
                 continue
 
-            xy = float(np.linalg.norm(offset_m[:2]))
-            last_xy = xy
-            if xy < DistancePredictionConfig.ALIGN_FINISH_XY_M:
+            correction_base = self._align_correction_base(offset_m)
+            offset_base = -correction_base
+            xy_base = float(np.linalg.norm(offset_base[:2]))
+            last_xy = xy_base
+            if xy_base < DistancePredictionConfig.ALIGN_FINISH_XY_M:
                 stable_count += 1
             else:
                 stable_count = 0
             if stable_count >= DistancePredictionConfig.ALIGN_STABLE_STEPS:
                 self.get_logger().info(
-                    f"align stable: xy={xy*1000:.2f}mm x {stable_count}"
+                    f"align stable: xy_base={xy_base*1000:.2f}mm x {stable_count}"
                 )
                 return True
 
-            step_xy = -offset_m[:2] * DistancePredictionConfig.XY_GAIN
+            step_xy = correction_base[:2] * DistancePredictionConfig.XY_GAIN
             step_xy = np.clip(
                 step_xy,
                 -DistancePredictionConfig.MAX_XY_STEP_M,
@@ -447,18 +633,21 @@ class DebugSfpDistancePolicy(Policy):
             self.set_pose_target(
                 move_robot=move_robot,
                 pose=target_pose,
-                stiffness=list(DistancePredictionConfig.STIFFNESS),
-                damping=list(DistancePredictionConfig.DAMPING),
+                stiffness=list(DistancePredictionConfig.ALIGN_STIFFNESS),
+                damping=list(DistancePredictionConfig.ALIGN_DAMPING),
             )
 
-            if step == 0 or step % 10 == 0:
-                self.get_logger().info(
-                    f"align[{step:03d}]: "
-                    f"pred_port=({offset_m[0]*1000:+.2f}, "
-                    f"{offset_m[1]*1000:+.2f}, {offset_m[2]*1000:+.2f})mm, "
-                    f"cmd_base_xy=({step_xy[0]*1000:+.2f}, "
-                    f"{step_xy[1]*1000:+.2f})mm, xy={xy*1000:.2f}mm"
-                )
+            self.get_logger().info(
+                f"align[{step:03d}]: "
+                f"pred_base_est=({offset_base[0]*1000:+.2f}, "
+                f"{offset_base[1]*1000:+.2f}, {offset_base[2]*1000:+.2f})mm, "
+                f"cmd_base_xy=({step_xy[0]*1000:+.2f}, "
+                f"{step_xy[1]*1000:+.2f})mm, "
+                f"xy_base={xy_base*1000:.2f}mm, "
+                f"z_base_est={offset_base[2]*1000:+.2f}mm, "
+                f"stable={stable_count}/"
+                f"{DistancePredictionConfig.ALIGN_STABLE_STEPS}"
+            )
             self.sleep_for(DistancePredictionConfig.ALIGN_COMMAND_SETTLE_S)
 
         if last_xy is None:
@@ -466,7 +655,8 @@ class DebugSfpDistancePolicy(Policy):
             return False
         success = last_xy < DistancePredictionConfig.ALIGN_FINISH_XY_M * 1.5
         self.get_logger().info(
-            f"[stage 4/5] align done: success={success}, last_xy={last_xy*1000:.2f}mm"
+            f"[stage 4/5] align done: "
+            f"success={success}, last_xy_base={last_xy*1000:.2f}mm"
         )
         return success
 
@@ -520,8 +710,8 @@ class DebugSfpDistancePolicy(Policy):
             self.set_pose_target(
                 move_robot=move_robot,
                 pose=target_pose,
-                stiffness=list(DistancePredictionConfig.STIFFNESS),
-                damping=list(DistancePredictionConfig.DAMPING),
+                stiffness=list(self._insertion_stiffness()),
+                damping=list(self._insertion_damping()),
             )
             if step == 0 or step % 10 == 0:
                 force_text = ""
@@ -548,6 +738,9 @@ class DebugSfpDistancePolicy(Policy):
         self._task = task
         self._cached_port_base = None
         self._target_orientation = None
+        self._fixed_target_orientation = None
+        self._last_insertion_event = None
+        self._insertion_events = []
         self.get_logger().info(
             "DebugSfpDistancePolicy start: "
             f"target={task.target_module_name}, port={task.port_name}, "
@@ -566,13 +759,28 @@ class DebugSfpDistancePolicy(Policy):
             try:
                 if not stage():
                     self.get_logger().error(f"Debug policy failed at stage: {name}")
+                    self.get_logger().info(
+                        "insertion_event summary: "
+                        f"last={self._last_insertion_event}, "
+                        f"count={len(self._insertion_events)}"
+                    )
                     send_feedback(f"failed: {name}")
                     return False
             except Exception as exc:
                 self.get_logger().error(f"Debug policy exception at {name}: {exc}")
+                self.get_logger().info(
+                    "insertion_event summary: "
+                    f"last={self._last_insertion_event}, "
+                    f"count={len(self._insertion_events)}"
+                )
                 send_feedback(f"failed: {name} exception")
                 return False
 
         self.get_logger().info("DebugSfpDistancePolicy done")
+        self.get_logger().info(
+            "insertion_event summary: "
+            f"last={self._last_insertion_event}, "
+            f"count={len(self._insertion_events)}"
+        )
         send_feedback("debug policy done")
         return True

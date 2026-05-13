@@ -14,10 +14,10 @@ import numpy as np
 #
 # The generator stores z_error_mm as outward-distance error. Since local -Z is
 # the outward approach direction, outward_error_mm = -raw_tip_z_error_mm.
-DEFAULT_CI99_X_MM = (-1.5938, 1.2268)
-DEFAULT_CI99_Y_MM = (-3.6157, 2.9126)
-DEFAULT_CI99_Z_ERROR_MM = (-5.9138, 4.5043)
-DEFAULT_APPROACH_OFFSET_MM = 20.0
+DEFAULT_CI99_X_MM = (-11.5938, 11.2268)
+DEFAULT_CI99_Y_MM = (-13.6157, 12.9126)
+DEFAULT_CI99_Z_ERROR_MM = (-20.9138, 19.5043)
+DEFAULT_APPROACH_OFFSET_MM = 21.0
 
 
 @dataclass(frozen=True)

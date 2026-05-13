@@ -18,15 +18,15 @@ services:
       # AIC_ENABLE_ACL: true
       AIC_RESULTS_DIR: /aic_results
   model:
-    image: baseline:v1
+    image: ais-policy:latest
     build:
-      dockerfile: ws_aic/src/aic/docker/my_policy_node/Dockerfile
+      dockerfile: ws_aic/src/ais/docker/ais_policy/Dockerfile
       context: ../../../..
     gpus: all
     networks:
       - default
     volumes:
-      - /home/swlinux/aic_sejong/debug/yolo_detections:/debug/yolo_detections
+      - /home/swlinux/AIC_Sejong/debug:/debug/yolo_detections
     environment:
       RMW_IMPLEMENTATION: rmw_zenoh_cpp
       ZENOH_ROUTER_CHECK_ATTEMPTS: -1
@@ -34,7 +34,9 @@ services:
       AIC_MODEL_PASSWD: CHANGE_IN_PROD
       # AIC_ENABLE_ACL: true
       AIC_DEBUG_SAVE_DIR: /debug/yolo_detections
+      AIC_DISTANCE_ALIGN_USE_PORT_FRAME_ROTATION: ${AIC_DISTANCE_ALIGN_USE_PORT_FRAME_ROTATION:-false}
+      AIC_DISTANCE_ALIGN_CORRECTION_X_SIGN: ${AIC_DISTANCE_ALIGN_CORRECTION_X_SIGN:--1.0}
+      AIC_DISTANCE_ALIGN_CORRECTION_Y_SIGN: ${AIC_DISTANCE_ALIGN_CORRECTION_Y_SIGN:--1.0}
 networks:
   default:
     internal: true
-
