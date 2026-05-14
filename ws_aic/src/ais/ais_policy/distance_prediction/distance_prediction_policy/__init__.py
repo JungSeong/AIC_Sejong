@@ -1,4 +1,4 @@
-from .DistancePredictionPolicy import DistancePredictionPolicy
+from .DebugDistancePolicy import DebugDistancePolicy
 from .DebugSfpDistancePolicy import DebugSfpDistancePolicy
 
-__all__ = ["DistancePredictionPolicy", "DebugSfpDistancePolicy"]
+__all__ = ["DebugDistancePolicy", "DebugSfpDistancePolicy"]

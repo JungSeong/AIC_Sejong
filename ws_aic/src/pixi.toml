@@ -50,6 +50,7 @@ opencv = "*"
 pyyaml = "*"
 scipy = "*"
 tqdm = "*"
+ros-kilted-plotjuggler-ros = ">=2.3.1,<3"
 
 # ──────────────────────────────────────────
 # PyPI 의존성

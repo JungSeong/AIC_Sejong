@@ -17,9 +17,6 @@ from aic_model.policy import (
 )
 from aic_task_interfaces.msg import Task
 from geometry_msgs.msg import Point, Pose, Quaternion
-from rclpy.time import Time
-from std_msgs.msg import String
-from tf2_ros import TransformException
 from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 
 from distance_prediction_policy.config import DistancePredictionConfig
@@ -65,10 +62,9 @@ def _first_existing_model_path(paths: tuple[Path, ...]) -> Optional[str]:
 
 
 def _resolve_sfp_yolo_model_path() -> str:
-    for env_name in ("AIC_SFP_YOLO_MODEL_PATH", "AIC_YOLO_MODEL_PATH"):
-        env_path = os.environ.get(env_name)
-        if env_path:
-            return env_path
+    env_path = os.environ.get("AIC_SFP_YOLO_MODEL_PATH")
+    if env_path:
+        return env_path
     default_path = _first_existing_model_path(DEFAULT_SFP_YOLO_MODEL_PATHS)
     if default_path is not None:
         return default_path
@@ -108,8 +104,6 @@ class DebugSfpDistancePolicy(Policy):
         self._cached_port_base: Optional[np.ndarray] = None
         self._target_orientation: Optional[Quaternion] = None
         self._fixed_target_orientation: Optional[Quaternion] = None
-        self._last_insertion_event: Optional[str] = None
-        self._insertion_events: list[str] = []
         self._sfp_yolo_conf_thresh = float(
             os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5")
         )
@@ -124,12 +118,6 @@ class DebugSfpDistancePolicy(Policy):
 
         self._vision = self._vision_for_port_type("sfp")
         self._distance = VisionOffsetPredictor(logger=self.get_logger())
-        self._insertion_event_sub = parent_node.create_subscription(
-            String,
-            "/scoring/insertion_event",
-            self._on_insertion_event,
-            10,
-        )
 
         self.get_logger().info(
             "DebugSfpDistancePolicy ready: "
@@ -139,11 +127,6 @@ class DebugSfpDistancePolicy(Policy):
             f"sfp_yolo_conf_thresh={self._sfp_yolo_conf_thresh}, "
             f"sc_yolo_conf_thresh={self._sc_yolo_conf_thresh}"
         )
-
-    def _on_insertion_event(self, msg: String) -> None:
-        self._last_insertion_event = msg.data
-        self._insertion_events.append(msg.data)
-        self.get_logger().info(f"insertion_event: {msg.data}")
 
     @staticmethod
     def _copy_pose(pose: Pose) -> Pose:
@@ -185,6 +168,16 @@ class DebugSfpDistancePolicy(Policy):
             return None
         force = observation.wrist_wrench.wrench.force
         return float(math.sqrt(force.x * force.x + force.y * force.y + force.z * force.z))
+
+    @staticmethod
+    def _force_vector(observation) -> Optional[np.ndarray]:
+        if observation is None:
+            return None
+        force = observation.wrist_wrench.wrench.force
+        return np.array(
+            [float(force.x), float(force.y), float(force.z)],
+            dtype=np.float64,
+        )
 
     @staticmethod
     def _tcp_pose(observation) -> Optional[Pose]:
@@ -281,37 +274,11 @@ class DebugSfpDistancePolicy(Policy):
             return DistancePredictionConfig.SC_INSERTION_DAMPING
         return DistancePredictionConfig.SFP_INSERTION_DAMPING
 
-    def _port_frame(self) -> str:
-        task = self._task
-        base_frame = f"task_board/{task.target_module_name}/{task.port_name}_link"
-        mode = str(DistancePredictionConfig.LABEL_PORT_FRAME_MODE).lower()
-        if self._port_type() == "sfp" and mode in {"entrance", "auto"}:
-            return f"{base_frame}_entrance"
-        return base_frame
-
-    def _lookup_port_rotation(self) -> Optional[Quaternion]:
-        frame = self._port_frame()
-        try:
-            transform = self._parent_node._tf_buffer.lookup_transform(
-                "base_link",
-                frame,
-                Time(),
-            ).transform
-        except TransformException as exc:
-            self.get_logger().warn(
-                f"Port TF unavailable for align correction ({frame}): {exc}"
-            )
-            return None
-        return Quaternion(
-            x=float(transform.rotation.x),
-            y=float(transform.rotation.y),
-            z=float(transform.rotation.z),
-            w=float(transform.rotation.w),
-        )
-
     def _align_correction_base(self, offset_m: np.ndarray) -> np.ndarray:
         offset = np.asarray(offset_m, dtype=np.float64)
-        correction = np.array(
+        # Evaluation policy must not query target-port TF. Interpret the learned
+        # offset with fixed, tunable signs in the command/base frame.
+        return np.array(
             [
                 float(DistancePredictionConfig.ALIGN_CORRECTION_X_SIGN) * offset[0],
                 float(DistancePredictionConfig.ALIGN_CORRECTION_Y_SIGN) * offset[1],
@@ -319,15 +286,46 @@ class DebugSfpDistancePolicy(Policy):
             ],
             dtype=np.float64,
         )
-        if not DistancePredictionConfig.ALIGN_USE_PORT_FRAME_ROTATION:
-            # Manual sign mode: treats predicted x/y as base_link x/y, with tunable signs.
-            return correction
 
-        port_rotation = self._lookup_port_rotation()
-        if port_rotation is None:
-            return correction
-        self.get_logger().info(f"Align to correct base")
-        return rotate_vector_by_quat(correction, quat_to_tuple(port_rotation))
+    def _align_retry_step_base(
+        self,
+        *,
+        tcp_pose: Pose,
+        force_delta: Optional[np.ndarray],
+    ) -> Optional[np.ndarray]:
+        if force_delta is None or not DistancePredictionConfig.ALIGN_RETRY_ENABLED:
+            return None
+
+        force_delta = np.asarray(force_delta, dtype=np.float64)
+        xy_force = np.array(
+            [
+                float(DistancePredictionConfig.ALIGN_RETRY_FORCE_X_SIGN)
+                * force_delta[0],
+                float(DistancePredictionConfig.ALIGN_RETRY_FORCE_Y_SIGN)
+                * force_delta[1],
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+        xy_norm = float(np.linalg.norm(xy_force[:2]))
+        z_abs = abs(float(force_delta[2]))
+
+        retry_step = np.zeros(3, dtype=np.float64)
+        if xy_norm > float(DistancePredictionConfig.ALIGN_RETRY_FORCE_XY_THRESHOLD_N):
+            lateral = xy_force / max(xy_norm, 1e-9)
+            lateral *= float(DistancePredictionConfig.ALIGN_RETRY_LATERAL_STEP_M)
+            if DistancePredictionConfig.ALIGN_RETRY_USE_TCP_FRAME:
+                lateral = rotate_vector_by_quat(lateral, quat_to_tuple(tcp_pose.orientation))
+            retry_step[:2] = lateral[:2]
+
+        if z_abs > float(DistancePredictionConfig.ALIGN_RETRY_FORCE_Z_THRESHOLD_N):
+            retry_step[2] = float(DistancePredictionConfig.ALIGN_RETRY_LIFT_M)
+        elif xy_norm > float(DistancePredictionConfig.ALIGN_RETRY_FORCE_XY_THRESHOLD_N):
+            retry_step[2] = 0.5 * float(DistancePredictionConfig.ALIGN_RETRY_LIFT_M)
+
+        if float(np.linalg.norm(retry_step)) < 1e-9:
+            return None
+        return retry_step
 
     def _axis(self, pose: Pose) -> np.ndarray:
         axis_name = str(DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS)
@@ -590,11 +588,66 @@ class DebugSfpDistancePolicy(Policy):
         self.get_logger().info("[stage 4/5] align start")
         stable_count = 0
         last_xy = None
+        baseline_force = self._force_vector(get_observation())
+        if baseline_force is None:
+            self.get_logger().warn("align force baseline unavailable; retry disabled")
+        else:
+            self.get_logger().info(
+                "align force baseline: "
+                f"fx={baseline_force[0]:+.2f}N, "
+                f"fy={baseline_force[1]:+.2f}N, "
+                f"fz={baseline_force[2]:+.2f}N, "
+                f"xy_threshold="
+                f"{DistancePredictionConfig.ALIGN_RETRY_FORCE_XY_THRESHOLD_N:.2f}N, "
+                f"z_threshold="
+                f"{DistancePredictionConfig.ALIGN_RETRY_FORCE_Z_THRESHOLD_N:.2f}N"
+            )
         for step in range(DistancePredictionConfig.ALIGN_MAX_STEPS):
             obs = get_observation()
             tcp_pose = self._tcp_pose(obs)
             if tcp_pose is None:
                 self.sleep_for(DistancePredictionConfig.DT)
+                continue
+
+            force = self._force_vector(obs)
+            force_delta = None
+            if force is not None and baseline_force is not None:
+                force_delta = force - baseline_force
+            retry_step = self._align_retry_step_base(
+                tcp_pose=tcp_pose,
+                force_delta=force_delta,
+            )
+            if retry_step is not None:
+                stable_count = 0
+                target_pose = self._copy_pose(tcp_pose)
+                target_pose.position.x += float(retry_step[0])
+                target_pose.position.y += float(retry_step[1])
+                target_pose.position.z += float(retry_step[2])
+                if self._target_orientation is not None:
+                    target_pose.orientation = self._copy_quaternion(
+                        self._target_orientation
+                    )
+                self.set_pose_target(
+                    move_robot=move_robot,
+                    pose=target_pose,
+                    stiffness=list(DistancePredictionConfig.ALIGN_STIFFNESS),
+                    damping=list(DistancePredictionConfig.ALIGN_DAMPING),
+                )
+                delta_text = ""
+                if force_delta is not None:
+                    delta_text = (
+                        f"force_delta=({force_delta[0]:+.2f}, "
+                        f"{force_delta[1]:+.2f}, "
+                        f"{force_delta[2]:+.2f})N, "
+                    )
+                self.get_logger().warn(
+                    f"align[{step:03d}] retry: "
+                    f"{delta_text}"
+                    f"cmd_base=({retry_step[0]*1000:+.2f}, "
+                    f"{retry_step[1]*1000:+.2f}, "
+                    f"{retry_step[2]*1000:+.2f})mm"
+                )
+                self.sleep_for(DistancePredictionConfig.ALIGN_COMMAND_SETTLE_S)
                 continue
 
             offset_m = self._distance.predict_offset_m(obs, self._port_id())
@@ -739,8 +792,6 @@ class DebugSfpDistancePolicy(Policy):
         self._cached_port_base = None
         self._target_orientation = None
         self._fixed_target_orientation = None
-        self._last_insertion_event = None
-        self._insertion_events = []
         self.get_logger().info(
             "DebugSfpDistancePolicy start: "
             f"target={task.target_module_name}, port={task.port_name}, "
@@ -759,28 +810,13 @@ class DebugSfpDistancePolicy(Policy):
             try:
                 if not stage():
                     self.get_logger().error(f"Debug policy failed at stage: {name}")
-                    self.get_logger().info(
-                        "insertion_event summary: "
-                        f"last={self._last_insertion_event}, "
-                        f"count={len(self._insertion_events)}"
-                    )
                     send_feedback(f"failed: {name}")
                     return False
             except Exception as exc:
                 self.get_logger().error(f"Debug policy exception at {name}: {exc}")
-                self.get_logger().info(
-                    "insertion_event summary: "
-                    f"last={self._last_insertion_event}, "
-                    f"count={len(self._insertion_events)}"
-                )
                 send_feedback(f"failed: {name} exception")
                 return False
 
         self.get_logger().info("DebugSfpDistancePolicy done")
-        self.get_logger().info(
-            "insertion_event summary: "
-            f"last={self._last_insertion_event}, "
-            f"count={len(self._insertion_events)}"
-        )
         send_feedback("debug policy done")
         return True

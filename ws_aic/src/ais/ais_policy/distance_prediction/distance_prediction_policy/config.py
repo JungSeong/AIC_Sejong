@@ -230,6 +230,28 @@ class DistancePredictionConfig:
     ALIGN_CORRECTION_Y_SIGN: float = _env_float(
         "AIC_DISTANCE_ALIGN_CORRECTION_Y_SIGN", 1.0
     )
+    ALIGN_RETRY_ENABLED: bool = _env_bool("AIC_DISTANCE_ALIGN_RETRY_ENABLED", True)
+    ALIGN_RETRY_FORCE_XY_THRESHOLD_N: float = _env_float(
+        "AIC_DISTANCE_ALIGN_RETRY_FORCE_XY_THRESHOLD_N", 2.0
+    )
+    ALIGN_RETRY_FORCE_Z_THRESHOLD_N: float = _env_float(
+        "AIC_DISTANCE_ALIGN_RETRY_FORCE_Z_THRESHOLD_N", 4.0
+    )
+    ALIGN_RETRY_LATERAL_STEP_M: float = _env_float(
+        "AIC_DISTANCE_ALIGN_RETRY_LATERAL_STEP_M", 0.002
+    )
+    ALIGN_RETRY_LIFT_M: float = _env_float(
+        "AIC_DISTANCE_ALIGN_RETRY_LIFT_M", 0.005
+    )
+    ALIGN_RETRY_FORCE_X_SIGN: float = _env_float(
+        "AIC_DISTANCE_ALIGN_RETRY_FORCE_X_SIGN", -1.0
+    )
+    ALIGN_RETRY_FORCE_Y_SIGN: float = _env_float(
+        "AIC_DISTANCE_ALIGN_RETRY_FORCE_Y_SIGN", -1.0
+    )
+    ALIGN_RETRY_USE_TCP_FRAME: bool = _env_bool(
+        "AIC_DISTANCE_ALIGN_RETRY_USE_TCP_FRAME", True
+    )
 
     FINISH_DISTANCE_M: float = _env_float("AIC_DISTANCE_FINISH_M", 0.003)
     FINISH_STABLE_STEPS: int = _env_int("AIC_DISTANCE_FINISH_STABLE_STEPS", 4)

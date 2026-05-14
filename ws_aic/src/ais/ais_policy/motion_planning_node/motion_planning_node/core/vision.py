@@ -442,7 +442,7 @@ class VisionPortEstimator:
         }
         T_base_to = {}
         for name, _ in self.CAMERAS:
-            t_base_to_camera = self._base_to_camera_optical_matrix(obs, name)
+            t_base_to_camera = self._base_to_camera_optical_matrix(obs, name) # t_base_optical
             if t_base_to_camera is None:
                 return []
             T_base_to[name] = t_base_to_camera

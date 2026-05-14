@@ -37,7 +37,7 @@ class Stage1Config:
     # ═════════════════════════════════════════════════════════
     APPROACH_Z_OFFSET_SFP: float = 0.150
     APPROACH_Z_OFFSET_SC: float = 0.050
-    TRIANGULATION_STOP_Z_OFFSET: float = 0.050
+    TRIANGULATION_STOP_Z_OFFSET: float = 0.020
     TRIANGULATION_STOP_X_OFFSET: float = 0.005
     TRIANGULATION_STOP_Y_OFFSET: float = 0.005
     Z_OFFSET_TOLERANCE: float = 0.015
