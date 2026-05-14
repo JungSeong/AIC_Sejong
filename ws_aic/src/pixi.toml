@@ -43,6 +43,7 @@ ros-kilted-aic-model-interfaces   = { path = "aic/aic_interfaces/aic_model_inter
 ros-kilted-aic-task-interfaces    = { path = "aic/aic_interfaces/aic_task_interfaces" }
 ros-kilted-aic-teleoperation      = { path = "aic/aic_utils/aic_teleoperation" }
 ros-kilted-lerobot-robot-aic      = { path = "aic/aic_utils/lerobot_robot_aic" }
+ros-kilted-ais-stiffness-damping-calibration = { path = "ais/ais_stiffness_damping_calibration" }
 
 # ais 스크립트 추가 의존성
 opencv = "*"
@@ -74,6 +75,7 @@ transforms3d = "*"
 data-gen-node              = { path = "ais/ais_policy/data_gen_node",        editable = true }
 motion-planning-node       = { path = "ais/ais_policy/motion_planning_node", editable = true }
 distance-prediction-policy = { path = "ais/ais_policy/distance_prediction", editable = true }
+policy-investigator        = { path = "ais/ais_policy/policy_investigator",  editable = true }
 ais-reinforcement-learning = { path = "ais/ais_reinforcement_learning",      editable = true }
 
 [activation]

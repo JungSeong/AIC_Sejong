@@ -33,3 +33,4 @@ ws_aic/src/ais/ais_distance_prediction/.vscode/settings.json
 
 aic_venv/
 lerobot_venv/
+ws_aic/src/ais/ais_stiffness_damping_calibration/outputs/*

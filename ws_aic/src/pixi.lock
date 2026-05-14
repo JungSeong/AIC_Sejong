@@ -519,6 +519,8 @@ environments:
         build: hb0f4dca_0
       - conda: aic/aic_utils/lerobot_robot_aic
         build: hb0f4dca_0
+      - conda: ais/ais_stiffness_damping_calibration
+        build: hb0f4dca_0
       - pypi: https://files.pythonhosted.org/packages/18/a6/907a406bb7d359e6a63f99c313846d9eec4f7e6f7437809e03aa00fa3074/absl_py-2.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/7e/46/02ac5e262d4af18054b3e922b2baedbb2a03289ee792162de60a865defc5/accelerate-1.13.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0f/15/5bf3b99495fb160b63f95972b81750f18f7f4e02ad051373b669d17d44f2/aiohappyeyeballs-2.6.1-py3-none-any.whl
@@ -631,6 +633,7 @@ environments:
       - pypi: ./ais/ais_policy/data_gen_node
       - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
+      - pypi: ./ais/ais_policy/policy_investigator
       - pypi: ./ais/ais_reinforcement_learning
       linux-aarch64:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
@@ -1130,6 +1133,8 @@ environments:
         build: he8cfe8b_0
       - conda: aic/aic_utils/lerobot_robot_aic
         build: he8cfe8b_0
+      - conda: ais/ais_stiffness_damping_calibration
+        build: he8cfe8b_0
       - pypi: https://files.pythonhosted.org/packages/18/a6/907a406bb7d359e6a63f99c313846d9eec4f7e6f7437809e03aa00fa3074/absl_py-2.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/7e/46/02ac5e262d4af18054b3e922b2baedbb2a03289ee792162de60a865defc5/accelerate-1.13.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0f/15/5bf3b99495fb160b63f95972b81750f18f7f4e02ad051373b669d17d44f2/aiohappyeyeballs-2.6.1-py3-none-any.whl
@@ -1242,6 +1247,7 @@ environments:
       - pypi: ./ais/ais_policy/data_gen_node
       - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
+      - pypi: ./ais/ais_policy/policy_investigator
       - pypi: ./ais/ais_reinforcement_learning
       osx-arm64:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/_openmp_mutex-4.5-7_kmp_llvm.conda
@@ -1685,6 +1691,8 @@ environments:
         build: h60d57d3_0
       - conda: aic/aic_utils/lerobot_robot_aic
         build: h60d57d3_0
+      - conda: ais/ais_stiffness_damping_calibration
+        build: h60d57d3_0
       - pypi: https://files.pythonhosted.org/packages/18/a6/907a406bb7d359e6a63f99c313846d9eec4f7e6f7437809e03aa00fa3074/absl_py-2.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/7e/46/02ac5e262d4af18054b3e922b2baedbb2a03289ee792162de60a865defc5/accelerate-1.13.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0f/15/5bf3b99495fb160b63f95972b81750f18f7f4e02ad051373b669d17d44f2/aiohappyeyeballs-2.6.1-py3-none-any.whl
@@ -1783,6 +1791,7 @@ environments:
       - pypi: ./ais/ais_policy/data_gen_node
       - pypi: ./ais/ais_policy/distance_prediction
       - pypi: ./ais/ais_policy/motion_planning_node
+      - pypi: ./ais/ais_policy/policy_investigator
       - pypi: ./ais/ais_reinforcement_learning
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -11004,6 +11013,13 @@ packages:
   - pkg:pypi/polars-runtime-32?source=hash-mapping
   size: 35948230
   timestamp: 1776563261192
+- pypi: ./ais/ais_policy/policy_investigator
+  name: policy-investigator
+  version: 0.0.0
+  sha256: 2b2eef7a8440c3dd9ed79362857212e568195ebe152eb40ffbf2f5d4c9308b35
+  requires_dist:
+  - setuptools
+  - pytest ; extra == 'test'
 - pypi: https://files.pythonhosted.org/packages/14/15/5574111ae50dd6e879456888c0eadd4c5a869959775854e18e18a6b345f3/propcache-0.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
   name: propcache
   version: 0.5.2
@@ -12600,6 +12616,58 @@ packages:
   - python_abi 3.12.* *_cp312
   - numpy >=1.23,<3
   license: LicenseRef-Apache-2.0
+- conda: ais/ais_stiffness_damping_calibration
+  name: ros-kilted-ais-stiffness-damping-calibration
+  version: 0.0.0
+  build: h60d57d3_0
+  subdir: osx-arm64
+  variants:
+    target_platform: osx-arm64
+  depends:
+  - ros-kilted-aic-control-interfaces
+  - ros-kilted-geometry-msgs
+  - ros-kilted-rclpy
+  - ros2-distro-mutex
+  - ros2-distro-mutex >=0.14.0,<0.15.0a0
+  - libcxx >=22
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+- conda: ais/ais_stiffness_damping_calibration
+  name: ros-kilted-ais-stiffness-damping-calibration
+  version: 0.0.0
+  build: hb0f4dca_0
+  subdir: linux-64
+  variants:
+    target_platform: linux-64
+  depends:
+  - ros-kilted-aic-control-interfaces
+  - ros-kilted-geometry-msgs
+  - ros-kilted-rclpy
+  - ros2-distro-mutex
+  - ros2-distro-mutex >=0.14.0,<0.15.0a0
+  - libgcc >=15
+  - libgcc >=15
+  - libstdcxx >=15
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+- conda: ais/ais_stiffness_damping_calibration
+  name: ros-kilted-ais-stiffness-damping-calibration
+  version: 0.0.0
+  build: he8cfe8b_0
+  subdir: linux-aarch64
+  variants:
+    target_platform: linux-aarch64
+  depends:
+  - ros-kilted-aic-control-interfaces
+  - ros-kilted-geometry-msgs
+  - ros-kilted-rclpy
+  - ros2-distro-mutex
+  - ros2-distro-mutex >=0.14.0,<0.15.0a0
+  - libgcc >=15
+  - libgcc >=15
+  - libstdcxx >=15
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
 - conda: https://conda.anaconda.org/robostack-kilted/linux-64/ros-kilted-ament-cmake-2.7.5-np2py312h2ed9cc7_17.conda
   sha256: 5d00da6dfcac81ff634b3be1dd9753107a0c0e1d5171698b1e65a8e6831706f0
   md5: 21fc4d9b28df527df4537168a6a992aa
