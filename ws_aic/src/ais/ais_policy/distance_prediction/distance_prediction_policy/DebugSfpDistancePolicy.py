@@ -45,7 +45,8 @@ DEFAULT_SFP_YOLO_MODEL_PATHS = (
     SRC_ROOT / "model" / "ais_yolo" / "approach" / "SFP" / "weights" / "best.pt",
 )
 DEFAULT_SC_YOLO_MODEL_PATHS = (
-    SRC_ROOT
+    WS_ROOT / "model" / "ais_yolo" / "approach" / "SC" / "weights" / "best.pt",
+    WS_ROOT
     / "model"
     / "yolo-port-keypoint-detection"
     / "approach"
@@ -478,6 +479,7 @@ class DebugSfpDistancePolicy(Policy):
 
     def _estimate_port(self, get_observation) -> Optional[np.ndarray]:
         port_hint = str(getattr(self._task, "port_name", "") or "")
+        target_module_name = str(getattr(self._task, "target_module_name", "") or "")
         port_type = self._port_type()
         target_class_id = self._target_class_id(port_type)
         vision = self._vision_for_port_type(port_type)
@@ -487,12 +489,15 @@ class DebugSfpDistancePolicy(Policy):
                 obs,
                 target_class_id,
                 port_hint=port_hint,
+                target_module_name=target_module_name,
             )
             if port is not None:
                 self.get_logger().info(
                     "YOLO port estimate: "
                     f"attempt={attempt + 1}, "
                     f"type={port_type}, "
+                    f"target={target_module_name}, "
+                    f"port={port_hint}, "
                     f"class_id={target_class_id}, "
                     f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})"
                 )

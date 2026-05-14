@@ -1,6 +1,7 @@
 """YOLO and stereo-based port localization."""
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -29,6 +30,20 @@ class VisionPortEstimator:
                ("right", "right_camera/optical")]
 
     CLASS_NAMES = {0: "port_pair", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
+    NIC_MOUNT_LOCAL_Y_M = {
+        0: -0.1745,
+        1: -0.1345,
+        2: -0.0945,
+        3: -0.0545,
+        4: -0.0145,
+    }
+    SC_PORT_LOCAL_Y_M = {
+        0: 0.0295,
+        1: 0.0705,
+    }
+    NIC_MOUNT_CENTER_INDEX = 2
+    SC_PORT_CENTER_INDEX = 0
+    ROI_AXIS_TO_INDEX = {"x": 0, "y": 1, "z": 2}
     TOOL0_TO_TCP_Z = 0.1965
     TOOL0_TO_OPTICAL = {
         "left": (
@@ -370,7 +385,8 @@ class VisionPortEstimator:
         return (pts_4d[:3] / pts_4d[3]).flatten()
 
     def estimate(self, obs, target_class_id: int,
-                 port_hint: Optional[str] = None) -> Optional[np.ndarray]:
+                 port_hint: Optional[str] = None,
+                 target_module_name: Optional[str] = None) -> Optional[np.ndarray]:
         """포트 3D 좌표 추정 (호환성 유지).
 
         단일 best 결과를 반환. 세밀한 선택이 필요하면 estimate_all() 사용.
@@ -379,9 +395,13 @@ class VisionPortEstimator:
         if not candidates:
             return None
 
-        # port_hint가 주어지면 그에 맞는 걸 선택
-        if port_hint is not None:
-            chosen = self.select_by_port_name(candidates, port_hint)
+        # Task hint가 주어지면 여러 카드/포트 후보 중 목표 rail ROI를 선택한다.
+        if port_hint is not None or target_module_name is not None:
+            chosen = self.select_by_task_hint(
+                candidates,
+                port_name=port_hint or "",
+                target_module_name=target_module_name or "",
+            )
             if chosen is not None:
                 return chosen
 
@@ -572,6 +592,162 @@ class VisionPortEstimator:
             )
 
         return unique
+
+    @staticmethod
+    def _extract_named_index(text: str, prefix: str) -> Optional[int]:
+        match = re.search(rf"{re.escape(prefix)}_(\d+)", text or "")
+        if match is None:
+            return None
+        return int(match.group(1))
+
+    def _roi_axis(self) -> tuple[str, int, bool]:
+        axis_name = os.environ.get("AIC_VISION_ROI_AXIS", "y").strip().lower()
+        if axis_name not in self.ROI_AXIS_TO_INDEX:
+            if self._logger:
+                self._logger.warn(
+                    f"Vision ROI: invalid AIC_VISION_ROI_AXIS={axis_name!r}, using 'y'"
+                )
+            axis_name = "y"
+        reverse = os.environ.get("AIC_VISION_ROI_REVERSE", "false").strip().lower()
+        return axis_name, self.ROI_AXIS_TO_INDEX[axis_name], reverse in {
+            "1", "true", "yes", "on",
+        }
+
+    def _roi_y_threshold_m(self) -> float:
+        return float(os.environ.get("AIC_VISION_ROI_Y_THRESHOLD_M", "0.018"))
+
+    def _rail_base_y_centers(
+        self,
+        local_y_by_index: dict[int, float],
+        env_key: str,
+        anchor_index: int,
+    ) -> dict[int, float]:
+        raw = os.environ.get(env_key, "").strip()
+        if raw:
+            values = [float(v.strip()) for v in raw.split(",") if v.strip()]
+            ordered_indices = sorted(local_y_by_index)
+            if len(values) == len(ordered_indices):
+                return dict(zip(ordered_indices, values))
+            if self._logger:
+                self._logger.warn(
+                    f"Vision ROI: {env_key} needs {len(ordered_indices)} comma-separated "
+                    f"values, got {len(values)}; using derived defaults"
+                )
+
+        board_center_y = float(os.environ.get(
+            "AIC_VISION_BOARD_CENTER_BASE_Y",
+            str(Stage1Config.BOARD_CENTER[1]),
+        ))
+        _, _, reverse = self._roi_axis()
+        sign = -1.0 if reverse else 1.0
+        anchor_local_y = local_y_by_index[anchor_index]
+        return {
+            idx: board_center_y + sign * (local_y - anchor_local_y)
+            for idx, local_y in local_y_by_index.items()
+        }
+
+    def _select_by_base_y_threshold(
+        self,
+        candidates: list,
+        target_index: Optional[int],
+        local_y_by_index: dict[int, float],
+        label: str,
+        env_key: str,
+        anchor_index: int,
+    ) -> Optional[dict]:
+        if not candidates or target_index is None or target_index not in local_y_by_index:
+            return None
+
+        centers = self._rail_base_y_centers(local_y_by_index, env_key, anchor_index)
+        target_y = centers[target_index]
+        threshold = self._roi_y_threshold_m()
+        matches = [
+            (abs(float(c["pos"][1]) - target_y), c)
+            for c in candidates
+            if abs(float(c["pos"][1]) - target_y) <= threshold
+        ]
+        if not matches:
+            if self._logger:
+                candidate_y = ", ".join(f"{float(c['pos'][1]):+.4f}" for c in candidates)
+                self._logger.warn(
+                    "Vision ROI: no base_y candidate inside target rail threshold "
+                    f"(target={label}_{target_index}, target_y={target_y:+.4f}, "
+                    f"threshold={threshold:.4f}, candidate_y=[{candidate_y}])"
+                )
+            return None
+
+        matches.sort(key=lambda item: (item[0], item[1].get("score", 0.0)))
+        dy, chosen = matches[0]
+        if self._logger:
+            self._logger.info(
+                "Vision ROI select: "
+                f"target={label}_{target_index}, "
+                f"target_y={target_y:+.4f}, dy={dy:.4f}, "
+                f"threshold={threshold:.4f}, "
+                f"chosen=({chosen['pos'][0]:+.4f}, "
+                f"{chosen['pos'][1]:+.4f}, {chosen['pos'][2]:+.4f}), "
+                f"point={chosen.get('point_name')}"
+            )
+        return chosen
+
+    def select_by_task_hint(
+        self,
+        candidates: list,
+        port_name: str = "",
+        target_module_name: str = "",
+    ) -> Optional[np.ndarray]:
+        """Task hint로 multi-card/multi-port 상황의 올바른 후보를 선택.
+
+        triangulation 결과는 base_link 좌표다. task board local 좌표를 직접 비교하지
+        않고, local y 배치 순서와 base_link 후보들의 ROI axis 순서를 맞춰 선택한다.
+        """
+        if not candidates:
+            return None
+        if len(candidates) == 1 and not target_module_name:
+            return candidates[0]["pos"]
+
+        sfp_port_index = self._extract_named_index(port_name, "sfp_port")
+        nic_mount_index = self._extract_named_index(target_module_name, "nic_card_mount")
+
+        port_candidates = candidates
+        if sfp_port_index is not None:
+            same_port = [
+                c for c in candidates
+                if c.get("port_index") == sfp_port_index
+            ]
+            if same_port:
+                port_candidates = same_port
+
+        if nic_mount_index is not None:
+            chosen = self._select_by_base_y_threshold(
+                port_candidates,
+                nic_mount_index,
+                self.NIC_MOUNT_LOCAL_Y_M,
+                "nic_card_mount",
+                "AIC_VISION_NIC_RAIL_BASE_Y",
+                self.NIC_MOUNT_CENTER_INDEX,
+            )
+            if chosen is not None:
+                return chosen["pos"]
+            return None
+
+        sc_port_index = self._extract_named_index(port_name, "sc_port")
+        if sc_port_index is None:
+            sc_port_index = self._extract_named_index(target_module_name, "sc_port")
+        if sc_port_index is not None:
+            chosen = self._select_by_base_y_threshold(
+                port_candidates,
+                sc_port_index,
+                self.SC_PORT_LOCAL_Y_M,
+                "sc_port",
+                "AIC_VISION_SC_PORT_BASE_Y",
+                self.SC_PORT_CENTER_INDEX,
+            )
+            if chosen is not None:
+                return chosen["pos"]
+            return None
+
+        return self.select_by_port_name(candidates, port_name)
 
     @staticmethod
     def select_by_port_name(

@@ -47,13 +47,13 @@ except ImportError:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", choices=TARGET_CHOICES, default="SFP")
-    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--target", choices=TARGET_CHOICES, default="SC")
+    parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--n-viewpoints", type=int, default=15)
     parser.add_argument("--frames-per-viewpoint", type=int, default=None)
     parser.add_argument("--move-settle-s", type=float, default=2.5)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--val-ratio", type=float, default=0.1)
+    parser.add_argument("--val-ratio", type=float, default=0.3)
     parser.add_argument("--interval-s", type=float, default=0.1)
     parser.add_argument("--wait-s", type=float, default=15.0)
     parser.add_argument("--tf-warmup-s", type=float, default=3.0)
