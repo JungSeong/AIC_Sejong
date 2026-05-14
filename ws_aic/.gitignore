@@ -24,5 +24,7 @@ __pycache__
 data/
 weight/
 notebook/
+!src/ais/ais_yolo_train/notebook/
+!src/ais/ais_yolo_train/notebook/*.ipynb
 .vscode
 model
