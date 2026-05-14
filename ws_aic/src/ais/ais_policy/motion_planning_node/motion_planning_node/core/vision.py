@@ -28,7 +28,7 @@ class VisionPortEstimator:
                ("center", "center_camera/optical"),
                ("right", "right_camera/optical")]
 
-    CLASS_NAMES = {0: "port", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
+    CLASS_NAMES = {0: "port_pair", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
     TOOL0_TO_TCP_Z = 0.1965
     TOOL0_TO_OPTICAL = {
         "left": (
@@ -105,8 +105,8 @@ class VisionPortEstimator:
                     self._logger.error(
                         f"YOLO 모델 파일 없음: {self._model_path}\n"
                         "  해결 방법:\n"
-                        "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
-                        "  2) ws_aic/model/ais_yolo/weights/best.pt 에 배치\n"
+                        "  1) AIC_SFP_YOLO_MODEL_PATH 또는 AIC_SC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
+                        "  2) ws_aic/model/ais_yolo/approach/SFP/weights/best.pt 에 배치\n"
                         "  3) YOLO 학습 스크립트의 --output 경로 확인"
                     )
                 return

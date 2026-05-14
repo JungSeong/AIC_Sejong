@@ -32,7 +32,9 @@ from motion_planning_node.core.vision import VisionPortEstimator
 
 
 SRC_ROOT = Path(__file__).resolve().parents[4]
+WS_ROOT = SRC_ROOT.parent
 DEFAULT_SFP_YOLO_MODEL_PATHS = (
+    WS_ROOT / "model" / "ais_yolo" / "approach" / "SFP" / "weights" / "best.pt",
     SRC_ROOT
     / "model"
     / "yolo-port-keypoint-detection"
