@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "final-policy"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = ["numpy", "torch"]
+
+[tool.setuptools]
+packages = ["final_policy"]

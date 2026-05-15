@@ -382,9 +382,18 @@ def start_policy(args: argparse.Namespace) -> subprocess.Popen:
     set_optional_env(env, "AIC_PORT_COLLECT_PITCH_MAX_DEG", args.pitch_max_deg)
     set_optional_env(env, "AIC_PORT_COLLECT_YAW_MIN_DEG", args.yaw_min_deg)
     set_optional_env(env, "AIC_PORT_COLLECT_YAW_MAX_DEG", args.yaw_max_deg)
+    set_optional_env(env, "AIC_PORT_COLLECT_RPY_NORM_MAX_RAD", args.rpy_norm_max_rad)
+    set_optional_env(
+        env,
+        "AIC_PORT_ACTUAL_RPY_NORM_MAX_RAD",
+        args.actual_rpy_norm_max_rad,
+    )
     env["AIC_RPY_MIN_VISIBLE_CAMERAS"] = str(args.min_visible_cameras)
     env["AIC_RPY_VISIBILITY_MARGIN_PX"] = str(args.visibility_margin_px)
+    env["AIC_TRIANGULATION_STOP_Z_OFFSET"] = str(args.base_z_offset_mm / 1000.0)
+    env["AIC_COLLECT_CAPTURE_SETTLE_SEC"] = str(args.capture_settle_s)
     env["AIC_LEROBOT_REPO_ID"] = ""
+    env["AIC_YOLO_DEBUG_VIDEO"] = "0"
     if POLICY_STOP_FILE.exists():
         POLICY_STOP_FILE.unlink()
 
@@ -476,13 +485,13 @@ def parse_args() -> argparse.Namespace:
         help="Save under data/ais_rpy_randomization/{version}. Empty keeps the base directory.",
     )
     parser.add_argument("--port-xy-limit-mm", type=float, default=50.0)
-    parser.add_argument("--port-z-limit-mm", type=float, default=150.0)
-    parser.add_argument("--dx-min-mm", type=float, default=None)
-    parser.add_argument("--dx-max-mm", type=float, default=None)
-    parser.add_argument("--dy-min-mm", type=float, default=None)
-    parser.add_argument("--dy-max-mm", type=float, default=None)
-    parser.add_argument("--dz-min-mm", type=float, default=None)
-    parser.add_argument("--dz-max-mm", type=float, default=None)
+    parser.add_argument("--port-z-limit-mm", type=float, default=100.0)
+    parser.add_argument("--dx-min-mm", type=float, default=-50.0)
+    parser.add_argument("--dx-max-mm", type=float, default=50.0)
+    parser.add_argument("--dy-min-mm", type=float, default=-50.0)
+    parser.add_argument("--dy-max-mm", type=float, default=50.0)
+    parser.add_argument("--dz-min-mm", type=float, default=0.0)
+    parser.add_argument("--dz-max-mm", type=float, default=100.0)
     parser.add_argument("--port-roll-limit-deg", type=float, default=25.0)
     parser.add_argument("--port-pitch-limit-deg", type=float, default=25.0)
     parser.add_argument("--port-yaw-limit-deg", type=float, default=35.0)
@@ -492,6 +501,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pitch-max-deg", type=float, default=None)
     parser.add_argument("--yaw-min-deg", type=float, default=None)
     parser.add_argument("--yaw-max-deg", type=float, default=None)
+    parser.add_argument(
+        "--rpy-norm-max-rad",
+        type=float,
+        default=None,
+        help="Cap sampled port-local RPY vector magnitude in radians. Omit or use <=0 to disable.",
+    )
+    parser.add_argument(
+        "--actual-rpy-norm-max-rad",
+        type=float,
+        default=None,
+        help=(
+            "Skip samples whose saved target plug-port quaternion angle exceeds this "
+            "radian limit. Defaults to --rpy-norm-max-rad inside the policy."
+        ),
+    )
+    parser.add_argument("--base-z-offset-mm", type=float, default=0.0)
+    parser.add_argument("--capture-settle-s", type=float, default=0.25)
     parser.add_argument("--min-visible-cameras", type=int, default=1)
     parser.add_argument("--visibility-margin-px", type=float, default=8.0)
     parser.add_argument(

@@ -168,6 +168,7 @@ class PortOffsetCollect(DataCollect2):
 
     def __init__(self, parent_node):
         os.environ.setdefault("AIC_COLLECT_STEPS", "24")
+        os.environ.setdefault("AIC_YOLO_DEBUG_VIDEO", "0")
         dataset_dir = Path(
             os.environ.setdefault(
                 "AIC_VISION_OFFSET_DATASET_DIR", str(_default_dataset_dir())
@@ -190,7 +191,7 @@ class PortOffsetCollect(DataCollect2):
         self._yolo_bbox_margin = float(os.environ.get("AIC_RPY_YOLO_BBOX_MARGIN", "0.08"))
         self.collect_pattern = "port_offset_xyz_rpy"
         xy_limit_m = _env_mm("AIC_PORT_COLLECT_XY_LIMIT_MM", 50.0)
-        z_limit_m = _env_mm("AIC_PORT_COLLECT_Z_LIMIT_MM", 150.0)
+        z_limit_m = _env_mm("AIC_PORT_COLLECT_Z_LIMIT_MM", 100.0)
         self.port_collect_x_min_m, self.port_collect_x_max_m = _env_mm_range(
             "AIC_PORT_COLLECT_DX_MIN_MM",
             "AIC_PORT_COLLECT_DX_MAX_MM",
@@ -206,7 +207,7 @@ class PortOffsetCollect(DataCollect2):
         self.port_collect_z_min_m, self.port_collect_z_max_m = _env_mm_range(
             "AIC_PORT_COLLECT_DZ_MIN_MM",
             "AIC_PORT_COLLECT_DZ_MAX_MM",
-            -z_limit_m,
+            0.0,
             z_limit_m,
         )
         roll_limit_rad = _env_deg(
@@ -236,6 +237,14 @@ class PortOffsetCollect(DataCollect2):
             -yaw_limit_rad,
             yaw_limit_rad,
         )
+        self.port_collect_rpy_norm_max_rad = max(
+            0.0, float(os.environ.get("AIC_PORT_COLLECT_RPY_NORM_MAX_RAD", "0.0"))
+        )
+        actual_rpy_norm_max = os.environ.get("AIC_PORT_ACTUAL_RPY_NORM_MAX_RAD")
+        if actual_rpy_norm_max is None:
+            self.port_actual_rpy_norm_max_rad = self.port_collect_rpy_norm_max_rad
+        else:
+            self.port_actual_rpy_norm_max_rad = max(0.0, float(actual_rpy_norm_max))
         self._write_rpy_data_yaml()
         self._port_collect_samples = self._build_port_collect_samples(
             max(1, self.collect_steps)
@@ -254,6 +263,8 @@ class PortOffsetCollect(DataCollect2):
             f"{np.rad2deg(self.port_collect_pitch_max_rad):.1f}]deg, "
             f"yaw=[{np.rad2deg(self.port_collect_yaw_min_rad):.1f}, "
             f"{np.rad2deg(self.port_collect_yaw_max_rad):.1f}]deg, "
+            f"rpy_norm_max={np.rad2deg(self.port_collect_rpy_norm_max_rad):.2f}deg, "
+            f"actual_rpy_norm_max={np.rad2deg(self.port_actual_rpy_norm_max_rad):.2f}deg, "
             f"dataset={self._rpy_dataset_dir}, "
             f"version={self._rpy_dataset_version or 'default'}, "
             f"min_visible_cameras={self._rpy_min_visible_cameras}, "
@@ -282,13 +293,21 @@ class PortOffsetCollect(DataCollect2):
                     f"  dx: [{self.port_collect_x_min_m * 1000.0:.6f}, {self.port_collect_x_max_m * 1000.0:.6f}]",
                     f"  dy: [{self.port_collect_y_min_m * 1000.0:.6f}, {self.port_collect_y_max_m * 1000.0:.6f}]",
                     f"  dz: [{self.port_collect_z_min_m * 1000.0:.6f}, {self.port_collect_z_max_m * 1000.0:.6f}]",
+                    f"base_z_offset_mm: {self._triangulation_stop_z_offset * 1000.0:.6f}",
+                    f"capture_settle_s: {getattr(self, 'collect_capture_settle_sec', 0.0):.6f}",
                     "collect_rpy_range_deg:",
                     f"  roll: [{np.rad2deg(self.port_collect_roll_min_rad):.6f}, {np.rad2deg(self.port_collect_roll_max_rad):.6f}]",
                     f"  pitch: [{np.rad2deg(self.port_collect_pitch_min_rad):.6f}, {np.rad2deg(self.port_collect_pitch_max_rad):.6f}]",
                     f"  yaw: [{np.rad2deg(self.port_collect_yaw_min_rad):.6f}, {np.rad2deg(self.port_collect_yaw_max_rad):.6f}]",
+                    f"  norm_max_rad: {self.port_collect_rpy_norm_max_rad:.9f}",
+                    "actual_label_rotation:",
+                    f"  norm_max_rad: {self.port_actual_rpy_norm_max_rad:.9f}",
+                    "  source: label.ports[target].port_in_plug_tip quaternion",
                     "fields:",
                     "  command: base_link target pose xyz + quaternion xyzw",
                     "  collect: port-local dx/dy/dz + roll/pitch/yaw",
+                    "  reference: physical plug reference point used for labels/control",
+                    "  actual: post-command-settle TF pose and plug-reference-to-port label",
                     "  wrench: raw observation wrist force/torque; no LPF",
                     "  yolo_keypoints: see yolo/data.yaml",
                     "",
@@ -464,6 +483,19 @@ class PortOffsetCollect(DataCollect2):
             "port_order_left_to_right": [item["port_name"] for item in projected_ports],
         }
 
+    def _quat_rotation_angle_rad(self, label: dict[str, Any]) -> float | None:
+        try:
+            qw = float(label["qw"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return float(2.0 * np.arccos(np.clip(abs(qw), -1.0, 1.0)))
+
+    def _target_port_label(self, ports_label: dict[str, Any]) -> dict[str, Any] | None:
+        for port_label in ports_label.values():
+            if port_label.get("is_target", False):
+                return port_label
+        return None
+
     def _scenario_metadata(self, task) -> dict[str, Any]:
         try:
             params = json.loads(
@@ -515,6 +547,25 @@ class PortOffsetCollect(DataCollect2):
         detections_by_camera: Optional[dict[str, Optional[dict[str, Any]]]],
     ) -> None:
         if obs is None:
+            return
+
+        ports_label = self._all_ports_relative_label(task, plug_tf)
+        target_port_label = self._target_port_label(ports_label)
+        target_rotation_angle = None
+        if target_port_label is not None:
+            target_rotation_angle = self._quat_rotation_angle_rad(
+                target_port_label.get("port_in_plug_tip", {})
+            )
+        if (
+            self.port_actual_rpy_norm_max_rad > 0.0
+            and target_rotation_angle is not None
+            and target_rotation_angle > self.port_actual_rpy_norm_max_rad
+        ):
+            self.get_logger().warn(
+                "[PortOffsetCollect] Skipping sample: actual plug-port rotation "
+                f"{target_rotation_angle:.6f}rad exceeds "
+                f"{self.port_actual_rpy_norm_max_rad:.6f}rad"
+            )
             return
 
         projections = {
@@ -582,6 +633,7 @@ class PortOffsetCollect(DataCollect2):
                     "plug_name": task.plug_name,
                 },
                 "scenario": self._scenario_metadata(task),
+                "reference": extras.get("plug_reference", {}),
                 "wrench": self._wrist_wrench_metadata(obs),
                 "command": {
                     "position": {
@@ -613,8 +665,17 @@ class PortOffsetCollect(DataCollect2):
                 },
                 "label": {
                     "plug_tip_to_port": self._plug_tip_to_port_label(port_tf, plug_tf),
-                    "ports": self._all_ports_relative_label(task, plug_tf),
+                    "ports": ports_label,
                     "insertion_wrist": self._insertion_wrist_label(obs, plug_tf),
+                },
+                "actual": {
+                    "capture_timing": "after_command_settle",
+                    "capture_settle_s": float(getattr(self, "collect_capture_settle_sec", 0.0)),
+                    "port": self._transform_metadata(port_tf),
+                    "plug_reference": self._transform_metadata(plug_tf),
+                    "plug_reference_to_port": self._plug_tip_to_port_label(port_tf, plug_tf),
+                    "plug_reference_in_port": self._relative_transform_label(port_tf, plug_tf),
+                    "port_in_plug_reference": self._relative_transform_label(plug_tf, port_tf),
                 },
                 "triangulation": {
                     "valid": bool(extras.get("triangulated_tip_to_port_offsets_valid", False)),
@@ -754,14 +815,25 @@ class PortOffsetCollect(DataCollect2):
             }
         ]
         for idx in range(random_steps):
+            rpy = np.array(
+                [roll_values[idx], pitch_values[idx], yaw_values[idx]],
+                dtype=float,
+            )
+            rpy_norm = float(np.linalg.norm(rpy))
+            if (
+                self.port_collect_rpy_norm_max_rad > 0.0
+                and rpy_norm > self.port_collect_rpy_norm_max_rad
+                and rpy_norm > 1e-12
+            ):
+                rpy *= self.port_collect_rpy_norm_max_rad / rpy_norm
             samples.append(
                 {
                     "x": float(x_values[idx]),
                     "y": float(y_values[idx]),
                     "z": float(z_values[idx]),
-                    "roll": float(roll_values[idx]),
-                    "pitch": float(pitch_values[idx]),
-                    "yaw": float(yaw_values[idx]),
+                    "roll": float(rpy[0]),
+                    "pitch": float(rpy[1]),
+                    "yaw": float(rpy[2]),
                 }
             )
         samples[1:] = sorted(

@@ -94,6 +94,7 @@ class ResNetPositionRegressor(nn.Module):
         freeze_backbone: bool = False,
         num_port_heads: int = 2,
         num_views: int = 1,
+        rpy_dim: int = 0,
     ) -> None:
         super().__init__()
         if aggregation not in {"mean", "max", "concat"}:
@@ -109,7 +110,11 @@ class ResNetPositionRegressor(nn.Module):
         self.encoder, feature_dim = _build_backbone(backbone_name, pretrained)
         self.aggregation = aggregation
         self.num_views = int(num_views)
+        self.rpy_dim = int(rpy_dim)
+        if self.rpy_dim < 0:
+            raise ValueError("rpy_dim must be >= 0.")
         head_feature_dim = feature_dim * self.num_views if aggregation == "concat" else feature_dim
+        head_feature_dim += self.rpy_dim
 
         if freeze_backbone:
             for parameter in self.encoder.parameters():
@@ -125,6 +130,17 @@ class ResNetPositionRegressor(nn.Module):
                 _make_regression_head(head_feature_dim, hidden_dim, output_dim, dropout)
                 for _ in range(self.num_port_heads)
             )
+
+    def _append_rpy(self, features: torch.Tensor, rpy: torch.Tensor | None) -> torch.Tensor:
+        if self.rpy_dim == 0:
+            return features
+        if rpy is None:
+            rpy = features.new_zeros((features.shape[0], self.rpy_dim))
+        else:
+            rpy = rpy.to(device=features.device, dtype=features.dtype).view(features.shape[0], -1)
+            if rpy.shape[1] != self.rpy_dim:
+                raise ValueError(f"Expected {self.rpy_dim} RPY values, got {rpy.shape[1]}.")
+        return torch.cat([features, rpy], dim=1)
 
     def _predict_from_features(
         self,
@@ -145,7 +161,12 @@ class ResNetPositionRegressor(nn.Module):
         all_outputs = torch.stack([head(features) for head in self.heads], dim=1)
         return all_outputs[torch.arange(features.shape[0], device=features.device), port_id]
 
-    def forward(self, image: torch.Tensor, port_id: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        image: torch.Tensor,
+        port_id: torch.Tensor | None = None,
+        rpy: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if image.ndim == 4:
             if self.aggregation == "concat" and self.num_views != 1:
                 raise ValueError(
@@ -153,6 +174,7 @@ class ResNetPositionRegressor(nn.Module):
                     f"[B, {self.num_views}, C, H, W]."
                 )
             features = self.encoder(image)
+            features = self._append_rpy(features, rpy)
             return self._predict_from_features(features, port_id)
 
         if image.ndim != 5:
@@ -173,6 +195,7 @@ class ResNetPositionRegressor(nn.Module):
             features = features.mean(dim=1)
         else:
             features = features.max(dim=1).values
+        features = self._append_rpy(features, rpy)
         return self._predict_from_features(features, port_id)
 
 

@@ -133,6 +133,7 @@ class DataCollect2(Policy):
     current_approach_z: float = 0.00
     _TRIANGULATION_STOP_Z_OFFSET_DEFAULT: float = 0.020  # 2cm
     _TOOL0_TO_TCP_Z: float = 0.1965
+    _SFP_TIP_TOP_CENTER_OFFSET = np.array([0.0, 0.0021125, 0.0], dtype=float)
     _TOOL0_TO_OPTICAL = {
         "left": (
             [-0.100516584, -0.058032593, -0.008935891],
@@ -181,6 +182,7 @@ class DataCollect2(Policy):
             self.collect_pattern = "spiral"
         self.collect_gaussian_sigma = float(os.environ.get("AIC_COLLECT_GAUSSIAN_SIGMA", "0.006"))
         self.collect_gaussian_max_radius = float(os.environ.get("AIC_COLLECT_GAUSSIAN_MAX_RADIUS", str(self.collect_start_radius)))
+        self.collect_capture_settle_sec = float(os.environ.get("AIC_COLLECT_CAPTURE_SETTLE_SEC", "0.25"))
         seed_text = os.environ.get("AIC_COLLECT_RANDOM_SEED", "").strip()
         seed = int(seed_text) if seed_text else None
         self._collect_rng = np.random.default_rng(seed)
@@ -402,6 +404,89 @@ class DataCollect2(Policy):
         mu.trajectory_generation_mode = TrajectoryGenerationMode(mode=TrajectoryGenerationMode.MODE_POSITION)
         return mu
 
+    def _transform_translation_array(self, transform: Transform) -> np.ndarray:
+        return np.array(
+            [transform.translation.x, transform.translation.y, transform.translation.z],
+            dtype=float,
+        )
+
+    def _transform_rotation_matrix(self, transform: Transform) -> np.ndarray:
+        return _quat_to_matrix_xyzw(
+            transform.rotation.x,
+            transform.rotation.y,
+            transform.rotation.z,
+            transform.rotation.w,
+        )
+
+    def _shift_transform_origin(self, transform: Transform, local_offset_xyz: np.ndarray) -> Transform:
+        """Return transform whose origin is shifted by local_offset_xyz in transform frame."""
+        local_offset = np.asarray(local_offset_xyz, dtype=float)
+        shifted_xyz = self._transform_translation_array(transform) + self._transform_rotation_matrix(transform) @ local_offset
+        shifted = Transform()
+        shifted.translation.x = float(shifted_xyz[0])
+        shifted.translation.y = float(shifted_xyz[1])
+        shifted.translation.z = float(shifted_xyz[2])
+        shifted.rotation.x = float(transform.rotation.x)
+        shifted.rotation.y = float(transform.rotation.y)
+        shifted.rotation.z = float(transform.rotation.z)
+        shifted.rotation.w = float(transform.rotation.w)
+        return shifted
+
+    def _plug_reference_offset_local(self, task: Task, cable_tip_frame: str) -> np.ndarray:
+        """Offset from selected plug TF origin to the physical point used as label/control reference."""
+        is_sfp = (
+            "sfp" in str(task.plug_type).lower()
+            or "sfp" in str(task.plug_name).lower()
+            or "sfp" in cable_tip_frame.lower()
+        )
+        if not is_sfp:
+            return np.zeros(3, dtype=float)
+        return np.array(
+            [
+                float(os.environ.get("AIC_SFP_PLUG_REFERENCE_X", str(self._SFP_TIP_TOP_CENTER_OFFSET[0]))),
+                float(os.environ.get("AIC_SFP_PLUG_REFERENCE_Y", str(self._SFP_TIP_TOP_CENTER_OFFSET[1]))),
+                float(os.environ.get("AIC_SFP_PLUG_REFERENCE_Z", str(self._SFP_TIP_TOP_CENTER_OFFSET[2]))),
+            ],
+            dtype=float,
+        )
+
+    def _plug_reference_metadata(
+        self,
+        task: Task,
+        cable_tip_frame: str,
+        offset_local_xyz: np.ndarray,
+    ) -> dict[str, Any]:
+        is_sfp = (
+            "sfp" in str(task.plug_type).lower()
+            or "sfp" in str(task.plug_name).lower()
+            or "sfp" in cable_tip_frame.lower()
+        )
+        return {
+            "plug_frame": cable_tip_frame,
+            "point_name": "sfp_tip_top_center" if is_sfp else "plug_frame_origin",
+            "local_offset_xyz_m": [float(value) for value in np.asarray(offset_local_xyz, dtype=float)],
+            "description": (
+                "SFP contact-collision top center; zero label means this point is on the port entrance frame."
+                if is_sfp
+                else "Selected plug frame origin."
+            ),
+        }
+
+    def _transform_metadata(self, transform: Transform) -> dict[str, Any]:
+        return {
+            "position": {
+                "x": float(transform.translation.x),
+                "y": float(transform.translation.y),
+                "z": float(transform.translation.z),
+            },
+            "orientation_xyzw": {
+                "x": float(transform.rotation.x),
+                "y": float(transform.rotation.y),
+                "z": float(transform.rotation.z),
+                "w": float(transform.rotation.w),
+            },
+        }
+
     def _record_motion_step(self, recorder, phase, task, port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=None, damping=None):
         """현재 observation, action, TF, 부가 정보를 LeRobot recorder에 한 step 저장한다."""
         if recorder is None or obs is None: return
@@ -414,24 +499,22 @@ class DataCollect2(Policy):
 
     def _plug_tip_to_port_label(self, port_tf: Transform, plug_tf: Transform) -> dict[str, float]:
         """TF ground-truth로 plug tip 위치를 port 로컬 좌표계 기준 offset label로 계산한다."""
-        port_xyz = np.array([port_tf.translation.x, port_tf.translation.y, port_tf.translation.z], dtype=float)
-        plug_xyz = np.array([plug_tf.translation.x, plug_tf.translation.y, plug_tf.translation.z], dtype=float)
-        port_rotation = _quat_to_matrix_xyzw(
-            port_tf.rotation.x,
-            port_tf.rotation.y,
-            port_tf.rotation.z,
-            port_tf.rotation.w,
-        )
+        port_xyz = self._transform_translation_array(port_tf)
+        plug_xyz = self._transform_translation_array(plug_tf)
+        port_rotation = self._transform_rotation_matrix(port_tf)
         local_offset = port_rotation.T @ (plug_xyz - port_xyz)
+        approach_z = -float(local_offset[2])
         return {
             "x_m": float(local_offset[0]),
             "y_m": float(local_offset[1]),
             "z_m": float(local_offset[2]),
             "xy_m": float(np.linalg.norm(local_offset[:2])),
+            "approach_z_m": approach_z,
             "x_mm": float(local_offset[0] * 1000.0),
             "y_mm": float(local_offset[1] * 1000.0),
             "z_mm": float(local_offset[2] * 1000.0),
             "xy_mm": float(np.linalg.norm(local_offset[:2]) * 1000.0),
+            "approach_z_mm": approach_z * 1000.0,
         }
 
     def _matrix_from_transform(self, transform: Transform) -> np.ndarray:
@@ -1557,6 +1640,18 @@ class DataCollect2(Policy):
                 status="tf_unavailable",
                 detail=f"Missing required TF: port_frame={port_frame}, cable_tip_frame={cable_tip_frame}",
             )
+        plug_reference_offset_local = self._plug_reference_offset_local(task, cable_tip_frame)
+        plug_reference_metadata = self._plug_reference_metadata(
+            task,
+            cable_tip_frame,
+            plug_reference_offset_local,
+        )
+        self.get_logger().info(
+            "[DataCollect2] Plug reference point: "
+            f"{plug_reference_metadata['point_name']} "
+            f"frame={cable_tip_frame} "
+            f"offset={plug_reference_metadata['local_offset_xyz_m']}"
+        )
         self._wait_for_yolo_model()
 
         start_time = time.time()
@@ -1643,7 +1738,9 @@ class DataCollect2(Policy):
             t_norm = (t + 1) / float(self.approach_steps); t_smooth = interp_profile(t_norm, quintic=True)
             try:
                 current_port_tf = self._lookup_transform("base_link", port_frame)
-                plug_tf, gripper_tf = self._lookup_transform("base_link", cable_tip_frame), self._lookup_transform("base_link", "gripper/tcp")
+                raw_plug_tf = self._lookup_transform("base_link", cable_tip_frame)
+                plug_tf = self._shift_transform_origin(raw_plug_tf, plug_reference_offset_local)
+                gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
                 obs = get_observation()
                 detection, results, bgr, detections_by_camera, selected_camera = _detect_and_update_tracking(obs, "approach", t)
 
@@ -1655,6 +1752,7 @@ class DataCollect2(Policy):
                     reset_xy_integrator=should_reset
                 )
                 extras["z_offset"] = float(approach_z_offset)
+                extras["plug_reference"] = plug_reference_metadata
                 if yolo_tracking_started and detection is not None:
                     pose, yolo_extras = self._apply_yolo_correction(
                         pose=pose,
@@ -1763,7 +1861,9 @@ class DataCollect2(Policy):
         for collect_idx in range(collect_steps):
             try:
                 current_port_tf = self._lookup_transform("base_link", port_frame)
-                plug_tf, gripper_tf = self._lookup_transform("base_link", cable_tip_frame), self._lookup_transform("base_link", "gripper/tcp")
+                raw_plug_tf = self._lookup_transform("base_link", cable_tip_frame)
+                plug_tf = self._shift_transform_origin(raw_plug_tf, plug_reference_offset_local)
+                gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
 
                 pose, extras = self._planner.build_pose(
                     current_port_tf,
@@ -1773,6 +1873,7 @@ class DataCollect2(Policy):
                     reset_xy_integrator=False,
                 )
                 extras["z_offset"] = float(self._triangulation_stop_z_offset)
+                extras["plug_reference"] = plug_reference_metadata
                 pose, collect_extras = self._apply_collect_offset(
                     pose,
                     current_port_tf,
@@ -1849,20 +1950,26 @@ class DataCollect2(Policy):
                     extras["collect_guidance"],
                 )
                 self.set_pose_target(move_robot, pose, stiffness=collect_stiffness, damping=collect_damping)
+                self.sleep_for(max(self.step_sleep_sec, self.collect_capture_settle_sec))
+                save_obs = get_observation()
+                save_port_tf = self._lookup_transform("base_link", port_frame)
+                save_raw_plug_tf = self._lookup_transform("base_link", cable_tip_frame)
+                save_plug_tf = self._shift_transform_origin(save_raw_plug_tf, plug_reference_offset_local)
+                save_gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
                 if recording_started:
                     self._save_vision_offset_sample(
                         episode_name=episode_name,
                         task=task,
                         phase="collect",
                         step_idx=phase_step_counts["collect"],
-                        obs=obs,
-                        port_tf=current_port_tf,
-                        plug_tf=plug_tf,
+                        obs=save_obs,
+                        port_tf=save_port_tf,
+                        plug_tf=save_plug_tf,
                         pose=pose,
                         extras=extras,
                         detections_by_camera=detections_by_camera,
                     )
-                    self._record_motion_step(recorder, "collect", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=collect_stiffness, damping=collect_damping)
+                    self._record_motion_step(recorder, "collect", task, save_port_tf, save_plug_tf, save_gripper_tf, save_obs, pose, extras, stiffness=collect_stiffness, damping=collect_damping)
                     phase_step_counts["collect"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)

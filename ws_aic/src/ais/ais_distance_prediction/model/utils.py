@@ -10,7 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .dataset import expand_samples_by_available_ports
+from .dataset import distance_target_from_sample, expand_samples_by_available_ports
 
 
 def _ws_aic_root() -> Path:
@@ -182,14 +182,22 @@ def compute_target_stats(
     target_keys: Sequence[str] = ("x_mm", "y_mm", "z_mm"),
     *,
     expand_all_ports: bool = True,
+    target_source: str = "label",
+    target_mode: str = "plug_tip_to_port",
 ) -> dict[str, torch.Tensor]:
     if expand_all_ports:
         samples = expand_samples_by_available_ports(samples)
     values = []
     for sample in samples:
-        label = sample.get("_port_label") or sample["label"]["plug_tip_to_port"]
-        values.append([float(label[key]) for key in target_keys])
-    targets = torch.tensor(values, dtype=torch.float32)
+        values.append(
+            distance_target_from_sample(
+                sample,
+                target_source=target_source,
+                target_mode=target_mode,
+                target_keys=target_keys,
+            )
+        )
+    targets = torch.stack(values, dim=0).float()
     std = targets.std(dim=0, unbiased=False).clamp_min(1e-6)
     return {"mean": targets.mean(dim=0), "std": std}
 
@@ -197,13 +205,16 @@ def compute_target_stats(
 def _to_device(
     batch: Mapping[str, Any],
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     images = batch["image"].to(device, non_blocking=True)
     targets = batch["target"].to(device, non_blocking=True)
     port_ids = batch.get("port_id")
     if port_ids is not None:
         port_ids = port_ids.to(device, non_blocking=True)
-    return images, targets, port_ids
+    rpy = batch.get("rpy")
+    if rpy is not None:
+        rpy = rpy.to(device, non_blocking=True)
+    return images, targets, port_ids, rpy
 
 
 def _denormalize(
@@ -242,9 +253,9 @@ def train_one_epoch(
         leave=False,
     )
     for batch in progress:
-        images, targets, port_ids = _to_device(batch, device)
+        images, targets, port_ids, rpy = _to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
-        predictions = model(images, port_ids)
+        predictions = model(images, port_ids, rpy)
         loss = loss_fn(predictions, targets)
         loss.backward()
         if grad_clip_norm is not None:
@@ -290,8 +301,8 @@ def evaluate(
         leave=False,
     )
     for batch in progress:
-        images, targets, port_ids = _to_device(batch, device)
-        predictions = model(images, port_ids)
+        images, targets, port_ids, rpy = _to_device(batch, device)
+        predictions = model(images, port_ids, rpy)
         loss = loss_fn(predictions, targets)
 
         raw_targets = batch.get("raw_target", targets).to(device, non_blocking=True)
@@ -363,6 +374,7 @@ def fit(
     scheduler: Any | None = None,
     grad_clip_norm: float | None = 1.0,
     config: Mapping[str, Any] | None = None,
+    extra_val_loaders: Mapping[str, DataLoader] | None = None,
     show_progress: bool = True,
 ) -> list[dict[str, float]]:
     """Train and save best/last checkpoints under ``ws_aic/model``."""
@@ -399,6 +411,19 @@ def fit(
             show_progress=show_progress,
             progress_desc=f"val {epoch}/{epochs}",
         )
+        extra_val_metrics = {}
+        for name, loader in (extra_val_loaders or {}).items():
+            metrics = evaluate(
+                model,
+                loader,
+                device,
+                loss_fn=loss_fn,
+                target_mean=target_mean,
+                target_std=target_std,
+                show_progress=show_progress,
+                progress_desc=f"val_{name} {epoch}/{epochs}",
+            )
+            extra_val_metrics[name] = metrics
         if scheduler is not None:
             scheduler.step(val_metrics["loss"])
 
@@ -406,6 +431,11 @@ def fit(
             "epoch": float(epoch),
             **{f"train_{key}": value for key, value in train_metrics.items()},
             **{f"val_{key}": value for key, value in val_metrics.items()},
+            **{
+                f"val_{name}_{key}": value
+                for name, metrics in extra_val_metrics.items()
+                for key, value in metrics.items()
+            },
         }
         history.append(row)
 
@@ -442,6 +472,10 @@ def fit(
             f"val_loss={val_metrics['loss']:.4f} "
             f"val_mae={val_metrics.get('mae', float('nan')):.3f} "
             f"val_euclidean={val_metrics.get('euclidean', float('nan')):.3f}"
+            + "".join(
+                f" val_{name}_euclidean={metrics.get('euclidean', float('nan')):.3f}"
+                for name, metrics in extra_val_metrics.items()
+            )
         )
 
     return history

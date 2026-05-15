@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ais-pose-prediction"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = ["numpy", "torch", "torchvision"]
+
+[project.scripts]
+ais_pose_prediction_train = "ais_pose_prediction.train:main"
+
+[tool.setuptools]
+packages = ["ais_pose_prediction", "ais_pose_prediction.model"]

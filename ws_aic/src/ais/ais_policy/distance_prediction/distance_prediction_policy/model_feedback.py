@@ -71,6 +71,9 @@ class VisionOffsetPredictor:
         self.metrics = {}
         self.target_mean = torch.zeros(3, dtype=torch.float32)
         self.target_std = torch.ones(3, dtype=torch.float32)
+        self.rpy_dim = 0
+        self.rpy_mean = torch.zeros(3, dtype=torch.float32)
+        self.rpy_std = torch.ones(3, dtype=torch.float32)
         self._load()
 
     def _log_info(self, message: str) -> None:
@@ -114,6 +117,13 @@ class VisionOffsetPredictor:
         self.target_std = torch.as_tensor(
             config.get("target_std", [1.0, 1.0, 1.0]), dtype=torch.float32
         )
+        self.rpy_dim = int(config.get("rpy_dim", 0))
+        self.rpy_mean = torch.as_tensor(
+            config.get("rpy_mean") or [0.0, 0.0, 0.0], dtype=torch.float32
+        )
+        self.rpy_std = torch.as_tensor(
+            config.get("rpy_std") or [1.0, 1.0, 1.0], dtype=torch.float32
+        ).clamp_min(1e-6)
 
         position_model = _load_position_model_module()
         self.aggregation = config.get("aggregation", "mean")
@@ -146,6 +156,7 @@ class VisionOffsetPredictor:
             aggregation=self.aggregation,
             num_port_heads=num_port_heads,
             num_views=self.num_views,
+            rpy_dim=self.rpy_dim,
         )
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
@@ -156,7 +167,7 @@ class VisionOffsetPredictor:
             f"path={self.checkpoint_path}, device={self.device}, "
             f"cameras={self.cameras}, checkpoint_cameras={self.checkpoint_cameras}, "
             f"image_size={self.image_size}, aggregation={self.aggregation}, "
-            f"num_views={self.num_views}, metrics={self.metrics}"
+            f"num_views={self.num_views}, rpy_dim={self.rpy_dim}, metrics={self.metrics}"
         )
         if self.checkpoint_cameras and self.checkpoint_cameras != self.cameras:
             self._log_warn(
@@ -222,7 +233,12 @@ class VisionOffsetPredictor:
         return getattr(observation, f"{camera}_image", None)
 
     @torch.inference_mode()
-    def predict_offset_m(self, observation, port_id: int | None = None) -> Optional[np.ndarray]:
+    def predict_offset_m(
+        self,
+        observation,
+        port_id: int | None = None,
+        rpy_rad: np.ndarray | None = None,
+    ) -> Optional[np.ndarray]:
         if observation is None:
             return None
 
@@ -242,7 +258,12 @@ class VisionOffsetPredictor:
         port_tensor = None
         if port_id is not None:
             port_tensor = torch.tensor([int(port_id)], dtype=torch.long, device=self.device)
-        pred = self.model(model_input.to(self.device), port_tensor).cpu()[0]
+        rpy_tensor = None
+        if rpy_rad is not None:
+            rpy_tensor = torch.as_tensor(rpy_rad, dtype=torch.float32).view(1, -1)
+            rpy_tensor = (rpy_tensor - self.rpy_mean.view(1, -1)) / self.rpy_std.view(1, -1)
+            rpy_tensor = rpy_tensor.to(self.device)
+        pred = self.model(model_input.to(self.device), port_tensor, rpy_tensor).cpu()[0]
         pred_mm = pred * self.target_std + self.target_mean
         offset_m = pred_mm.numpy().astype(np.float64) / 1000.0
         if not np.isfinite(offset_m).all():
