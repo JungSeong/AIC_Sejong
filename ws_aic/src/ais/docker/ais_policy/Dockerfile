@@ -88,4 +88,4 @@ exec pixi run --as-is ros2 run aic_model aic_model "$@"
 EOF
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "-p", "policy:=distance_prediction_policy.DebugDistancePolicy", "-p", "use_sim_time:=true"]
+CMD ["--ros-args", "-p", "policy:=distance_prediction_policy.DebugSfpDistancePolicy", "-p", "use_sim_time:=true"]

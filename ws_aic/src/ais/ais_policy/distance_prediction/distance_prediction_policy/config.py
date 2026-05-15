@@ -201,6 +201,9 @@ class DistancePredictionConfig:
     APPROACH_NEAR_STEPS: int = _env_int("AIC_APPROACH_NEAR_STEPS", 40)
     APPROACH_DT: float = _env_float("AIC_APPROACH_DT", 0.05)
     APPROACH_SETTLE_S: float = _env_float("AIC_APPROACH_SETTLE_S", 0.50)
+    ALIGN_PRE_SETTLE_S: float = _env_float(
+        "AIC_DISTANCE_ALIGN_PRE_SETTLE_S", 2.00
+    )
     APPROACH_FORCE_DELTA_LIMIT_N: float = _env_float(
         "AIC_APPROACH_FORCE_DELTA_LIMIT_N", 15.0
     )
@@ -230,6 +233,12 @@ class DistancePredictionConfig:
     ALIGN_CORRECTION_Y_SIGN: float = _env_float(
         "AIC_DISTANCE_ALIGN_CORRECTION_Y_SIGN", 1.0
     )
+    # 모델 systematic bias 보정 (base frame, mm 단위).
+    # pred_base_est 의 raw 값에서 이 값을 빼서 보정한 값을 명령으로 사용.
+    # 예: 플러그가 포트 위에 있는데 pred_y=+2.25mm 이면 ALIGN_BIAS_Y_MM=2.25 로 설정.
+    ALIGN_BIAS_X_MM: float = _env_float("AIC_DISTANCE_ALIGN_BIAS_X_MM", 0.0)
+    ALIGN_BIAS_Y_MM: float = _env_float("AIC_DISTANCE_ALIGN_BIAS_Y_MM", 0.0)
+    ALIGN_BIAS_Z_MM: float = _env_float("AIC_DISTANCE_ALIGN_BIAS_Z_MM", 0.0)
     ALIGN_RETRY_ENABLED: bool = _env_bool("AIC_DISTANCE_ALIGN_RETRY_ENABLED", True)
     ALIGN_RETRY_FORCE_XY_THRESHOLD_N: float = _env_float(
         "AIC_DISTANCE_ALIGN_RETRY_FORCE_XY_THRESHOLD_N", 2.0

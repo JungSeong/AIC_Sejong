@@ -10,7 +10,7 @@ from huggingface_hub import HfApi
 
 _WS_ROOT = Path(__file__).resolve().parents[3]  # ws_aic/
 DEFAULT_MODEL_DIR = _WS_ROOT / "model" / "ais_yolo"
-DEFAULT_REPO_ID = "aic-sejong-team/port_detection_yolo"
+DEFAULT_REPO_ID = "aic-sejong-team/detection"
 
 
 def upload_model_folder(

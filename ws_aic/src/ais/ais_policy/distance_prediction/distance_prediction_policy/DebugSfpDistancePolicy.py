@@ -20,6 +20,14 @@ from geometry_msgs.msg import Point, Pose, Quaternion
 from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 
 from distance_prediction_policy.config import DistancePredictionConfig
+from distance_prediction_policy.phase.align import run_align_stage
+from distance_prediction_policy.phase.approach import run_approach_stage
+from distance_prediction_policy.phase.detection import (
+    estimate_port as run_estimate_port,
+    run_detect_stage,
+)
+from distance_prediction_policy.phase.initial_lift import run_initial_lift_stage
+from distance_prediction_policy.phase.insert import run_insert_stage
 from distance_prediction_policy.model_feedback import VisionOffsetPredictor
 from motion_planning_node.core.config import Stage1Config
 from motion_planning_node.core.geometry import (
@@ -107,20 +115,29 @@ class DebugSfpDistancePolicy(Policy):
         self._cached_port_base: Optional[np.ndarray] = None
         self._target_orientation: Optional[Quaternion] = None
         self._fixed_target_orientation: Optional[Quaternion] = None
-        self._sfp_yolo_conf_thresh = float(
-            os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5")
+        self._sfp_yolo_conf_thresh = max(
+            0.8,
+            float(os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.8")),
         )
-        self._sc_yolo_conf_thresh = float(
-            os.environ.get(
-                "AIC_DEBUG_SC_YOLO_CONF_THRESH",
-                os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5"),
-            )
+        self._sc_yolo_conf_thresh = max(
+            0.8,
+            float(
+                os.environ.get(
+                    "AIC_DEBUG_SC_YOLO_CONF_THRESH",
+                    os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.8"),
+                )
+            ),
         )
         self._yolo_conf_thresh = self._sfp_yolo_conf_thresh
         self._vision_by_port_type = {}
+        self._vision_debug_save_enabled = False
 
         self._vision = self._vision_for_port_type("sfp")
         self._distance = VisionOffsetPredictor(logger=self.get_logger())
+        try:
+            self._distance.warmup(n_iter=2)
+        except Exception as exc:
+            self.get_logger().warn(f"distance model warmup error: {exc}")
 
         self.get_logger().info(
             "DebugSfpDistancePolicy ready: "
@@ -252,8 +269,9 @@ class DebugSfpDistancePolicy(Policy):
                 model_path=model_path,
                 conf_thresh=conf_thresh,
                 logger=self.get_logger(),
+                debug_save_enabled=self._vision_debug_save_enabled,
+                auto_start=False,
             )
-            vision._ensure_loaded()
             self._vision_by_port_type[port_type] = vision
         return self._vision_by_port_type[port_type]
 
@@ -414,379 +432,22 @@ class DebugSfpDistancePolicy(Policy):
         return self._copy_quaternion(self._fixed_target_orientation)
 
     def _stage_initial_lift(self, get_observation, move_robot) -> bool:
-        if self._port_type() == "sc":
-            self.get_logger().info("[stage 1/5] initial_lift skipped for SC task")
-            return True
-
-        lift_m = float(DistancePredictionConfig.INITIAL_LIFT_M)
-        self.get_logger().info(
-            f"[stage 1/5] initial_lift start: dz={lift_m * 1000.0:.1f}mm"
-        )
-        if abs(lift_m) < 1e-9:
-            self.get_logger().info("initial_lift skipped: configured dz is 0")
-            return True
-
-        obs = get_observation()
-        start_pose = self._tcp_pose(obs)
-        if start_pose is None:
-            self.get_logger().error("initial_lift failed: missing TCP pose")
-            return False
-
-        target_pose = self._copy_pose(start_pose)
-        target_pose.position.z += lift_m
-        self._follow_pose(
-            move_robot=move_robot,
-            start_pose=start_pose,
-            target_pose=target_pose,
-            steps=DistancePredictionConfig.INITIAL_LIFT_STEPS,
-            stiffness=DistancePredictionConfig.APPROACH_NEAR_STIFFNESS,
-            damping=DistancePredictionConfig.APPROACH_NEAR_DAMPING,
-            dt=DistancePredictionConfig.INITIAL_LIFT_DT,
-            label="initial_lift",
-        )
-        if DistancePredictionConfig.INITIAL_LIFT_SETTLE_S > 0:
-            self.get_logger().info(
-                "initial_lift settle: "
-                f"{DistancePredictionConfig.INITIAL_LIFT_SETTLE_S:.2f}s"
-            )
-            self.sleep_for(DistancePredictionConfig.INITIAL_LIFT_SETTLE_S)
-        self.get_logger().info("[stage 1/5] initial_lift done")
-        return True
+        return run_initial_lift_stage(self, get_observation, move_robot)
 
     def _stage_detect(self, get_observation) -> bool:
-        self.get_logger().info("[stage 2/5] detect start")
-        obs = get_observation()
-        start_pose = self._tcp_pose(obs)
-        if start_pose is None:
-            self.get_logger().error("detect failed: missing TCP pose")
-            return False
-
-        port = self._estimate_port(get_observation)
-        if port is None:
-            self.get_logger().error("detect failed: YOLO port estimate unavailable")
-            return False
-
-        self._cached_port_base = port
-        self._target_orientation = self._target_wrist_orientation(start_pose)
-        self.get_logger().info(
-            "detect cached: "
-            f"port_base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f}), "
-            f"axis={DistancePredictionConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS}, "
-            f"angle={self._manual_rotation_deg():+.2f}deg"
-        )
-        self.get_logger().info("[stage 2/5] detect done")
-        return True
+        return run_detect_stage(self, get_observation)
 
     def _estimate_port(self, get_observation) -> Optional[np.ndarray]:
-        port_hint = str(getattr(self._task, "port_name", "") or "")
-        target_module_name = str(getattr(self._task, "target_module_name", "") or "")
-        port_type = self._port_type()
-        target_class_id = self._target_class_id(port_type)
-        vision = self._vision_for_port_type(port_type)
-        for attempt in range(DistancePredictionConfig.APPROACH_VISION_RETRIES):
-            obs = get_observation()
-            port = vision.estimate(
-                obs,
-                target_class_id,
-                port_hint=port_hint,
-                target_module_name=target_module_name,
-            )
-            if port is not None:
-                self.get_logger().info(
-                    "YOLO port estimate: "
-                    f"attempt={attempt + 1}, "
-                    f"type={port_type}, "
-                    f"target={target_module_name}, "
-                    f"port={port_hint}, "
-                    f"class_id={target_class_id}, "
-                    f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})"
-                )
-                return port
-            self.sleep_for(DistancePredictionConfig.APPROACH_RETRY_DT)
-        return None
+        return run_estimate_port(self, get_observation)
 
     def _stage_approach(self, get_observation, move_robot) -> bool:
-        self.get_logger().info("[stage 3/5] approach start")
-        obs = get_observation()
-        start_pose = self._tcp_pose(obs)
-        if start_pose is None:
-            self.get_logger().error("approach failed: missing TCP pose")
-            return False
-
-        port = self._cached_port_base
-        if port is None:
-            self.get_logger().error("approach failed: missing cached YOLO port estimate")
-            return False
-
-        target_orientation = self._target_orientation
-        if target_orientation is None:
-            target_orientation = self._target_wrist_orientation(start_pose)
-            self._target_orientation = target_orientation
-
-        tcp_offset = np.array(
-            [
-                DistancePredictionConfig.APPROACH_TCP_OFFSET_X_M,
-                DistancePredictionConfig.APPROACH_TCP_OFFSET_Y_M,
-                DistancePredictionConfig.APPROACH_TCP_OFFSET_Z_M,
-            ],
-            dtype=np.float64,
-        )
-        initial_z_offset = self._initial_approach_z_offset()
-        near_z_offset = float(DistancePredictionConfig.APPROACH_NEAR_Z_OFFSET_M)
-
-        def make_approach_pose(z_offset: float) -> tuple[Pose, np.ndarray]:
-            target = port + np.array([0.0, 0.0, z_offset], dtype=np.float64)
-            target = target + tcp_offset
-            return (
-                Pose(
-                    position=Point(
-                        x=float(target[0]),
-                        y=float(target[1]),
-                        z=float(target[2]),
-                    ),
-                    orientation=self._copy_quaternion(target_orientation),
-                ),
-                target,
-            )
-
-        far_pose, far_target = make_approach_pose(initial_z_offset)
-        near_pose, near_target = make_approach_pose(near_z_offset)
-        self.get_logger().info(
-            "approach targets: "
-            f"initial_z_plus={initial_z_offset*1000:.1f}mm, "
-            f"near_z_plus={near_z_offset*1000:.1f}mm, "
-            f"tcp_offset=({tcp_offset[0]*1000:+.1f}, "
-            f"{tcp_offset[1]*1000:+.1f}, {tcp_offset[2]*1000:+.1f})mm, "
-            f"far_tcp=({far_target[0]:+.4f}, {far_target[1]:+.4f}, {far_target[2]:+.4f}), "
-            f"near_tcp=({near_target[0]:+.4f}, {near_target[1]:+.4f}, {near_target[2]:+.4f})"
-        )
-        self._follow_pose(
-            move_robot=move_robot,
-            start_pose=start_pose,
-            target_pose=far_pose,
-            steps=DistancePredictionConfig.APPROACH_STEPS,
-            stiffness=DistancePredictionConfig.APPROACH_STIFFNESS,
-            damping=DistancePredictionConfig.APPROACH_DAMPING,
-            dt=DistancePredictionConfig.APPROACH_DT,
-            label="approach_far",
-        )
-
-        near_start_obs = get_observation()
-        near_start_pose = self._tcp_pose(near_start_obs) or far_pose
-        self._follow_pose(
-            move_robot=move_robot,
-            start_pose=near_start_pose,
-            target_pose=near_pose,
-            steps=DistancePredictionConfig.APPROACH_NEAR_STEPS,
-            stiffness=DistancePredictionConfig.APPROACH_NEAR_STIFFNESS,
-            damping=DistancePredictionConfig.APPROACH_NEAR_DAMPING,
-            dt=DistancePredictionConfig.APPROACH_DT,
-            label="approach_near",
-        )
-        if DistancePredictionConfig.APPROACH_SETTLE_S > 0:
-            self.get_logger().info(
-                f"approach settle: {DistancePredictionConfig.APPROACH_SETTLE_S:.2f}s"
-            )
-            self.sleep_for(DistancePredictionConfig.APPROACH_SETTLE_S)
-        self.get_logger().info("[stage 3/5] approach done")
-        return True
+        return run_approach_stage(self, get_observation, move_robot)
 
     def _stage_align(self, get_observation, move_robot) -> bool:
-        self.get_logger().info("[stage 4/5] align start")
-        stable_count = 0
-        last_xy = None
-        baseline_force = self._force_vector(get_observation())
-        if baseline_force is None:
-            self.get_logger().warn("align force baseline unavailable; retry disabled")
-        else:
-            self.get_logger().info(
-                "align force baseline: "
-                f"fx={baseline_force[0]:+.2f}N, "
-                f"fy={baseline_force[1]:+.2f}N, "
-                f"fz={baseline_force[2]:+.2f}N, "
-                f"xy_threshold="
-                f"{DistancePredictionConfig.ALIGN_RETRY_FORCE_XY_THRESHOLD_N:.2f}N, "
-                f"z_threshold="
-                f"{DistancePredictionConfig.ALIGN_RETRY_FORCE_Z_THRESHOLD_N:.2f}N"
-            )
-        for step in range(DistancePredictionConfig.ALIGN_MAX_STEPS):
-            obs = get_observation()
-            tcp_pose = self._tcp_pose(obs)
-            if tcp_pose is None:
-                self.sleep_for(DistancePredictionConfig.DT)
-                continue
-
-            force = self._force_vector(obs)
-            force_delta = None
-            if force is not None and baseline_force is not None:
-                force_delta = force - baseline_force
-            retry_step = self._align_retry_step_base(
-                tcp_pose=tcp_pose,
-                force_delta=force_delta,
-            )
-            if retry_step is not None:
-                stable_count = 0
-                target_pose = self._copy_pose(tcp_pose)
-                target_pose.position.x += float(retry_step[0])
-                target_pose.position.y += float(retry_step[1])
-                target_pose.position.z += float(retry_step[2])
-                if self._target_orientation is not None:
-                    target_pose.orientation = self._copy_quaternion(
-                        self._target_orientation
-                    )
-                self.set_pose_target(
-                    move_robot=move_robot,
-                    pose=target_pose,
-                    stiffness=list(DistancePredictionConfig.ALIGN_STIFFNESS),
-                    damping=list(DistancePredictionConfig.ALIGN_DAMPING),
-                )
-                delta_text = ""
-                if force_delta is not None:
-                    delta_text = (
-                        f"force_delta=({force_delta[0]:+.2f}, "
-                        f"{force_delta[1]:+.2f}, "
-                        f"{force_delta[2]:+.2f})N, "
-                    )
-                self.get_logger().warn(
-                    f"align[{step:03d}] retry: "
-                    f"{delta_text}"
-                    f"cmd_base=({retry_step[0]*1000:+.2f}, "
-                    f"{retry_step[1]*1000:+.2f}, "
-                    f"{retry_step[2]*1000:+.2f})mm"
-                )
-                self.sleep_for(DistancePredictionConfig.ALIGN_COMMAND_SETTLE_S)
-                continue
-
-            offset_m = self._distance.predict_offset_m(obs, self._port_id())
-            if offset_m is None:
-                self.sleep_for(DistancePredictionConfig.DT)
-                continue
-
-            correction_base = self._align_correction_base(offset_m)
-            offset_base = -correction_base
-            xy_base = float(np.linalg.norm(offset_base[:2]))
-            last_xy = xy_base
-            if xy_base < DistancePredictionConfig.ALIGN_FINISH_XY_M:
-                stable_count += 1
-            else:
-                stable_count = 0
-            if stable_count >= DistancePredictionConfig.ALIGN_STABLE_STEPS:
-                self.get_logger().info(
-                    f"align stable: xy_base={xy_base*1000:.2f}mm x {stable_count}"
-                )
-                return True
-
-            step_xy = correction_base[:2] * DistancePredictionConfig.XY_GAIN
-            step_xy = np.clip(
-                step_xy,
-                -DistancePredictionConfig.MAX_XY_STEP_M,
-                DistancePredictionConfig.MAX_XY_STEP_M,
-            )
-            if np.linalg.norm(step_xy) < DistancePredictionConfig.XY_DEADBAND_M:
-                step_xy[:] = 0.0
-
-            target_pose = self._copy_pose(tcp_pose)
-            target_pose.position.x += float(step_xy[0])
-            target_pose.position.y += float(step_xy[1])
-            if self._target_orientation is not None:
-                target_pose.orientation = self._copy_quaternion(self._target_orientation)
-            self.set_pose_target(
-                move_robot=move_robot,
-                pose=target_pose,
-                stiffness=list(DistancePredictionConfig.ALIGN_STIFFNESS),
-                damping=list(DistancePredictionConfig.ALIGN_DAMPING),
-            )
-
-            self.get_logger().info(
-                f"align[{step:03d}]: "
-                f"pred_base_est=({offset_base[0]*1000:+.2f}, "
-                f"{offset_base[1]*1000:+.2f}, {offset_base[2]*1000:+.2f})mm, "
-                f"cmd_base_xy=({step_xy[0]*1000:+.2f}, "
-                f"{step_xy[1]*1000:+.2f})mm, "
-                f"xy_base={xy_base*1000:.2f}mm, "
-                f"z_base_est={offset_base[2]*1000:+.2f}mm, "
-                f"stable={stable_count}/"
-                f"{DistancePredictionConfig.ALIGN_STABLE_STEPS}"
-            )
-            self.sleep_for(DistancePredictionConfig.ALIGN_COMMAND_SETTLE_S)
-
-        if last_xy is None:
-            self.get_logger().error("align failed: no distance predictions")
-            return False
-        success = last_xy < DistancePredictionConfig.ALIGN_FINISH_XY_M * 1.5
-        self.get_logger().info(
-            f"[stage 4/5] align done: "
-            f"success={success}, last_xy_base={last_xy*1000:.2f}mm"
-        )
-        return success
+        return run_align_stage(self, get_observation, move_robot)
 
     def _stage_insert(self, get_observation, move_robot) -> bool:
-        self.get_logger().info("[stage 5/5] insert start")
-        obs = get_observation()
-        pose = self._tcp_pose(obs)
-        if pose is None:
-            self.get_logger().error("insert failed: missing TCP pose")
-            return False
-
-        max_depth = float(DistancePredictionConfig.MAX_INSERT_DEPTH_M)
-        step_m = float(DistancePredictionConfig.MAX_DOWN_STEP_M)
-        steps = min(
-            int(math.ceil(max_depth / max(step_m, 1e-6))),
-            DistancePredictionConfig.INSERT_MAX_STEPS,
-        )
-        start_z = float(pose.position.z)
-        baseline_force = self._force_norm(obs)
-        if baseline_force is None:
-            self.get_logger().warn("insert force baseline unavailable; force guard disabled")
-        else:
-            self.get_logger().info(
-                f"insert force baseline: {baseline_force:.2f}N, "
-                f"delta_limit={DistancePredictionConfig.FORCE_LIMIT_N:.2f}N"
-            )
-
-        for step in range(steps):
-            obs = get_observation()
-            force = self._force_norm(obs)
-            force_delta = None
-            if force is not None and baseline_force is not None:
-                force_delta = force - baseline_force
-            if (
-                force_delta is not None
-                and force_delta > DistancePredictionConfig.FORCE_LIMIT_N
-            ):
-                self.get_logger().warn(
-                    "insert force delta limit: "
-                    f"force={force:.2f}N, baseline={baseline_force:.2f}N, "
-                    f"delta={force_delta:.2f}N, "
-                    f"limit={DistancePredictionConfig.FORCE_LIMIT_N:.2f}N"
-                )
-                return False
-
-            current = self._tcp_pose(obs) or pose
-            target_pose = self._copy_pose(current)
-            target_pose.position.z = float(start_z - (step + 1) * step_m)
-            if self._target_orientation is not None:
-                target_pose.orientation = self._copy_quaternion(self._target_orientation)
-            self.set_pose_target(
-                move_robot=move_robot,
-                pose=target_pose,
-                stiffness=list(self._insertion_stiffness()),
-                damping=list(self._insertion_damping()),
-            )
-            if step == 0 or step % 10 == 0:
-                force_text = ""
-                if force is not None and force_delta is not None:
-                    force_text = f", force_delta={force_delta:+.2f}N"
-                self.get_logger().info(
-                    f"insert[{step:03d}]: dz={-(step + 1) * step_m * 1000:.1f}mm"
-                    f"{force_text}"
-                )
-            self.sleep_for(DistancePredictionConfig.DT)
-
-        if DistancePredictionConfig.SETTLE_AFTER_INSERT_S > 0:
-            self.sleep_for(DistancePredictionConfig.SETTLE_AFTER_INSERT_S)
-        self.get_logger().info("[stage 5/5] insert done")
-        return True
+        return run_insert_stage(self, get_observation, move_robot)
 
     def insert_cable(
         self,

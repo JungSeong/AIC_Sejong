@@ -233,6 +233,49 @@ class VisionOffsetPredictor:
         return getattr(observation, f"{camera}_image", None)
 
     @torch.inference_mode()
+    def warmup(self, n_iter: int = 2) -> None:
+        """더미 입력으로 모델을 사전 호출해 lazy init 비용을 흡수한다.
+
+        첫 호출에서 발생하는 CUDA 컨텍스트/커널 컴파일 비용을 미리 지불하여
+        실제 align 첫 스텝의 추론 시간이 정상 수준이 되도록 한다.
+        """
+        import time as _time
+
+        if self.model is None:
+            self._log_warn("warmup skipped: model not loaded")
+            return
+
+        image_size = self.image_size or 224
+        if isinstance(image_size, int):
+            h = w = int(image_size)
+        else:
+            h, w = int(image_size[0]), int(image_size[1])
+
+        n_views = len(self.cameras) if self.cameras else 1
+        if n_views <= 1:
+            dummy_input = torch.zeros(1, 3, h, w, device=self.device)
+        else:
+            dummy_input = torch.zeros(1, n_views, 3, h, w, device=self.device)
+
+        port_tensor = torch.zeros(1, dtype=torch.long, device=self.device)
+        rpy_tensor = None
+        if self.rpy_dim > 0:
+            rpy_tensor = torch.zeros(1, int(self.rpy_dim), device=self.device)
+
+        try:
+            for i in range(max(1, int(n_iter))):
+                t0 = _time.perf_counter()
+                _ = self.model(dummy_input, port_tensor, rpy_tensor)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                dt_ms = (_time.perf_counter() - t0) * 1000.0
+                self._log_info(
+                    f"distance model warmup iter {i+1}/{n_iter}: {dt_ms:.1f}ms"
+                )
+        except Exception as exc:
+            self._log_warn(f"distance model warmup failed: {exc}")
+
+    @torch.inference_mode()
     def predict_offset_m(
         self,
         observation,

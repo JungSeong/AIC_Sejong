@@ -7,6 +7,7 @@ import yaml
 
 WS_ROOT = Path(__file__).resolve().parents[4]
 APPROACH_DATA_ROOT = WS_ROOT / "data" / "yolo" / "approach"
+MAGENTA_DATA_ROOT = WS_ROOT / "data" / "magenta_marker_cv"
 
 CAMERAS = [
     ("left", "left_camera/optical"),
@@ -32,6 +33,13 @@ SC_KEYPOINT_NAMES = [
     "sc_bottom_left",
 ]
 
+TASK_BOARD_KEYPOINT_NAMES = [
+    "board_neg_x_pos_y",
+    "board_pos_x_pos_y",
+    "board_pos_x_neg_y",
+    "board_neg_x_neg_y",
+]
+
 # Visible SC port opening face corners in the sc_port_link frame. The SC port
 # entrance is normal to local +Y; using the old local X-Y plane labels a thin
 # side/top face instead of the magenta port opening.
@@ -40,6 +48,15 @@ SC_PORT_CORNER_POINTS_M = [
     (0.0173355, 0.0137160, -0.0046355),
     (0.0173355, 0.0137160, 0.0046355),
     (-0.0173355, 0.0137160, 0.0046355),
+]
+
+# Outer top-surface corners in the task_board_base_link frame. These are fixed
+# local identities for later PnP/object-point use, not image-space corner names.
+TASK_BOARD_KEYPOINT_POINTS_M = [
+    (-0.1500, 0.2125, 0.0120),
+    (0.1500, 0.2125, 0.0120),
+    (0.1500, -0.2125, 0.0120),
+    (-0.1500, -0.2125, 0.0120),
 ]
 
 TARGET_CONFIGS = {
@@ -56,6 +73,20 @@ TARGET_CONFIGS = {
         "class_name": "sc_port",
         "keypoint_names": SC_KEYPOINT_NAMES,
         "corner_points_m": SC_PORT_CORNER_POINTS_M,
+    },
+    "TASK_BOARD": {
+        "task": "pose",
+        "class_id": 0,
+        "class_name": "task_board",
+        "keypoint_names": TASK_BOARD_KEYPOINT_NAMES,
+        "keypoint_points_m": TASK_BOARD_KEYPOINT_POINTS_M,
+        "preserve_keypoint_order": True,
+    },
+    "MAGENTA": {
+        "task": "raw_cv",
+        "class_id": 0,
+        "class_name": "magenta_marker",
+        "keypoint_names": [],
     },
 }
 
@@ -78,7 +109,10 @@ def get_target_config(target: str) -> dict:
 
 
 def default_output_for_target(target: str) -> Path:
-    return APPROACH_DATA_ROOT / normalize_target(target)
+    normalized = normalize_target(target)
+    if normalized == "MAGENTA":
+        return MAGENTA_DATA_ROOT
+    return APPROACH_DATA_ROOT / normalized
 
 
 def draw_label(image: np.ndarray, label: str, target: str = DEFAULT_TARGET) -> np.ndarray:
