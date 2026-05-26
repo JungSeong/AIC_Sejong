@@ -1,0 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch>=2.0
+torchvision>=0.15
+numpy<2.3
+pillow>=10
+huggingface-hub>=0.20
+requests>=2.31
+ipykernel>=6.29
+tqdm>=4.67

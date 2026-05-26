@@ -12,9 +12,10 @@ AIC_Sejong/
 ├── README.md
 │
 └── ws_aic/                  ← 워크스페이스 루트
-    ├── weight/              ← 훈련된 모델 가중치
-    │   └── ais_yolo/        ← YOLO 모델 가중치
-    │       └── weights/
+    ├── model/               ← 훈련된 모델 가중치
+    │   ├── ais_yolo/        ← YOLO 모델 가중치
+    │   │   └── weights/
+    │   └── ais_distance_prediction/
     │
     └── src/                 ← 소스 루트 (pixi.toml 위치)
         ├── pixi.toml        ← 전체 워크스페이스 환경 정의

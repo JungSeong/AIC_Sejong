@@ -83,6 +83,11 @@ def launch_setup(context, *args, **kwargs):
     task_board_roll = LaunchConfiguration("task_board_roll")
     task_board_pitch = LaunchConfiguration("task_board_pitch")
     task_board_yaw = LaunchConfiguration("task_board_yaw")
+    nic_card_mount_0_present = LaunchConfiguration("nic_card_mount_0_present")
+    nic_card_mount_0_translation = LaunchConfiguration("nic_card_mount_0_translation")
+    nic_card_mount_0_roll = LaunchConfiguration("nic_card_mount_0_roll")
+    nic_card_mount_0_pitch = LaunchConfiguration("nic_card_mount_0_pitch")
+    nic_card_mount_0_yaw = LaunchConfiguration("nic_card_mount_0_yaw")
     cable_x = LaunchConfiguration("cable_x")
     cable_y = LaunchConfiguration("cable_y")
     cable_z = LaunchConfiguration("cable_z")
@@ -184,7 +189,7 @@ def launch_setup(context, *args, **kwargs):
             "--controller-manager",
             "/controller_manager",
             "--service-call-timeout",
-            "30",
+            "120",
         ],
     )
 
@@ -197,6 +202,8 @@ def launch_setup(context, *args, **kwargs):
             "--activate-as-group",
             "-c",
             "/controller_manager",
+            "--service-call-timeout",
+            "120",
         ],
         condition=IfCondition(activate_joint_controller),
     )
@@ -209,6 +216,8 @@ def launch_setup(context, *args, **kwargs):
             "-c",
             "/controller_manager",
             "--inactive",
+            "--service-call-timeout",
+            "120",
         ],
         condition=UnlessCondition(activate_joint_controller),
     )
@@ -221,7 +230,7 @@ def launch_setup(context, *args, **kwargs):
             "--controller-manager",
             "/controller_manager",
             "--service-call-timeout",
-            "30",
+            "120",
         ],
     )
 
@@ -281,6 +290,11 @@ def launch_setup(context, *args, **kwargs):
             "task_board_roll": task_board_roll,
             "task_board_pitch": task_board_pitch,
             "task_board_yaw": task_board_yaw,
+            "nic_card_mount_0_present": nic_card_mount_0_present,
+            "nic_card_mount_0_translation": nic_card_mount_0_translation,
+            "nic_card_mount_0_roll": nic_card_mount_0_roll,
+            "nic_card_mount_0_pitch": nic_card_mount_0_pitch,
+            "nic_card_mount_0_yaw": nic_card_mount_0_yaw,
         }.items(),
         condition=IfCondition(spawn_task_board),
     )
@@ -653,6 +667,41 @@ def generate_launch_description():
             "task_board_yaw",
             default_value="3.1415",
             description="Task board spawn yaw orientation (radians)",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "nic_card_mount_0_present",
+            default_value="false",
+            description="Whether NIC Card Mount 0 is present",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "nic_card_mount_0_translation",
+            default_value="0.0",
+            description="NIC Card Mount 0 translation along rail (meters)",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "nic_card_mount_0_roll",
+            default_value="0.0",
+            description="NIC Card Mount 0 roll orientation (radians)",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "nic_card_mount_0_pitch",
+            default_value="0.0",
+            description="NIC Card Mount 0 pitch orientation (radians)",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "nic_card_mount_0_yaw",
+            default_value="0.0",
+            description="NIC Card Mount 0 yaw orientation (radians)",
         )
     )
 

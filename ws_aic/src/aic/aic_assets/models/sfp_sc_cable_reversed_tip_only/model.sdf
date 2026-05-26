@@ -1,0 +1,41 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <model name="sfp_sc_cable_reversed_tip_only">
+    <static>false</static>
+    <self_collide>false</self_collide>
+
+    <link name="cable_connection_0">
+      <pose>2.363388573733971e-08 8.9916731726980004e-08 -1.809723890744408e-07 -1.963900419222713 -0.50606074442996496 0.41718859268790637</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-6</ixx>
+          <iyy>1e-6</iyy>
+          <izz>1e-6</izz>
+        </inertia>
+      </inertial>
+    </link>
+
+    <link name="cable_connection_1">
+      <pose>0.030075539004938534 -0.4988568760994751 -0.15479201364706729 -2.1585642001188612 -0.87514742422539726 2.3400596200714205</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-6</ixx>
+          <iyy>1e-6</iyy>
+          <izz>1e-6</izz>
+        </inertia>
+      </inertial>
+    </link>
+
+    <include merge="true">
+      <uri>model://SC Plug</uri>
+      <pose relative_to="cable_connection_0">-0.052 0 0 0 0 3.14159</pose>
+    </include>
+
+    <joint name="plug_0_joint" type="fixed">
+      <parent>cable_connection_0</parent>
+      <child>sc_plug_link</child>
+    </joint>
+  </model>
+</sdf>

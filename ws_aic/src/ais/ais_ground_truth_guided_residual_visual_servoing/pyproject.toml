@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ais-ground-truth-guided-residual-visual-servoing"
+version = "0.0.1"
+requires-python = ">=3.10"
+dependencies = ["ais-transform", "pyyaml"]
+
+[project.scripts]
+grvs_make_sfp_batch_config = "ais_ground_truth_guided_residual_visual_servoing.batch.engine_config:main"
+grvs_collect_batch = "ais_ground_truth_guided_residual_visual_servoing.batch.collect_batch:main"
+grvs_test_batch = "ais_ground_truth_guided_residual_visual_servoing.batch.test_batch:main"
+grvs_batch_round = "ais_ground_truth_guided_residual_visual_servoing.batch.batch_round:main"
+grvs_capture_node = "ais_ground_truth_guided_residual_visual_servoing.capture_node:main"
+grvs_train_distance = "ais_ground_truth_guided_residual_visual_servoing.training.train_distance:main"
+grvs_train_rotation = "ais_ground_truth_guided_residual_visual_servoing.training.train_rotation:main"
+grvs_train_joint = "ais_ground_truth_guided_residual_visual_servoing.training.train_joint:main"

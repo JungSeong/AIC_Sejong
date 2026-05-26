@@ -19,3 +19,14 @@ src/data/
 src/log/
 
 __pycache__
+*.egg-info/
+.venv
+data/
+weight/
+notebook/
+!src/ais/ais_yolo_train/notebook/
+!src/ais/ais_yolo_train/notebook/*.ipynb
+.vscode
+model
+!src/ais/ais_pose_prediction/ais_pose_prediction/model/
+!src/ais/ais_pose_prediction/ais_pose_prediction/model/*.py

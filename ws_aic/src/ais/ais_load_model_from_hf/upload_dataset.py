@@ -42,7 +42,7 @@ def upload_dataset(dataset_root: Path, repo_id: str, branch: str, private: bool 
         print("[*] Continuing anyway, push_to_hub might handle it...")
 
     print(f"[*] Pushing dataset to {repo_id} (branch: {branch})...")
-    try:
+    try
         # Update repo_id in metadata before pushing
         dataset.meta.repo_id = repo_id
         dataset.push_to_hub(branch=branch, private=private)

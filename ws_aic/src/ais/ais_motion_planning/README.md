@@ -43,7 +43,7 @@ Stage 1 (이동) 모션 플래닝 모듈 관련 개발 도구 및 Vision 통합 
 
 4. 3D 추론 (검증)
    pixi run python tools/stage1_mp/port_detector_3d.py \
-     --model ../weight/ais_yolo/weights/best.pt --compare --continuous
+     --model ../model/ais_yolo/weights/best.pt --compare --continuous
 
 5. 정책 실행 (StagedPolicy)
    pixi run ros2 run aic_model aic_model \

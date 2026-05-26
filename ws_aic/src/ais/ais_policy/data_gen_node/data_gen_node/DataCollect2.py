@@ -133,6 +133,7 @@ class DataCollect2(Policy):
     current_approach_z: float = 0.00
     _TRIANGULATION_STOP_Z_OFFSET_DEFAULT: float = 0.020  # 2cm
     _TOOL0_TO_TCP_Z: float = 0.1965
+    _SFP_TIP_TOP_CENTER_OFFSET = np.array([0.0, 0.0021125, 0.0], dtype=float)
     _TOOL0_TO_OPTICAL = {
         "left": (
             [-0.100516584, -0.058032593, -0.008935891],
@@ -173,20 +174,21 @@ class DataCollect2(Policy):
         self.collect_start_radius = float(os.environ.get("AIC_COLLECT_START_RADIUS", "0.020"))
         self.collect_end_radius = float(os.environ.get("AIC_COLLECT_END_RADIUS", "0.0"))
         self.collect_rotate_angle = float(os.environ.get("AIC_COLLECT_ROTATE_ANGLE", "0.0"))
-        self.collect_pattern = os.environ.get("AIC_COLLECT_PATTERN", "gaussian").strip().lower()
+        self.collect_pattern = os.environ.get("AIC_COLLECT_PATTERN", "spiral").strip().lower()
         if self.collect_pattern not in {"gaussian", "spiral"}:
             self.get_logger().warn(
-                f"[DataCollect2] Invalid AIC_COLLECT_PATTERN={self.collect_pattern}; using gaussian"
+                f"[DataCollect2] Invalid AIC_COLLECT_PATTERN={self.collect_pattern}; using spiral"
             )
-            self.collect_pattern = "gaussian"
+            self.collect_pattern = "spiral"
         self.collect_gaussian_sigma = float(os.environ.get("AIC_COLLECT_GAUSSIAN_SIGMA", "0.006"))
         self.collect_gaussian_max_radius = float(os.environ.get("AIC_COLLECT_GAUSSIAN_MAX_RADIUS", str(self.collect_start_radius)))
+        self.collect_capture_settle_sec = float(os.environ.get("AIC_COLLECT_CAPTURE_SETTLE_SEC", "0.25"))
         seed_text = os.environ.get("AIC_COLLECT_RANDOM_SEED", "").strip()
         seed = int(seed_text) if seed_text else None
         self._collect_rng = np.random.default_rng(seed)
 
         # 4. YOLO 및 데이터셋 설정
-        self._yolo_model_path = str(Path(__file__).resolve().parents[5] / "src" / "model" / "yolo" / "weight" / "ais_yolo" / "weights" / "best.pt")
+        self._yolo_model_path = str(Path(__file__).resolve().parents[6] / "model" / "ais_yolo" / "weights" / "best.pt")
         self._lerobot_dataset = None
         self._lerobot_full_repo_id = os.environ.get("AIC_LEROBOT_REPO_ID", "").strip()
         self._lerobot_version = os.environ.get("AIC_LEROBOT_VERSION", "master").strip()
@@ -402,6 +404,89 @@ class DataCollect2(Policy):
         mu.trajectory_generation_mode = TrajectoryGenerationMode(mode=TrajectoryGenerationMode.MODE_POSITION)
         return mu
 
+    def _transform_translation_array(self, transform: Transform) -> np.ndarray:
+        return np.array(
+            [transform.translation.x, transform.translation.y, transform.translation.z],
+            dtype=float,
+        )
+
+    def _transform_rotation_matrix(self, transform: Transform) -> np.ndarray:
+        return _quat_to_matrix_xyzw(
+            transform.rotation.x,
+            transform.rotation.y,
+            transform.rotation.z,
+            transform.rotation.w,
+        )
+
+    def _shift_transform_origin(self, transform: Transform, local_offset_xyz: np.ndarray) -> Transform:
+        """Return transform whose origin is shifted by local_offset_xyz in transform frame."""
+        local_offset = np.asarray(local_offset_xyz, dtype=float)
+        shifted_xyz = self._transform_translation_array(transform) + self._transform_rotation_matrix(transform) @ local_offset
+        shifted = Transform()
+        shifted.translation.x = float(shifted_xyz[0])
+        shifted.translation.y = float(shifted_xyz[1])
+        shifted.translation.z = float(shifted_xyz[2])
+        shifted.rotation.x = float(transform.rotation.x)
+        shifted.rotation.y = float(transform.rotation.y)
+        shifted.rotation.z = float(transform.rotation.z)
+        shifted.rotation.w = float(transform.rotation.w)
+        return shifted
+
+    def _plug_reference_offset_local(self, task: Task, cable_tip_frame: str) -> np.ndarray:
+        """Offset from selected plug TF origin to the physical point used as label/control reference."""
+        is_sfp = (
+            "sfp" in str(task.plug_type).lower()
+            or "sfp" in str(task.plug_name).lower()
+            or "sfp" in cable_tip_frame.lower()
+        )
+        if not is_sfp:
+            return np.zeros(3, dtype=float)
+        return np.array(
+            [
+                float(os.environ.get("AIC_SFP_PLUG_REFERENCE_X", str(self._SFP_TIP_TOP_CENTER_OFFSET[0]))),
+                float(os.environ.get("AIC_SFP_PLUG_REFERENCE_Y", str(self._SFP_TIP_TOP_CENTER_OFFSET[1]))),
+                float(os.environ.get("AIC_SFP_PLUG_REFERENCE_Z", str(self._SFP_TIP_TOP_CENTER_OFFSET[2]))),
+            ],
+            dtype=float,
+        )
+
+    def _plug_reference_metadata(
+        self,
+        task: Task,
+        cable_tip_frame: str,
+        offset_local_xyz: np.ndarray,
+    ) -> dict[str, Any]:
+        is_sfp = (
+            "sfp" in str(task.plug_type).lower()
+            or "sfp" in str(task.plug_name).lower()
+            or "sfp" in cable_tip_frame.lower()
+        )
+        return {
+            "plug_frame": cable_tip_frame,
+            "point_name": "sfp_tip_top_center" if is_sfp else "plug_frame_origin",
+            "local_offset_xyz_m": [float(value) for value in np.asarray(offset_local_xyz, dtype=float)],
+            "description": (
+                "SFP contact-collision top center; zero label means this point is on the port entrance frame."
+                if is_sfp
+                else "Selected plug frame origin."
+            ),
+        }
+
+    def _transform_metadata(self, transform: Transform) -> dict[str, Any]:
+        return {
+            "position": {
+                "x": float(transform.translation.x),
+                "y": float(transform.translation.y),
+                "z": float(transform.translation.z),
+            },
+            "orientation_xyzw": {
+                "x": float(transform.rotation.x),
+                "y": float(transform.rotation.y),
+                "z": float(transform.rotation.z),
+                "w": float(transform.rotation.w),
+            },
+        }
+
     def _record_motion_step(self, recorder, phase, task, port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=None, damping=None):
         """현재 observation, action, TF, 부가 정보를 LeRobot recorder에 한 step 저장한다."""
         if recorder is None or obs is None: return
@@ -414,25 +499,222 @@ class DataCollect2(Policy):
 
     def _plug_tip_to_port_label(self, port_tf: Transform, plug_tf: Transform) -> dict[str, float]:
         """TF ground-truth로 plug tip 위치를 port 로컬 좌표계 기준 offset label로 계산한다."""
-        port_xyz = np.array([port_tf.translation.x, port_tf.translation.y, port_tf.translation.z], dtype=float)
-        plug_xyz = np.array([plug_tf.translation.x, plug_tf.translation.y, plug_tf.translation.z], dtype=float)
-        port_rotation = _quat_to_matrix_xyzw(
-            port_tf.rotation.x,
-            port_tf.rotation.y,
-            port_tf.rotation.z,
-            port_tf.rotation.w,
-        )
+        port_xyz = self._transform_translation_array(port_tf)
+        plug_xyz = self._transform_translation_array(plug_tf)
+        port_rotation = self._transform_rotation_matrix(port_tf)
         local_offset = port_rotation.T @ (plug_xyz - port_xyz)
+        approach_z = -float(local_offset[2])
         return {
             "x_m": float(local_offset[0]),
             "y_m": float(local_offset[1]),
             "z_m": float(local_offset[2]),
             "xy_m": float(np.linalg.norm(local_offset[:2])),
+            "approach_z_m": approach_z,
             "x_mm": float(local_offset[0] * 1000.0),
             "y_mm": float(local_offset[1] * 1000.0),
             "z_mm": float(local_offset[2] * 1000.0),
             "xy_mm": float(np.linalg.norm(local_offset[:2]) * 1000.0),
+            "approach_z_mm": approach_z * 1000.0,
         }
+
+    def _matrix_from_transform(self, transform: Transform) -> np.ndarray:
+        """geometry_msgs/Transform을 상대 pose 계산용 4x4 행렬로 변환한다."""
+        return _matrix_from_translation_quat(
+            [transform.translation.x, transform.translation.y, transform.translation.z],
+            [transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w],
+        )
+
+    def _relative_transform_label(self, reference_tf: Transform, target_tf: Transform) -> dict[str, float]:
+        """target pose를 reference frame 기준 xyz+quat label로 계산한다."""
+        t_reference_target = np.linalg.inv(self._matrix_from_transform(reference_tf)) @ self._matrix_from_transform(target_tf)
+        rotation = t_reference_target[:3, :3]
+        trace = float(np.trace(rotation))
+        if trace > 0.0:
+            s = float(np.sqrt(trace + 1.0) * 2.0)
+            qw = 0.25 * s
+            qx = (rotation[2, 1] - rotation[1, 2]) / s
+            qy = (rotation[0, 2] - rotation[2, 0]) / s
+            qz = (rotation[1, 0] - rotation[0, 1]) / s
+        else:
+            idx = int(np.argmax(np.diag(rotation)))
+            if idx == 0:
+                s = float(np.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) * 2.0)
+                qw = (rotation[2, 1] - rotation[1, 2]) / s
+                qx = 0.25 * s
+                qy = (rotation[0, 1] + rotation[1, 0]) / s
+                qz = (rotation[0, 2] + rotation[2, 0]) / s
+            elif idx == 1:
+                s = float(np.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) * 2.0)
+                qw = (rotation[0, 2] - rotation[2, 0]) / s
+                qx = (rotation[0, 1] + rotation[1, 0]) / s
+                qy = 0.25 * s
+                qz = (rotation[1, 2] + rotation[2, 1]) / s
+            else:
+                s = float(np.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) * 2.0)
+                qw = (rotation[1, 0] - rotation[0, 1]) / s
+                qx = (rotation[0, 2] + rotation[2, 0]) / s
+                qy = (rotation[1, 2] + rotation[2, 1]) / s
+                qz = 0.25 * s
+        quat = np.array([qx, qy, qz, qw], dtype=float)
+        quat_norm = float(np.linalg.norm(quat))
+        if quat_norm > 1e-9:
+            quat /= quat_norm
+        translation = t_reference_target[:3, 3]
+        return {
+            "x_m": float(translation[0]),
+            "y_m": float(translation[1]),
+            "z_m": float(translation[2]),
+            "xy_m": float(np.linalg.norm(translation[:2])),
+            "x_mm": float(translation[0] * 1000.0),
+            "y_mm": float(translation[1] * 1000.0),
+            "z_mm": float(translation[2] * 1000.0),
+            "xy_mm": float(np.linalg.norm(translation[:2]) * 1000.0),
+            "qx": float(quat[0]),
+            "qy": float(quat[1]),
+            "qz": float(quat[2]),
+            "qw": float(quat[3]),
+        }
+
+    def _lookup_optional_port_transform(self, module_name: str, port_name: str) -> tuple[Optional[str], Optional[Transform]]:
+        """port entrance frame을 우선 조회하고 없으면 link frame으로 fallback한다."""
+        base_frame = f"task_board/{module_name}/{port_name}_link"
+        for frame in (f"{base_frame}_entrance", base_frame):
+            try:
+                return frame, self._lookup_transform("base_link", frame)
+            except TransformException:
+                continue
+        return None, None
+
+    def _candidate_port_specs(self, task: Task) -> list[tuple[str, str]]:
+        """현재 task에서 비교 기록할 포트 후보 목록을 만든다."""
+        if "sfp" in task.port_type.lower():
+            return [(task.target_module_name, "sfp_port_0"), (task.target_module_name, "sfp_port_1")]
+        if "sc" in task.port_type.lower():
+            return [("sc_port_0", "sc_port_base"), ("sc_port_1", "sc_port_base")]
+        return [(task.target_module_name, task.port_name)]
+
+    def _all_ports_relative_label(self, task: Task, plug_tf: Transform) -> dict[str, Any]:
+        """두 포트 후보 각각의 상대 위치를 plug/port 양쪽 기준으로 기록한다."""
+        ports: dict[str, Any] = {}
+        for module_name, port_name in self._candidate_port_specs(task):
+            key = f"{module_name}/{port_name}"
+            frame, port_tf = self._lookup_optional_port_transform(module_name, port_name)
+            is_target = module_name == task.target_module_name and port_name == task.port_name
+            if port_tf is None:
+                ports[key] = {
+                    "available": False,
+                    "is_target": bool(is_target),
+                    "frame": "",
+                }
+                continue
+            ports[key] = {
+                "available": True,
+                "is_target": bool(is_target),
+                "frame": frame,
+                "plug_tip_in_port": self._plug_tip_to_port_label(port_tf, plug_tf),
+                "port_in_plug_tip": self._relative_transform_label(plug_tf, port_tf),
+            }
+        return ports
+
+    def _insertion_wrist_label(self, obs, plug_tf: Transform) -> dict[str, Any]:
+        """현재 IK 결과 joint 값과 plug 축의 XY 평면 법선 기준 기울기를 기록한다."""
+        label: dict[str, Any] = {
+            "source": "joint_states_and_tf",
+            "available": False,
+        }
+        if obs is None:
+            label["reason"] = "missing_observation"
+            return label
+
+        joint_state = getattr(obs, "joint_states", None)
+        names = list(getattr(joint_state, "name", []) or [])
+        positions = [float(v) for v in list(getattr(joint_state, "position", []) or [])]
+        joint_positions = {
+            (names[idx] if idx < len(names) and names[idx] else f"joint_{idx}"): positions[idx]
+            for idx in range(len(positions))
+        }
+        wrist_positions = {
+            name: value
+            for name, value in joint_positions.items()
+            if name.startswith("wrist_")
+        }
+        if not wrist_positions and len(positions) >= 3:
+            start_idx = len(positions) - 3
+            wrist_positions = {
+                (names[idx] if idx < len(names) and names[idx] else f"joint_{idx}"): positions[idx]
+                for idx in range(start_idx, len(positions))
+            }
+
+        tcp_pose = getattr(getattr(obs, "controller_state", None), "tcp_pose", None)
+        if tcp_pose is None:
+            label.update({
+                "joint_positions": joint_positions,
+                "wrist_joint_positions": wrist_positions,
+                "ik_result_joint_positions": joint_positions,
+                "ik_result_wrist_joint_positions": wrist_positions,
+                "reason": "missing_tcp_pose",
+            })
+            return label
+
+        tcp_xyz = np.array([tcp_pose.position.x, tcp_pose.position.y, tcp_pose.position.z], dtype=float)
+        plug_xyz = np.array([plug_tf.translation.x, plug_tf.translation.y, plug_tf.translation.z], dtype=float)
+        plug_axis = plug_xyz - tcp_xyz
+        axis_norm = float(np.linalg.norm(plug_axis))
+        if axis_norm < 1e-9:
+            label.update({
+                "joint_positions": joint_positions,
+                "wrist_joint_positions": wrist_positions,
+                "ik_result_joint_positions": joint_positions,
+                "ik_result_wrist_joint_positions": wrist_positions,
+                "reason": "zero_tcp_to_plug_vector",
+            })
+            return label
+
+        plug_axis /= axis_norm
+        base_z = np.array([0.0, 0.0, 1.0], dtype=float)
+        signed_dot = float(np.dot(plug_axis, base_z))
+        target_axis = base_z if signed_dot >= 0.0 else -base_z
+        correction_axis = np.cross(plug_axis, target_axis)
+        correction_axis_norm = float(np.linalg.norm(correction_axis))
+        if correction_axis_norm > 1e-9:
+            correction_axis /= correction_axis_norm
+        correction_angle = float(np.arctan2(correction_axis_norm, abs(signed_dot)))
+
+        label.update({
+            "available": True,
+            "joint_positions": joint_positions,
+            "wrist_joint_positions": wrist_positions,
+            "ik_result_source": "observation.joint_states_after_controller_ik",
+            "ik_result_joint_names": names,
+            "ik_result_positions": positions,
+            "ik_result_joint_positions": joint_positions,
+            "ik_result_wrist_joint_positions": wrist_positions,
+            "move_robot_joint_motion_update": {
+                "target_state.positions": positions,
+                "trajectory_generation_mode": "MODE_POSITION",
+                "joint_order": names,
+            },
+            "plug_axis_base": {
+                "x": float(plug_axis[0]),
+                "y": float(plug_axis[1]),
+                "z": float(plug_axis[2]),
+            },
+            "vertical_target_axis_base": {
+                "x": float(target_axis[0]),
+                "y": float(target_axis[1]),
+                "z": float(target_axis[2]),
+            },
+            "tilt_from_xy_plane_normal_rad": correction_angle,
+            "tilt_from_xy_plane_normal_deg": float(np.degrees(correction_angle)),
+            "upright_correction_axis_base": {
+                "x": float(correction_axis[0]),
+                "y": float(correction_axis[1]),
+                "z": float(correction_axis[2]),
+            },
+            "upright_correction_angle_rad": correction_angle,
+            "upright_correction_angle_deg": float(np.degrees(correction_angle)),
+        })
+        return label
 
     def _json_safe(self, value):
         """numpy scalar/array가 섞인 metadata를 jsonl로 쓸 수 있는 기본 타입으로 바꾼다."""
@@ -520,6 +802,8 @@ class DataCollect2(Policy):
             "label": {
                 "source": "tf_base_link",
                 "plug_tip_to_port": label,
+                "ports": self._all_ports_relative_label(task, plug_tf),
+                "insertion_wrist": self._insertion_wrist_label(obs, plug_tf),
             },
             "command": {
                 "position": {
@@ -1279,14 +1563,67 @@ class DataCollect2(Policy):
 
     # ── 메인 에피소드 수집 로직 ───────────────────────────────────────────────
 
+    def _finish_data_collection_episode(
+        self,
+        *,
+        episode_dir: Path,
+        task: Task,
+        recorder,
+        phase_step_counts: dict[str, int],
+        status: str,
+        detail: str = "",
+    ) -> bool:
+        """삽입 성공과 별개로 데이터 수집 task를 마무리하고 engine에는 완료를 알린다."""
+        insertion_success = False
+        if recorder is not None:
+            try:
+                recorder.save_episode(insertion_success=insertion_success)
+            except Exception as exc:
+                self.get_logger().warn(f"[DataCollect2] Failed to save LeRobot episode: {exc}")
+        self._close_yolo_debug_video()
+        self._write_episode_summary(
+            episode_dir,
+            {
+                "task_id": task.id,
+                "success": insertion_success,
+                "insertion_success": insertion_success,
+                "task_completed_for_engine": True,
+                "status": status,
+                "detail": detail,
+                "mode": "lerobot",
+                "approach_steps": int(phase_step_counts.get("approach", 0)),
+                "collect_steps": int(phase_step_counts.get("collect", 0)),
+                "collect_pattern": self.collect_pattern,
+                "collect_start_radius": self.collect_start_radius,
+                "collect_end_radius": self.collect_end_radius,
+                "collect_turns": self.collect_turns,
+                "collect_gaussian_sigma": self.collect_gaussian_sigma,
+                "collect_gaussian_max_radius": self.collect_gaussian_max_radius,
+            },
+        )
+        self.get_logger().info(
+            f"DataCollect complete. status={status} "
+            f"collect_steps={phase_step_counts.get('collect', 0)} "
+            f"insertion_success={insertion_success} task_completed_for_engine=True"
+        )
+        return True
+
     def insert_cable(self, task: Task, get_observation: GetObservationCallback, move_robot: MoveRobotCallback, send_feedback: SendFeedbackCallback):
         """하나의 task에 대해 TF/YOLO 접근 후 포트 주변 나선형 COLLECT 데이터를 기록한다."""
         self._task = task; self._planner.reset(); send_feedback("data collect running")
         episode_name = time.strftime("%Y%m%d_%H%M%S") + f"_{task.id}"
         episode_dir = self.capture_root / episode_name; episode_dir.mkdir(parents=True, exist_ok=True)
+        phase_step_counts = {"approach": 0, "collect": 0}
         if self._lerobot_dataset is None and not self._vision_offset_record_enabled:
             self.get_logger().warn("[DataCollect2] No recorder is enabled: LeRobot unavailable and vision offset recording disabled")
-            return False
+            return self._finish_data_collection_episode(
+                episode_dir=episode_dir,
+                task=task,
+                recorder=None,
+                phase_step_counts=phase_step_counts,
+                status="no_recorder",
+                detail="LeRobot unavailable and vision offset recording disabled",
+            )
         self._open_yolo_debug_video(task, episode_name)
         
         scenario_params_vec = self._load_scenario_params(task)
@@ -1294,10 +1631,30 @@ class DataCollect2(Policy):
         
         port_frame = self._select_port_frame(task)
         cable_tip_frame = self._select_cable_tip_frame(task)
-        if not self._wait_for_tf("base_link", port_frame) or not self._wait_for_tf("base_link", cable_tip_frame): return False
+        if not self._wait_for_tf("base_link", port_frame) or not self._wait_for_tf("base_link", cable_tip_frame):
+            return self._finish_data_collection_episode(
+                episode_dir=episode_dir,
+                task=task,
+                recorder=recorder,
+                phase_step_counts=phase_step_counts,
+                status="tf_unavailable",
+                detail=f"Missing required TF: port_frame={port_frame}, cable_tip_frame={cable_tip_frame}",
+            )
+        plug_reference_offset_local = self._plug_reference_offset_local(task, cable_tip_frame)
+        plug_reference_metadata = self._plug_reference_metadata(
+            task,
+            cable_tip_frame,
+            plug_reference_offset_local,
+        )
+        self.get_logger().info(
+            "[DataCollect2] Plug reference point: "
+            f"{plug_reference_metadata['point_name']} "
+            f"frame={cable_tip_frame} "
+            f"offset={plug_reference_metadata['local_offset_xyz_m']}"
+        )
         self._wait_for_yolo_model()
 
-        start_time = time.time(); phase_step_counts = {"approach": 0, "collect": 0}
+        start_time = time.time()
         recording_started = False
         yolo_tracking_started = False
         _port_kw = "sfp" if "sfp" in task.port_type.lower() else "sc"
@@ -1381,7 +1738,9 @@ class DataCollect2(Policy):
             t_norm = (t + 1) / float(self.approach_steps); t_smooth = interp_profile(t_norm, quintic=True)
             try:
                 current_port_tf = self._lookup_transform("base_link", port_frame)
-                plug_tf, gripper_tf = self._lookup_transform("base_link", cable_tip_frame), self._lookup_transform("base_link", "gripper/tcp")
+                raw_plug_tf = self._lookup_transform("base_link", cable_tip_frame)
+                plug_tf = self._shift_transform_origin(raw_plug_tf, plug_reference_offset_local)
+                gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
                 obs = get_observation()
                 detection, results, bgr, detections_by_camera, selected_camera = _detect_and_update_tracking(obs, "approach", t)
 
@@ -1393,6 +1752,7 @@ class DataCollect2(Policy):
                     reset_xy_integrator=should_reset
                 )
                 extras["z_offset"] = float(approach_z_offset)
+                extras["plug_reference"] = plug_reference_metadata
                 if yolo_tracking_started and detection is not None:
                     pose, yolo_extras = self._apply_yolo_correction(
                         pose=pose,
@@ -1480,6 +1840,12 @@ class DataCollect2(Policy):
                 "[DataCollect2] Approach did not reach triangulated x/y/z thresholds before COLLECT; "
                 "COLLECT will still run from the planned port-relative pose."
             )
+        if not recording_started:
+            recording_started = True
+            self.get_logger().warn(
+                "[DataCollect2] YOLO trigger was not observed before COLLECT; "
+                "recording COLLECT samples with yolo_lost metadata."
+            )
 
         # Phase 1-B: Collect. Do not insert. Keep the cable tip near the
         # triangulated stop height and command a sampled port-local XY offset.
@@ -1495,7 +1861,9 @@ class DataCollect2(Policy):
         for collect_idx in range(collect_steps):
             try:
                 current_port_tf = self._lookup_transform("base_link", port_frame)
-                plug_tf, gripper_tf = self._lookup_transform("base_link", cable_tip_frame), self._lookup_transform("base_link", "gripper/tcp")
+                raw_plug_tf = self._lookup_transform("base_link", cable_tip_frame)
+                plug_tf = self._shift_transform_origin(raw_plug_tf, plug_reference_offset_local)
+                gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
 
                 pose, extras = self._planner.build_pose(
                     current_port_tf,
@@ -1505,6 +1873,7 @@ class DataCollect2(Policy):
                     reset_xy_integrator=False,
                 )
                 extras["z_offset"] = float(self._triangulation_stop_z_offset)
+                extras["plug_reference"] = plug_reference_metadata
                 pose, collect_extras = self._apply_collect_offset(
                     pose,
                     current_port_tf,
@@ -1581,48 +1950,38 @@ class DataCollect2(Policy):
                     extras["collect_guidance"],
                 )
                 self.set_pose_target(move_robot, pose, stiffness=collect_stiffness, damping=collect_damping)
+                self.sleep_for(max(self.step_sleep_sec, self.collect_capture_settle_sec))
+                save_obs = get_observation()
+                save_port_tf = self._lookup_transform("base_link", port_frame)
+                save_raw_plug_tf = self._lookup_transform("base_link", cable_tip_frame)
+                save_plug_tf = self._shift_transform_origin(save_raw_plug_tf, plug_reference_offset_local)
+                save_gripper_tf = self._lookup_transform("base_link", "gripper/tcp")
                 if recording_started:
                     self._save_vision_offset_sample(
                         episode_name=episode_name,
                         task=task,
                         phase="collect",
                         step_idx=phase_step_counts["collect"],
-                        obs=obs,
-                        port_tf=current_port_tf,
-                        plug_tf=plug_tf,
+                        obs=save_obs,
+                        port_tf=save_port_tf,
+                        plug_tf=save_plug_tf,
                         pose=pose,
                         extras=extras,
                         detections_by_camera=detections_by_camera,
                     )
-                    self._record_motion_step(recorder, "collect", task, current_port_tf, plug_tf, gripper_tf, obs, pose, extras, stiffness=collect_stiffness, damping=collect_damping)
+                    self._record_motion_step(recorder, "collect", task, save_port_tf, save_plug_tf, save_gripper_tf, save_obs, pose, extras, stiffness=collect_stiffness, damping=collect_damping)
                     phase_step_counts["collect"] += 1
             except TransformException: pass
             self.sleep_for(self.step_sleep_sec)
 
-        success = False
         self.sleep_for(0.5)
-        if recorder is not None:
-            recorder.save_episode(insertion_success=False)
-        self._close_yolo_debug_video()
-        self._write_episode_summary(
-            episode_dir,
-            {
-                "task_id": task.id,
-                "success": success,
-                "mode": "lerobot",
-                "collect_steps": phase_step_counts["collect"],
-                "collect_pattern": self.collect_pattern,
-                "collect_start_radius": self.collect_start_radius,
-                "collect_end_radius": self.collect_end_radius,
-                "collect_turns": self.collect_turns,
-                "collect_gaussian_sigma": self.collect_gaussian_sigma,
-                "collect_gaussian_max_radius": self.collect_gaussian_max_radius,
-            },
+        return self._finish_data_collection_episode(
+            episode_dir=episode_dir,
+            task=task,
+            recorder=recorder,
+            phase_step_counts=phase_step_counts,
+            status="ok",
         )
-        self.get_logger().info(
-            f"DataCollect complete. collect_steps={phase_step_counts['collect']} insertion_success=False"
-        )
-        return True
 
     def _write_episode_summary(self, episode_dir: Path, summary: dict) -> None:
         """에피소드 단위 요약 정보를 episode_summary.json 파일로 저장한다."""

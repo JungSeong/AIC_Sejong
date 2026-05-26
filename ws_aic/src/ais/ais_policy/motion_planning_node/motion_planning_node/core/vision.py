@@ -1,6 +1,7 @@
 """YOLO and stereo-based port localization."""
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -28,7 +29,7 @@ class VisionPortEstimator:
                ("center", "center_camera/optical"),
                ("right", "right_camera/optical")]
 
-    CLASS_NAMES = {0: "sfp_port", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
+    CLASS_NAMES = {0: "port_pair", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
     TOOL0_TO_TCP_Z = 0.1965
     TOOL0_TO_OPTICAL = {
         "left": (
@@ -53,20 +54,37 @@ class VisionPortEstimator:
         str(Path.home() / "aic_debug" / "yolo_detections"),
     )
 
-    def __init__(self, model_path: str, conf_thresh: float = 0.5, logger=None):
+    def __init__(
+        self,
+        model_path: str,
+        conf_thresh: float = 0.8,
+        logger=None,
+        debug_save_enabled: bool = True,
+        auto_start: bool = True,
+    ):
         self._model_path = model_path
-        self._conf_thresh = conf_thresh
+        self._conf_thresh = float(conf_thresh)
         self._logger = logger
         self._model = None
         self._loaded = False
         self._load_lock = threading.Lock()
+        self._debug_save_enabled = bool(debug_save_enabled)
         self._debug_call_count = 0  # 호출 횟수 (파일명 중복 방지)
+        self._debug_task_label = "task_unknown"
+        self._debug_root_dir = Path(self.DEBUG_SAVE_DIR) if self.DEBUG_SAVE_DIR else None
+        self._debug_save_dir = (
+            self._debug_root_dir / "detection"
+            if self._debug_root_dir is not None
+            else None
+        )
         self._cache_max_age_sec = float(os.environ.get("AIC_YOLO_CACHE_MAX_AGE_SEC", "0.75"))
         self._async_wait_sec = float(os.environ.get("AIC_YOLO_ASYNC_WAIT_SEC", "2.0"))
         self._async_poll_sec = float(os.environ.get("AIC_YOLO_ASYNC_POLL_SEC", "0.02"))
         self._request_lock = threading.Lock()
         self._request_event = threading.Event()
         self._request: Optional[dict[str, Any]] = None
+        self._worker_stop_event = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
         self._cache_lock = threading.Lock()
         self._cache: dict[str, Any] = {
             "target_class_id": None,
@@ -81,20 +99,125 @@ class VisionPortEstimator:
             for name, (translation, quat) in self.TOOL0_TO_OPTICAL.items()
         }
         self._request_seq = 0
-        threading.Thread(target=self._ensure_loaded, daemon=True).start()
-        threading.Thread(target=self._estimate_worker, daemon=True).start()
 
         # 디버그 디렉토리 생성
-        if self.DEBUG_SAVE_DIR:
+        if self._debug_root_dir is not None:
             try:
-                os.makedirs(self.DEBUG_SAVE_DIR, exist_ok=True)
+                os.makedirs(self._debug_root_dir, exist_ok=True)
+                os.makedirs(self._debug_save_dir, exist_ok=True)
+                for cam_name, _ in self.CAMERAS:
+                    os.makedirs(self._debug_save_dir / cam_name, exist_ok=True)
                 if logger:
-                    logger.info(f"[Vision Debug] 저장 경로: {self.DEBUG_SAVE_DIR}")
+                    logger.info(f"[Vision Debug] 저장 루트: {self._debug_root_dir}")
+                    logger.info(f"[Vision Debug] Detection 저장 경로: {self._debug_save_dir}")
             except Exception as e:
                 if logger:
                     logger.error(f"[Vision Debug] 디렉토리 생성 실패: {e}")
                 # 저장 실패해도 동작은 계속 — 디버그 비활성화
                 self.__class__.DEBUG_SAVE_DIR = None
+                self._debug_root_dir = None
+                self._debug_save_dir = None
+
+        if auto_start:
+            self.start_detection()
+
+    def set_debug_save_enabled(self, enabled: bool, reset_counts: bool = False) -> None:
+        self._debug_save_enabled = bool(enabled)
+        if reset_counts:
+            self._debug_call_count = 0
+        if self._logger:
+            state = "enabled" if self._debug_save_enabled else "disabled"
+            self._logger.info(f"[Vision Debug] image saving {state}")
+
+    @staticmethod
+    def _sanitize_debug_token(value: Any) -> str:
+        token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+        token = token.strip("._-")
+        return token[:80] if token else ""
+
+    def set_debug_task_context(
+        self,
+        *,
+        target_module_name: str = "",
+        port_name: str = "",
+        plug_name: str = "",
+        cable_name: str = "",
+        port_type: str = "",
+    ) -> None:
+        parts = []
+        module = str(target_module_name or "")
+        port = str(port_name or "")
+
+        nic_match = re.search(r"nic_card_mount_(\d+)", module)
+        sc_module_match = re.search(r"sc_port_(\d+)", module)
+        sfp_port_match = re.search(r"sfp_port_(\d+)", port)
+        sc_port_match = re.search(r"sc_port_(\d+)", port)
+
+        if nic_match is not None:
+            parts.append(f"m{nic_match.group(1)}")
+        elif sc_module_match is not None:
+            parts.append(f"sc{sc_module_match.group(1)}")
+
+        if sfp_port_match is not None:
+            parts.append(f"sfp{sfp_port_match.group(1)}")
+        elif sc_port_match is not None and sc_module_match is None:
+            parts.append(f"sc{sc_port_match.group(1)}")
+        elif "sc_port_base" in port and not parts:
+            parts.append("sc")
+
+        if not parts:
+            fallback_parts = [
+                self._sanitize_debug_token(value)
+                for value in (target_module_name, port_name, plug_name, cable_name, port_type)
+            ]
+            parts = [part for part in fallback_parts if part]
+        self._debug_task_label = "_".join(parts)[:80] if parts else "task_unknown"
+
+    def _worker_is_alive(self) -> bool:
+        return self._worker_thread is not None and self._worker_thread.is_alive()
+
+    def start_detection(
+        self,
+        *,
+        enable_debug_save: Optional[bool] = None,
+        reset_counts: bool = False,
+    ) -> None:
+        if enable_debug_save is not None:
+            self.set_debug_save_enabled(enable_debug_save, reset_counts=reset_counts)
+
+        if self._worker_is_alive():
+            if self._worker_stop_event.is_set():
+                self._worker_thread.join(timeout=0.1)
+            if self._worker_is_alive():
+                return
+
+        if self._worker_stop_event.is_set():
+            self._worker_stop_event.clear()
+
+        if self._worker_is_alive():
+            return
+
+        self._worker_thread = threading.Thread(target=self._estimate_worker, daemon=True)
+        self._worker_thread.start()
+        if self._logger:
+            self._logger.info(
+                f"Vision: YOLO detection worker started (conf>={self._conf_thresh:.2f})"
+            )
+
+    def stop_detection(self) -> None:
+        if not self._worker_is_alive():
+            return
+
+        self._worker_stop_event.set()
+        self._request_event.set()
+        if threading.current_thread() is not self._worker_thread:
+            self._worker_thread.join()
+
+        with self._request_lock:
+            self._request = None
+            self._request_event.clear()
+        if self._logger:
+            self._logger.info("Vision: YOLO detection worker stopped")
 
     def _ensure_loaded(self):
         with self._load_lock:
@@ -105,8 +228,8 @@ class VisionPortEstimator:
                     self._logger.error(
                         f"YOLO 모델 파일 없음: {self._model_path}\n"
                         "  해결 방법:\n"
-                        "  1) AIC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
-                        "  2) ws_aic/weight/ais_yolo/weights/best.pt 에 배치\n"
+                        "  1) AIC_SFP_YOLO_MODEL_PATH 또는 AIC_SC_YOLO_MODEL_PATH 환경 변수로 경로 지정\n"
+                        "  2) ws_aic/model/ais_yolo/approach/SFP/weights/best.pt 에 배치\n"
                         "  3) YOLO 학습 스크립트의 --output 경로 확인"
                     )
                 return
@@ -127,8 +250,11 @@ class VisionPortEstimator:
                     self._logger.error(f"YOLO 로드 실패: {e}")
 
     def _estimate_worker(self) -> None:
-        while True:
-            self._request_event.wait()
+        while not self._worker_stop_event.is_set():
+            if not self._request_event.wait(0.1):
+                continue
+            if self._worker_stop_event.is_set():
+                break
             with self._request_lock:
                 request = self._request
                 self._request = None
@@ -154,6 +280,8 @@ class VisionPortEstimator:
                 }
 
     def _submit_estimate(self, obs, target_class_id: int) -> int:
+        if not self._worker_is_alive():
+            self.start_detection()
         with self._request_lock:
             self._request_seq += 1
             request_id = self._request_seq
@@ -235,21 +363,68 @@ class VisionPortEstimator:
     def _detect(self, image: np.ndarray, cam_name: str = "") -> list:
         import cv2
 
-        # conf=0.01로 raw 결과 전부 받아서 로깅 후, conf_thresh 적용
-        results = self._model(image, verbose=False, conf=0.01)
+        # YOLO 추론부터 conf_thresh 이상만 받는다. 후보/로그/저장 이미지 모두 같은
+        # 기준을 사용한다.
+        results = self._model(image, verbose=False, conf=self._conf_thresh)
         raw_dets = []
         for r in results:
-            for box in r.boxes:
+            keypoints_xy = None
+            if r.keypoints is not None and r.keypoints.xy is not None:
+                keypoints_xy = r.keypoints.xy.detach().cpu().numpy()
+
+            for box_idx, box in enumerate(r.boxes):
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                xyxy = (int(x1), int(y1), int(x2), int(y2))
+
+                if keypoints_xy is not None and box_idx < len(keypoints_xy):
+                    kpts = np.asarray(keypoints_xy[box_idx], dtype=np.float64)
+                    if len(kpts) >= 8:
+                        for port_index, start in enumerate((0, 4)):
+                            group = kpts[start:start + 4]
+                            if not np.all(np.isfinite(group)):
+                                continue
+                            center = np.mean(group, axis=0)
+                            raw_dets.append({
+                                "class_id": cls,
+                                "class_name": f"sfp_port_{port_index}",
+                                "conf": conf,
+                                "u": float(center[0]),
+                                "v": float(center[1]),
+                                "xyxy": xyxy,
+                                "point_name": f"sfp_port_{port_index}",
+                                "port_index": port_index,
+                                "keypoints": group,
+                            })
+                        continue
+
+                    if len(kpts) >= 4:
+                        group = kpts[:4]
+                        if np.all(np.isfinite(group)):
+                            center = np.mean(group, axis=0)
+                            raw_dets.append({
+                                "class_id": cls,
+                                "class_name": "sc_port",
+                                "conf": conf,
+                                "u": float(center[0]),
+                                "v": float(center[1]),
+                                "xyxy": xyxy,
+                                "point_name": "sc_port",
+                                "port_index": None,
+                                "keypoints": group,
+                            })
+                            continue
+
                 raw_dets.append({
                     "class_id": cls,
                     "class_name": self.CLASS_NAMES.get(cls, "unknown"),
                     "conf": conf,
                     "u": float((x1 + x2) / 2),
                     "v": float((y1 + y2) / 2),
-                    "xyxy": (int(x1), int(y1), int(x2), int(y2)),
+                    "xyxy": xyxy,
+                    "point_name": "bbox_center",
+                    "port_index": None,
                 })
 
         # 진단 로그
@@ -259,52 +434,69 @@ class VisionPortEstimator:
                     flag = "✓" if d["conf"] >= self._conf_thresh else "✗(low conf)"
                     self._logger.info(
                         f"  [{cam_name}] {flag} {d['class_name']} "
+                        f"point={d.get('point_name', 'bbox_center')} "
                         f"conf={d['conf']:.3f} (thresh={self._conf_thresh}) "
                         f"uv=({d['u']:.0f},{d['v']:.0f})"
                     )
             else:
                 self._logger.warn(f"  [{cam_name}] 검출 결과 0개 (모델이 아무것도 못 찾음)")
 
+        passed_dets = [d for d in raw_dets if d["conf"] >= self._conf_thresh]
+
         # ── 디버그 이미지 저장 ────────────────────────────────
-        if self.DEBUG_SAVE_DIR:
+        if (
+            self._debug_save_enabled
+            and self._debug_save_dir is not None
+            and passed_dets
+        ):
             debug_img = image.copy()
             # 클래스별 색상: sfp_port=초록, sc_port=파랑, unknown=빨강
             COLOR = {0: (0, 255, 0), 1: (255, 100, 0), -1: (0, 0, 255)}
 
-            for d in raw_dets:
+            for d in passed_dets:
                 x1, y1, x2, y2 = d["xyxy"]
                 color = COLOR.get(d["class_id"], COLOR[-1])
-                passed = d["conf"] >= self._conf_thresh
+                if d.get("port_index") == 1:
+                    color = (255, 0, 255)
 
-                # 통과한 것: 실선 두껍게, 실패한 것: 점선 얇게
-                thickness = 3 if passed else 1
-                cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, thickness)
+                cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 3)
+                cv2.circle(debug_img, (int(d["u"]), int(d["v"])), 5, color, -1)
 
-                # 라벨
                 label = f"{d['class_name']} {d['conf']:.2f}"
-                label += " ✓" if passed else " ✗"
                 cv2.putText(
                     debug_img, label, (x1, max(y1 - 6, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2,
                 )
 
-            # threshold 선 표시 (이미지 상단에 텍스트)
-            cv2.putText(
+            self._put_text_lines(
                 debug_img,
-                f"thresh={self._conf_thresh}  cam={cam_name}  dets={len(raw_dets)}",
-                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
+                [
+                    f"task={self._debug_task_label}",
+                    f"thresh={self._conf_thresh:.2f} cam={cam_name} dets={len(passed_dets)}",
+                ],
+                10,
+                24,
             )
 
             fname = (
-                f"{self.DEBUG_SAVE_DIR}/"
-                f"{self._debug_call_count:04d}_{cam_name}.jpg"
+                self._debug_save_dir
+                / self._sanitize_debug_token(cam_name or "camera")
+                / (
+                    f"{self._debug_task_label}__detect_"
+                    f"{self._debug_call_count:04d}.jpg"
+                )
             )
-            cv2.imwrite(fname, debug_img)
+            os.makedirs(fname.parent, exist_ok=True)
+            saved = cv2.imwrite(str(fname), debug_img)
+            if self._logger:
+                if saved:
+                    self._logger.info(f"[Vision Debug] saved: {fname}")
+                else:
+                    self._logger.warn(f"[Vision Debug] save failed: {fname}")
 
-        self._debug_call_count += 1
+            self._debug_call_count += 1
 
-        # conf_thresh 필터 적용
-        return [d for d in raw_dets if d["conf"] >= self._conf_thresh]
+        return passed_dets
 
     @staticmethod
     def _triangulate(u_a, v_a, K_a, T_base_to_a,
@@ -320,7 +512,8 @@ class VisionPortEstimator:
         return (pts_4d[:3] / pts_4d[3]).flatten()
 
     def estimate(self, obs, target_class_id: int,
-                 port_hint: Optional[str] = None) -> Optional[np.ndarray]:
+                 port_hint: Optional[str] = None,
+                 target_module_name: Optional[str] = None) -> Optional[np.ndarray]:
         """포트 3D 좌표 추정 (호환성 유지).
 
         단일 best 결과를 반환. 세밀한 선택이 필요하면 estimate_all() 사용.
@@ -329,11 +522,16 @@ class VisionPortEstimator:
         if not candidates:
             return None
 
-        # port_hint가 주어지면 그에 맞는 걸 선택
-        if port_hint is not None:
-            chosen = self.select_by_port_name(candidates, port_hint)
+        # Task hint가 주어지면 YOLO가 제공한 port index만 사용한다.
+        if port_hint is not None or target_module_name is not None:
+            chosen = self.select_by_task_hint(
+                candidates,
+                port_name=port_hint or "",
+                target_module_name=target_module_name or "",
+            )
             if chosen is not None:
                 return chosen
+            return None
 
         # 기본: 보드 중심에 가장 가까운 것 (첫 번째)
         return candidates[0]["pos"]
@@ -392,7 +590,7 @@ class VisionPortEstimator:
         }
         T_base_to = {}
         for name, _ in self.CAMERAS:
-            t_base_to_camera = self._base_to_camera_optical_matrix(obs, name)
+            t_base_to_camera = self._base_to_camera_optical_matrix(obs, name) # t_base_optical
             if t_base_to_camera is None:
                 return []
             T_base_to[name] = t_base_to_camera
@@ -425,11 +623,11 @@ class VisionPortEstimator:
         if not available_pairs:
             return []
 
-        # 카메라 정보 사전 캐시
-        K = {n: np.array(cam_infos[n].k).reshape(3, 3) for n, _ in self.CAMERAS
-             if n in cams_with_dets}
-        T_base_to = {n: T_base_to[n] for n, _ in self.CAMERAS
-                     if n in cams_with_dets}
+        # 카메라 정보 사전 캐시.
+        K_all = {n: np.array(cam_infos[n].k).reshape(3, 3) for n, _ in self.CAMERAS}
+        T_base_to_all = dict(T_base_to)
+        K = {n: K_all[n] for n in cams_with_dets}
+        T_base_to = {n: T_base_to_all[n] for n in cams_with_dets}
 
         # 4. 각 카메라 쌍으로 후보 삼각측량
         board_center = np.array(Stage1Config.BOARD_CENTER)
@@ -446,6 +644,8 @@ class VisionPortEstimator:
 
         for da in detections[cam_a]:
             for db in detections[cam_b]:
+                if da.get("point_name") != db.get("point_name"):
+                    continue
                 port_3d = self._triangulate(
                     da["u"], da["v"], K[cam_a], T_base_to[cam_a],
                     db["u"], db["v"], K[cam_b], T_base_to[cam_b],
@@ -456,6 +656,11 @@ class VisionPortEstimator:
                 if not (Stage1Config.Z_RANGE[0] <= port_3d[2]
                         <= Stage1Config.Z_RANGE[1]):
                     continue
+
+                camera_points = {
+                    cam_a: (float(da["u"]), float(da["v"])),
+                    cam_b: (float(db["u"]), float(db["v"])),
+                }
 
                 # 3-view consistency: 제3의 카메라(center)에 재투영했을 때
                 # 그 카메라 검출과 실제로 일치하는가?
@@ -470,13 +675,27 @@ class VisionPortEstimator:
                     u_proj, v_proj = _project_3d_to_pixel(
                         port_3d, K[third_cam], T_base_to[third_cam]
                     )
+                    same_point_dets = [
+                        d for d in detections[third_cam]
+                        if d.get("point_name") == da.get("point_name")
+                    ]
+                    if not same_point_dets:
+                        continue
                     # 제3카메라의 검출들 중 가장 가까운 것과의 거리
-                    min_px_dist = min(
-                        np.hypot(d["u"] - u_proj, d["v"] - v_proj)
-                        for d in detections[third_cam]
+                    min_px_dist, nearest_det = min(
+                        (
+                            float(np.hypot(d["u"] - u_proj, d["v"] - v_proj)),
+                            d,
+                        )
+                        for d in same_point_dets
                     )
                     if min_px_dist > PIXEL_MATCH_THRESH:
                         consistent = False
+                    else:
+                        camera_points[third_cam] = (
+                            float(nearest_det["u"]),
+                            float(nearest_det["v"]),
+                        )
 
                 if not consistent:
                     continue
@@ -487,6 +706,9 @@ class VisionPortEstimator:
                     "pos": port_3d,
                     "score": score,
                     "conf_sum": conf_sum,
+                    "point_name": da.get("point_name"),
+                    "port_index": da.get("port_index"),
+                    "camera_points": camera_points,
                 })
 
         # score 낮은 순 정렬 (보드 중심 가깝고 conf 높을수록 앞)
@@ -507,10 +729,78 @@ class VisionPortEstimator:
             self._logger.info(
                 f"Vision: {len(unique)}개 후보 포트 3D 추정 "
                 f"(best=({unique[0]['pos'][0]:+.3f}, "
-                f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}))"
+                f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}), "
+                f"point={unique[0].get('point_name')})"
             )
 
         return unique
+
+    @staticmethod
+    def _extract_named_index(text: str, prefix: str) -> Optional[int]:
+        match = re.search(rf"{re.escape(prefix)}_(\d+)", text or "")
+        if match is None:
+            return None
+        return int(match.group(1))
+
+    @staticmethod
+    def _put_text_lines(image: np.ndarray, lines: list[str], x: int, y: int) -> None:
+        import cv2
+
+        colors = ((0, 255, 255), (0, 200, 255), (255, 255, 0))
+        for index, line in enumerate(lines):
+            origin = (x, y + index * 22)
+            cv2.putText(
+                image,
+                line,
+                origin,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 0, 0),
+                4,
+            )
+            cv2.putText(
+                image,
+                line,
+                origin,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                colors[index % len(colors)],
+                2,
+            )
+
+    def select_by_task_hint(
+        self,
+        candidates: list,
+        port_name: str = "",
+        target_module_name: str = "",
+    ) -> Optional[np.ndarray]:
+        """Task hint로 multi-card/multi-port 상황의 올바른 후보를 선택.
+
+        현재는 YOLO가 직접 제공하는 port index만 사용한다. mount index 구분은
+        별도 YOLO label/keypoint 설계가 들어가기 전까지 확정하지 않는다.
+        """
+        if not candidates:
+            return None
+        if len(candidates) == 1 and not target_module_name:
+            return candidates[0]["pos"]
+
+        sfp_port_index = self._extract_named_index(port_name, "sfp_port")
+        port_candidates = candidates
+        if sfp_port_index is not None:
+            same_port = [
+                c for c in candidates
+                if c.get("port_index") == sfp_port_index
+            ]
+            if same_port:
+                port_candidates = same_port
+
+        sc_port_index = self._extract_named_index(port_name, "sc_port")
+        if sc_port_index is None:
+            sc_port_index = self._extract_named_index(target_module_name, "sc_port")
+        if sc_port_index is not None and port_candidates:
+            return port_candidates[0]["pos"]
+
+        return self.select_by_port_name(port_candidates, port_name)
 
     @staticmethod
     def select_by_port_name(
@@ -531,6 +821,16 @@ class VisionPortEstimator:
 
         # SFP 포트 인덱스 기반 구분
         if "sfp_port" in port_name:
+            wanted = None
+            if port_name.endswith("_0") or port_name.endswith("0_link"):
+                wanted = 0
+            elif port_name.endswith("_1") or port_name.endswith("1_link"):
+                wanted = 1
+            if wanted is not None:
+                for candidate in candidates:
+                    if candidate.get("port_index") == wanted:
+                        return candidate["pos"]
+
             # 후보를 x 좌표 기준으로 정렬
             sorted_by_x = sorted(candidates, key=lambda c: c["pos"][0])
             # port_0: x가 큰 쪽 (리스트 끝)

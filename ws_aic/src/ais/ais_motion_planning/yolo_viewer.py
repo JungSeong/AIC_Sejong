@@ -10,7 +10,7 @@ ground_truth=true/false 무관하게 동작 (카메라 토픽만 사용).
   # 시뮬레이터가 돌고 있어야 함 (엔진 on/off 무관)
   cd ~/AIC_Sejong/ws_aic/src/aic
   pixi run python /home/sch24/yolo_viewer.py \\
-    --model ../../weight/ais_yolo/weights/best.pt
+    --model ../../model/ais_yolo/weights/best.pt
 
 옵션:
   --conf 0.3       : confidence threshold (기본 0.5)

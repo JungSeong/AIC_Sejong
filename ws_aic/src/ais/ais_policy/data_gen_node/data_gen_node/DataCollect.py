@@ -100,7 +100,7 @@ class DataCollect(Policy):
         self.sc_insert_min_z_offset = float(os.environ.get("AIC_CAPTURE_SC_INSERT_MIN_Z_OFFSET", str(self._SC_INSERT_MIN_Z_OFFSET)))
 
         # 4. YOLO 및 데이터셋 설정
-        self._yolo_model_path = str(Path(__file__).resolve().parents[5] / "src" / "model" / "ais_yolo-2" / "weights" / "best.pt")
+        self._yolo_model_path = str(Path(__file__).resolve().parents[6] / "model" / "ais_yolo" / "weights" / "best.pt")
         self._lerobot_dataset = None
         self._lerobot_full_repo_id = os.environ.get("AIC_LEROBOT_REPO_ID", "").strip()
         self._lerobot_version = os.environ.get("AIC_LEROBOT_VERSION", "master").strip()

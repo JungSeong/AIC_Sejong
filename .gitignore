@@ -7,6 +7,9 @@ aic_data/model/
 
 paper/
 myenv/
+.venv/
+venv/
+env/
 
 ABOUT-ME/
 TEMPLATES/
@@ -16,8 +19,18 @@ GEMINI.md
 .claude/
 .idea/
 
+ws_aic/data/
+ws_aic/weight/
+ws_aic/.venv
+ws_aic/src/ais/ais_distance_prediction/.venv
+
 *.pt
 *.npy
 
+ws_aic/.vscode/settings.json
+ws_aic/src/ais/ais_distance_prediction/.vscode/settings.json
+.codex/AGENTS.md
+
 aic_venv/
 lerobot_venv/
+ws_aic/src/ais/ais_stiffness_damping_calibration/outputs/*
