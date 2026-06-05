@@ -5,7 +5,7 @@
 [![Vision Pipeline](https://img.shields.io/badge/Vision%20Pipeline-YOLO%20%2B%20Stereo-5B5FC7)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
 [![Data Workflow](https://img.shields.io/badge/Data%20Workflow-Recording%20%26%20Training-FFB000)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
 
-[한국어](README.ko.md) | [English](README.en.md)
+[한국어](readme/README.ko.md) | [English](readme/README.en.md)
 
 AI for Industry Challenge 참가를 위한 로컬 작업 공간. UR5e 로봇 팔로 케이블 삽입 태스크를 수행하는 정책을 개발·훈련·평가한다.
 
