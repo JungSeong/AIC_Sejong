@@ -1,7 +1,19 @@
-# AIC Sejong — 작업 공간 가이드
+# AIC Sejong
+
+[![Documentation](https://img.shields.io/badge/Documentation-GitHub%20Pages-0A66C2)](https://jungseong.github.io/contests/aic-sejong/)
+[![Staged Policy](https://img.shields.io/badge/Staged%20Policy-Cable%20Insertion-0A66C2)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
+[![Vision Pipeline](https://img.shields.io/badge/Vision%20Pipeline-YOLO%20%2B%20Stereo-5B5FC7)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
+[![Data Workflow](https://img.shields.io/badge/Data%20Workflow-Recording%20%26%20Training-FFB000)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
+
+[한국어](readme/README.ko.md) | [English](readme/README.en.md)
 
 > AI for Industry Challenge (AIC) 참가를 위한 로컬 작업 공간.
 > UR5e 로봇 팔로 케이블 삽입 태스크를 수행하는 정책을 개발·훈련·평가한다.
+
+## Documentation
+
+- [Getting Started](https://jungseong.github.io/contests/aic-sejong/#getting-started)
+- [Core Workflows](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
 
 ---
 

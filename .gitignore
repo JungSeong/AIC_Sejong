@@ -10,12 +10,6 @@ myenv/
 .venv/
 venv/
 env/
-
-ABOUT-ME/
-TEMPLATES/
-CLAUDE.md
-GEMINI.md
-
 .claude/
 .idea/
 
@@ -29,7 +23,7 @@ ws_aic/src/ais/ais_distance_prediction/.venv
 
 ws_aic/.vscode/settings.json
 ws_aic/src/ais/ais_distance_prediction/.vscode/settings.json
-.codex/AGENTS.md
+AGENTS.md
 
 aic_venv/
 lerobot_venv/
