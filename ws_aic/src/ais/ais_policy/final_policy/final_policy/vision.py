@@ -1,3 +1,5 @@
+"""YOLO 검출 결과를 여러 카메라 기하로 삼각측량해 포트 위치를 추정하는 모듈."""
+
 from __future__ import annotations
 
 import os
@@ -14,6 +16,8 @@ from final_policy.geometry import project_3d_to_pixel
 
 
 class VisionPortEstimator:
+    """비동기 YOLO 추론과 다중 카메라 삼각측량으로 포트 base 좌표를 추정한다."""
+
     CAMERAS = [
         ("left", "left_camera/optical"),
         ("center", "center_camera/optical"),
@@ -49,6 +53,7 @@ class VisionPortEstimator:
         debug_save_enabled: bool = True,
         auto_start: bool = True,
     ):
+        """모델 경로, 디버그 저장 경로, 카메라 외부 파라미터와 워커 상태를 초기화한다."""
         self._model_path = model_path
         self._conf_thresh = float(conf_thresh)
         self._logger = logger
@@ -109,6 +114,7 @@ class VisionPortEstimator:
             self.start_detection()
 
     def set_debug_save_enabled(self, enabled: bool, reset_counts: bool = False) -> None:
+        """YOLO 검출 디버그 이미지 저장 여부를 런타임에 켜고 끈다."""
         self._debug_save_enabled = bool(enabled)
         if reset_counts:
             self._debug_call_count = 0
@@ -118,6 +124,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def _sanitize_debug_token(value: Any) -> str:
+        """파일명에 안전하게 쓸 수 있도록 task/debug 문자열을 정리한다."""
         token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
         token = token.strip("._-")
         return token[:80] if token else ""
@@ -131,6 +138,7 @@ class VisionPortEstimator:
         cable_name: str = "",
         port_type: str = "",
     ) -> None:
+        """디버그 이미지 파일명에 들어갈 task 라벨을 task 정보에서 만든다."""
         parts = []
         module = str(target_module_name or "")
         port = str(port_name or "")
@@ -161,6 +169,7 @@ class VisionPortEstimator:
         self._debug_task_label = "_".join(parts)[:80] if parts else "task_unknown"
 
     def _worker_is_alive(self) -> bool:
+        """YOLO 추론 워커 스레드가 살아있는지 확인한다."""
         return self._worker_thread is not None and self._worker_thread.is_alive()
 
     def start_detection(
@@ -169,6 +178,7 @@ class VisionPortEstimator:
         enable_debug_save: Optional[bool] = None,
         reset_counts: bool = False,
     ) -> None:
+        """비동기 YOLO 추론 워커를 시작하고 필요하면 디버그 저장 상태를 갱신한다."""
         if enable_debug_save is not None:
             self.set_debug_save_enabled(enable_debug_save, reset_counts=reset_counts)
 
@@ -192,6 +202,7 @@ class VisionPortEstimator:
             )
 
     def stop_detection(self) -> None:
+        """비동기 YOLO 추론 워커를 멈추고 대기 중인 요청을 비운다."""
         if not self._worker_is_alive():
             return
 
@@ -207,6 +218,7 @@ class VisionPortEstimator:
             self._logger.info("Vision: YOLO detection worker stopped")
 
     def _ensure_loaded(self):
+        """YOLO 모델을 최초 사용 시점에 로드한다."""
         with self._load_lock:
             if self._loaded:
                 return
@@ -234,6 +246,7 @@ class VisionPortEstimator:
                     self._logger.error(f"YOLO load failed: {exc}")
 
     def _estimate_worker(self) -> None:
+        """백그라운드에서 최신 요청 하나를 처리하고 결과 후보를 캐시에 저장한다."""
         while not self._worker_stop_event.is_set():
             if not self._request_event.wait(0.1):
                 continue
@@ -264,6 +277,7 @@ class VisionPortEstimator:
                 }
 
     def _submit_estimate(self, obs, target_class_id: int) -> int:
+        """워커에 새 추정 요청을 넣고 요청 id를 반환한다."""
         if not self._worker_is_alive():
             self.start_detection()
         with self._request_lock:
@@ -282,6 +296,7 @@ class VisionPortEstimator:
         target_class_id: int,
         min_request_id: int = 0,
     ) -> Optional[list]:
+        """target class와 request id, age 조건을 만족하는 캐시 후보를 반환한다."""
         with self._cache_lock:
             cache = dict(self._cache)
         if cache.get("target_class_id") != target_class_id:
@@ -294,6 +309,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def _image_from_msg(img_msg):
+        """ROS Image 메시지를 OpenCV가 사용하는 BGR numpy 이미지로 변환한다."""
         import cv2
 
         img = np.frombuffer(img_msg.data, dtype=np.uint8).reshape(
@@ -307,6 +323,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def _quat_to_matrix_xyzw(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
+        """xyzw 순서의 쿼터니언을 3x3 회전 행렬로 변환한다."""
         norm = float(np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw))
         if norm < 1e-12:
             return np.eye(3, dtype=float)
@@ -325,6 +342,7 @@ class VisionPortEstimator:
 
     @classmethod
     def _matrix_from_translation_quat(cls, translation, quat_xyzw) -> np.ndarray:
+        """translation과 xyzw 쿼터니언으로 4x4 동차 변환 행렬을 만든다."""
         matrix = np.eye(4, dtype=float)
         matrix[:3, :3] = cls._quat_to_matrix_xyzw(*quat_xyzw)
         matrix[:3, 3] = np.asarray(translation, dtype=float)
@@ -332,6 +350,7 @@ class VisionPortEstimator:
 
     @classmethod
     def _matrix_from_pose(cls, pose) -> np.ndarray:
+        """ROS Pose를 base/TCP 계산에 쓰는 4x4 동차 변환 행렬로 바꾼다."""
         matrix = np.eye(4, dtype=float)
         matrix[:3, :3] = cls._quat_to_matrix_xyzw(
             pose.orientation.x,
@@ -343,6 +362,7 @@ class VisionPortEstimator:
         return matrix
 
     def _base_to_camera_optical_matrix(self, obs, camera_name: str) -> Optional[np.ndarray]:
+        """현재 TCP pose와 고정 카메라 extrinsic으로 base->camera optical 행렬을 계산한다."""
         try:
             t_base_tcp = self._matrix_from_pose(obs.controller_state.tcp_pose)
             t_base_tool0 = t_base_tcp @ np.linalg.inv(self._t_tool0_tcp)
@@ -356,6 +376,7 @@ class VisionPortEstimator:
             return None
 
     def _detect(self, image: np.ndarray, cam_name: str = "") -> list:
+        """단일 카메라 이미지에서 YOLO 검출을 수행하고 포트 후보 2D 점을 추출한다."""
         import cv2
 
         results = self._model(image, verbose=False, conf=self._conf_thresh)
@@ -491,6 +512,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def _triangulate(u_a, v_a, k_a, t_base_to_a, u_b, v_b, k_b, t_base_to_b) -> np.ndarray:
+        """두 카메라의 2D 픽셀 대응점으로 base 좌표계의 3D 점을 삼각측량한다."""
         import cv2
 
         p_a = k_a @ t_base_to_a[:3, :]
@@ -510,6 +532,7 @@ class VisionPortEstimator:
         port_hint: Optional[str] = None,
         target_module_name: Optional[str] = None,
     ) -> Optional[np.ndarray]:
+        """포트 후보들 중 task hint와 가장 맞는 하나의 base 좌표를 반환한다."""
         candidates = self.estimate_all(obs, target_class_id)
         if not candidates:
             return None
@@ -527,6 +550,7 @@ class VisionPortEstimator:
         return candidates[0]["pos"]
 
     def estimate_all(self, obs, target_class_id: int) -> list:
+        """비동기 추론 요청 후 timeout 안에 들어온 모든 3D 포트 후보를 반환한다."""
         if obs is None:
             return []
 
@@ -549,6 +573,7 @@ class VisionPortEstimator:
         return []
 
     def _estimate_all_sync(self, obs, target_class_id: int) -> list:
+        """세 카메라의 YOLO 결과를 동기적으로 모아 3D 포트 후보 리스트를 만든다."""
         self._ensure_loaded()
         if not self._loaded:
             return []
@@ -700,6 +725,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def _extract_named_index(text: str, prefix: str) -> Optional[int]:
+        """sfp_port_0 같은 이름에서 prefix 뒤 숫자 인덱스를 추출한다."""
         match = re.search(rf"{re.escape(prefix)}_(\d+)", text or "")
         if match is None:
             return None
@@ -707,6 +733,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def _put_text_lines(image: np.ndarray, lines: list[str], x: int, y: int) -> None:
+        """디버그 이미지 위에 가독성 있는 상태 텍스트를 그린다."""
         import cv2
 
         colors = ((0, 255, 255), (0, 200, 255), (255, 255, 0))
@@ -737,6 +764,7 @@ class VisionPortEstimator:
         port_name: str = "",
         target_module_name: str = "",
     ) -> Optional[np.ndarray]:
+        """task의 port/module 이름을 이용해 여러 3D 후보 중 목표 포트를 선택한다."""
         if not candidates:
             return None
         if len(candidates) == 1 and not target_module_name:
@@ -763,6 +791,7 @@ class VisionPortEstimator:
 
     @staticmethod
     def select_by_port_name(candidates: list, port_name: str) -> Optional[np.ndarray]:
+        """포트 이름 규칙만으로 후보를 선택한다. 실패 시 가장 점수가 좋은 후보를 쓴다."""
         if not candidates:
             return None
         if len(candidates) == 1:

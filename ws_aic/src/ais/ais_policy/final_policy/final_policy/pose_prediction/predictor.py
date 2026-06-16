@@ -1,3 +1,5 @@
+"""ROS observation을 pose prediction 모델 입력으로 변환하고 추론하는 래퍼."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,6 +25,8 @@ JOINT_NAMES = (
 
 
 class PosePredictor:
+    """checkpoint를 로드하고 observation마다 포트 offset/yaw 예측값을 반환한다."""
+
     def __init__(
         self,
         *,
@@ -30,6 +34,7 @@ class PosePredictor:
         device: str = FinalPolicyConfig.DEVICE,
         logger=None,
     ) -> None:
+        """checkpoint 경로와 device를 설정한 뒤 모델을 즉시 로드한다."""
         self.logger = logger
         self.checkpoint_path = Path(checkpoint_path).expanduser()
         if device == "auto":
@@ -44,11 +49,13 @@ class PosePredictor:
         self._load()
 
     def _log(self, level: str, message: str) -> None:
+        """logger가 있으면 지정한 레벨로 메시지를 남긴다."""
         if self.logger is None:
             return
         getattr(self.logger, level)(message)
 
     def _load(self) -> None:
+        """checkpoint payload에서 모델 설정, 가중치, target 정규화 통계를 읽는다."""
         if not self.checkpoint_path.is_file():
             raise FileNotFoundError(
                 f"Pose prediction checkpoint not found: {self.checkpoint_path}"
@@ -75,9 +82,11 @@ class PosePredictor:
         self._log("info", f"Pose model loaded: {self.checkpoint_path}")
 
     def _camera_image(self, observation, camera: str) -> Optional[Image]:
+        """observation에서 카메라 이름에 맞는 Image 메시지를 꺼낸다."""
         return getattr(observation, f"{camera}_image", None)
 
     def _image_msg_to_tensor(self, image_msg: Image) -> torch.Tensor:
+        """ROS Image 메시지를 모델 입력용 RGB 정규화 텐서로 변환한다."""
         height = int(image_msg.height)
         width = int(image_msg.width)
         encoding = getattr(image_msg, "encoding", "").lower()
@@ -116,6 +125,7 @@ class PosePredictor:
         return (tensor - mean) / std
 
     def _force_torque(self, observation) -> torch.Tensor:
+        """wrist wrench의 force/torque 6차원 값을 텐서로 만든다."""
         wrench = observation.wrist_wrench.wrench
         return torch.tensor(
             [
@@ -130,6 +140,7 @@ class PosePredictor:
         )
 
     def _joint_positions(self, observation) -> torch.Tensor:
+        """UR joint angle을 sin/cos 형태의 12차원 텐서로 변환한다."""
         joint_state = observation.joint_states
         by_name = dict(zip(list(joint_state.name), list(joint_state.position)))
         values = torch.tensor(
@@ -139,6 +150,7 @@ class PosePredictor:
         return torch.cat([torch.sin(values), torch.cos(values)], dim=0)
 
     def _denorm(self, name: str, value: torch.Tensor) -> torch.Tensor:
+        """checkpoint에 저장된 target mean/std가 있으면 예측값을 원 단위로 복원한다."""
         if name not in self.target_mean or name not in self.target_std:
             return value
         mean = torch.as_tensor(self.target_mean[name], dtype=torch.float32)
@@ -147,6 +159,7 @@ class PosePredictor:
 
     @torch.inference_mode()
     def predict(self, observation) -> Optional[dict[str, np.ndarray | float]]:
+        """현재 observation으로 port0/port1 offset(m)과 dyaw(rad)를 예측한다."""
         if observation is None:
             return None
         images = []

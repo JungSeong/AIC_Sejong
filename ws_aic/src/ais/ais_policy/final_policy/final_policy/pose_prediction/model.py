@@ -1,3 +1,5 @@
+"""이미지, force/torque, joint 상태를 함께 쓰는 pose prediction 모델 정의."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -11,6 +13,7 @@ Aggregation = Literal["mean", "max", "concat"]
 
 
 def _resolve_weights(backbone_name: str, pretrained: bool | str | None):
+    """torchvision backbone의 pretrained weights 설정을 이름 또는 기본값으로 해석한다."""
     if pretrained is None or pretrained is False:
         return None
     if isinstance(pretrained, str) and pretrained.lower() not in {"true", "default"}:
@@ -23,6 +26,7 @@ def _build_backbone(
     backbone_name: str,
     pretrained: bool | str | None,
 ) -> tuple[nn.Module, int]:
+    """torchvision backbone을 만들고 마지막 FC를 제거해 feature encoder로 사용한다."""
     weights = _resolve_weights(backbone_name, pretrained)
     backbone = models.get_model(backbone_name, weights=weights)
     if hasattr(backbone, "fc") and isinstance(backbone.fc, nn.Linear):
@@ -33,6 +37,7 @@ def _build_backbone(
 
 
 def _mlp(input_dim: int, hidden_dim: int, output_dim: int, dropout: float) -> nn.Sequential:
+    """회귀 head에 쓰는 작은 MLP 블록을 생성한다."""
     return nn.Sequential(
         nn.Linear(input_dim, hidden_dim),
         nn.ReLU(inplace=True),
@@ -45,6 +50,8 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int, dropout: float) -> nn
 
 
 class MultimodalPoseRegressor(nn.Module):
+    """멀티뷰 이미지와 로봇 상태를 fusion해 포트 offset과 yaw 오차를 예측한다."""
+
     def __init__(
         self,
         *,
@@ -62,6 +69,7 @@ class MultimodalPoseRegressor(nn.Module):
         freeze_backbone: bool = False,
         num_views: int = 3,
     ) -> None:
+        """backbone, force/torque encoder, joint encoder, 회귀 head들을 구성한다."""
         super().__init__()
         if aggregation not in {"mean", "max", "concat"}:
             raise ValueError("aggregation must be 'mean', 'max', or 'concat'.")
@@ -100,6 +108,7 @@ class MultimodalPoseRegressor(nn.Module):
         self.dyaw_head = _mlp(fused_dim, hidden_dim, 1, dropout)
 
     def _encode_image(self, image: torch.Tensor) -> torch.Tensor:
+        """단일/멀티뷰 이미지를 backbone feature로 인코딩하고 view별 feature를 합친다."""
         if image.ndim == 4:
             if self.aggregation == "concat" and self.num_views != 1:
                 raise ValueError(
@@ -129,6 +138,7 @@ class MultimodalPoseRegressor(nn.Module):
         force_torque: torch.Tensor,
         joint_positions: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
+        """이미지/힘/관절 feature를 결합해 port0, port1 offset과 dyaw를 예측한다."""
         image_features = self._encode_image(image)
         force_torque_features = self.force_torque_encoder(force_torque)
         joint_features = self.joint_encoder(joint_positions)
@@ -141,4 +151,5 @@ class MultimodalPoseRegressor(nn.Module):
 
 
 def build_pose_model(**kwargs) -> MultimodalPoseRegressor:
+    """checkpoint config에서 받은 인자로 pose prediction 모델을 생성한다."""
     return MultimodalPoseRegressor(**kwargs)

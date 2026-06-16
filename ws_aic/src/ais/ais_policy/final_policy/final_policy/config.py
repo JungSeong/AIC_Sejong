@@ -1,9 +1,12 @@
+"""FinalPolicy에서 사용하는 환경변수 기반 설정값을 한곳에 모아둔 모듈."""
+
 from __future__ import annotations
 
 import os
 
 
 def _env_float(name: str, default: float) -> float:
+    """환경변수를 float로 읽고, 값이 없거나 파싱에 실패하면 기본값을 반환한다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -14,6 +17,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_int(name: str, default: int) -> int:
+    """환경변수를 int로 읽고, 값이 없거나 파싱에 실패하면 기본값을 반환한다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -24,6 +28,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_bool(name: str, default: bool) -> bool:
+    """환경변수 문자열을 bool로 해석한다. 1/true/yes/on만 True로 본다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -31,6 +36,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _env_str(name: str, default: str) -> str:
+    """환경변수를 소문자 문자열로 정규화해서 반환한다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -38,6 +44,7 @@ def _env_str(name: str, default: str) -> str:
 
 
 def _env_cameras(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """카메라 목록 환경변수를 읽고 left/center/right 외 값이 있으면 기본값을 쓴다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -47,13 +54,15 @@ def _env_cameras(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 
 class FinalPolicyConfig:
+    """FinalPolicy의 접근, 정렬, 삽입 단계에서 공유하는 튜닝 파라미터."""
+
     DEVICE: str = os.environ.get("AIC_POSE_DEVICE", "auto")
     CAMERAS: tuple[str, ...] = _env_cameras(
         "AIC_POSE_CAMERAS",
         ("left", "center", "right"),
     )
 
-    APPROACH_VISION_RETRIES: int = _env_int("AIC_APPROACH_VISION_RETRIES", 8)
+    APPROACH_VISION_RETRIES: int = _env_int("AIC_APPROACH_VISION_RETRIES", 20)
     APPROACH_RETRY_DT: float = _env_float("AIC_APPROACH_RETRY_DT", 0.1)
     APPROACH_Z_OFFSET_SFP_M: float = _env_float("AIC_APPROACH_Z_OFFSET_SFP_M", 0.150)
     APPROACH_Z_OFFSET_SC_M: float = _env_float("AIC_APPROACH_Z_OFFSET_SC_M", 0.050)

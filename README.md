@@ -83,6 +83,7 @@ distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_ev
 시뮬레이터는 항상 먼저 실행해야 합니다
 ```bash
 export DBX_CONTAINER_MANAGER=docker
+export AIC_DEBUG_SAVE_DIR=~/AIC_sejong/debug
 
 distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=false start_aic_engine:=true
 ```

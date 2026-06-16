@@ -35,18 +35,15 @@ if TYPE_CHECKING:
 
 
 class FinalPolicy(Policy):
-    """Final Policy driven by the unified pose prediction model.
-    Stages:
-    1. Port Detection
-    2. Approach to Port
-    3. yaw rotation and align
-    4. insert
+    """
+    YOLO 포트 검출, 접근, 정렬, 삽입을 순서대로 수행하는 최종 정책.
     """
 
     TARGET_CLASS_ID_SFP = 0
     TARGET_CLASS_ID_SC = 0
 
     def __init__(self, parent_node):
+        """정책 실행 중 공유할 모델 경로, 비전 추정기, 캐시 상태를 초기화한다."""
         Policy.__init__(self, parent_node)
         self._task: Optional[Task] = None
         self._sfp_yolo_model_path: Optional[str] = None
@@ -79,6 +76,7 @@ class FinalPolicy(Policy):
 
     @staticmethod
     def _copy_pose(pose: Pose) -> Pose:
+        """ROS Pose 메시지를 값 복사해서 이후 수정이 원본에 영향을 주지 않게 한다."""
         return Pose(
             position=Point(
                 x=float(pose.position.x),
@@ -95,6 +93,7 @@ class FinalPolicy(Policy):
 
     @staticmethod
     def _copy_quaternion(quat: Quaternion) -> Quaternion:
+        """ROS Quaternion 메시지를 값 복사한다."""
         return Quaternion(
             x=float(quat.x),
             y=float(quat.y),
@@ -104,6 +103,7 @@ class FinalPolicy(Policy):
 
     @staticmethod
     def _normalize_quat(q):
+        """쿼터니언 튜플을 단위 길이로 정규화한다."""
         values = np.asarray(q, dtype=np.float64)
         norm = float(np.linalg.norm(values))
         if norm < 1e-12:
@@ -113,6 +113,7 @@ class FinalPolicy(Policy):
 
     @staticmethod
     def _force_norm(observation) -> Optional[float]:
+        """관측값의 wrist force 벡터 크기를 뉴턴 단위로 계산한다."""
         if observation is None:
             return None
         force = observation.wrist_wrench.wrench.force
@@ -120,6 +121,7 @@ class FinalPolicy(Policy):
 
     @staticmethod
     def _force_vector(observation) -> Optional[np.ndarray]:
+        """관측값에서 wrist force 벡터만 numpy 배열로 추출한다."""
         if observation is None:
             return None
         force = observation.wrist_wrench.wrench.force
@@ -130,12 +132,14 @@ class FinalPolicy(Policy):
 
     @staticmethod
     def _tcp_pose(observation) -> Optional[Pose]:
+        """현재 controller_state의 TCP pose를 안전하게 복사해서 반환한다."""
         if observation is None:
             return None
         return FinalPolicy._copy_pose(observation.controller_state.tcp_pose)
 
     @staticmethod
     def _axis_angle_quat(axis: np.ndarray, angle_rad: float):
+        """주어진 축과 회전각을 (w, x, y, z) 쿼터니언으로 변환한다."""
         axis = np.asarray(axis, dtype=np.float64)
         norm = float(np.linalg.norm(axis))
         if norm < 1e-12:
@@ -153,11 +157,13 @@ class FinalPolicy(Policy):
         )
 
     def _port_id(self) -> int:
+        """task.port_name 끝의 숫자를 읽어 포트 인덱스로 사용한다."""
         text = str(getattr(self._task, "port_name", "") or "")
         match = re.search(r"_(\d+)$", text)
         return int(match.group(1)) if match is not None else 0
 
     def _port_type(self) -> str:
+        """task 문자열들에서 sc 여부를 찾아 sc/sfp 포트 타입을 판별한다."""
         tokens = " ".join(
             str(value or "").lower()
             for value in (
@@ -170,6 +176,7 @@ class FinalPolicy(Policy):
         return "sc" if "sc" in tokens else "sfp"
 
     def _target_class_id(self, port_type: str) -> int:
+        """포트 타입별 YOLO target class id를 환경변수 또는 기본값에서 읽는다."""
         if port_type == "sc":
             return int(
                 os.environ.get("AIC_DEBUG_SC_TARGET_CLASS_ID", self.TARGET_CLASS_ID_SC)
@@ -182,6 +189,7 @@ class FinalPolicy(Policy):
         self,
         send_feedback: Optional[SendFeedbackCallback] = None,
     ) -> bool:
+        """SFP/SC YOLO 모델 경로를 준비한다. 없으면 HF 다운로드가 끝날 때까지 대기한다."""
         if self._models_ready:
             return True
 
@@ -217,6 +225,7 @@ class FinalPolicy(Policy):
         return True
 
     def _vision_for_port_type(self, port_type: str) -> VisionPortEstimator:
+        """포트 타입에 맞는 VisionPortEstimator를 lazy 생성하고 재사용한다."""
         self._ensure_yolo_models_ready()
         port_type = "sc" if port_type == "sc" else "sfp"
         if port_type not in self._vision_by_port_type:
@@ -244,26 +253,31 @@ class FinalPolicy(Policy):
         return self._vision_by_port_type[port_type]
 
     def _initial_approach_z_offset(self) -> float:
+        """포트 타입별 초기 접근 z offset을 반환한다."""
         if self._port_type() == "sc":
             return float(FinalPolicyConfig.APPROACH_Z_OFFSET_SC_M)
         return float(FinalPolicyConfig.APPROACH_Z_OFFSET_SFP_M)
 
     def _manual_rotation_deg(self) -> float:
+        """포트 타입별 수동 wrist 회전 보정각을 도 단위로 반환한다."""
         if self._port_type() == "sc":
             return float(FinalPolicyConfig.APPROACH_SC_MANUAL_ROTATION_DEG)
         return float(FinalPolicyConfig.APPROACH_SFP_MANUAL_ROTATION_DEG)
 
     def _insertion_stiffness(self) -> tuple:
+        """포트 타입별 삽입 단계 stiffness를 반환한다."""
         if self._port_type() == "sc":
             return FinalPolicyConfig.SC_INSERTION_STIFFNESS
         return FinalPolicyConfig.SFP_INSERTION_STIFFNESS
 
     def _insertion_damping(self) -> tuple:
+        """포트 타입별 삽입 단계 damping을 반환한다."""
         if self._port_type() == "sc":
             return FinalPolicyConfig.SC_INSERTION_DAMPING
         return FinalPolicyConfig.SFP_INSERTION_DAMPING
 
     def _align_correction_base(self, offset_m: np.ndarray) -> np.ndarray:
+        """pose 모델의 포트 offset을 base 좌표계 보정 방향으로 변환한다."""
         offset = np.asarray(offset_m, dtype=np.float64)
         return np.array(
             [
@@ -280,6 +294,7 @@ class FinalPolicy(Policy):
         tcp_pose: Pose,
         force_delta: Optional[np.ndarray],
     ) -> Optional[np.ndarray]:
+        """삽입/정렬 중 힘 변화가 크면 lateral 보정과 lift retry 이동량을 계산한다."""
         if force_delta is None or not FinalPolicyConfig.ALIGN_RETRY_ENABLED:
             return None
 
@@ -315,6 +330,7 @@ class FinalPolicy(Policy):
         return retry_step
 
     def _axis(self, pose: Pose) -> np.ndarray:
+        """수동 wrist 회전에 사용할 축을 base 또는 TCP 좌표계 기준으로 계산한다."""
         axis_name = str(FinalPolicyConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS)
         base_axes = {
             "base_x": np.array([1.0, 0.0, 0.0], dtype=np.float64),
@@ -349,6 +365,7 @@ class FinalPolicy(Policy):
         dt: float,
         label: str,
     ) -> None:
+        """현재 pose에서 목표 pose까지 위치/자세를 S-curve로 보간해 순차 명령한다."""
         start = np.array(
             [start_pose.position.x, start_pose.position.y, start_pose.position.z],
             dtype=np.float64,
@@ -383,6 +400,7 @@ class FinalPolicy(Policy):
             self.sleep_for(dt)
 
     def _target_wrist_orientation(self, start_pose: Pose) -> Quaternion:
+        """접근 단계에서 유지할 목표 wrist orientation을 계산하고 캐시한다."""
         if self._fixed_target_orientation is not None:
             return self._copy_quaternion(self._fixed_target_orientation)
 
@@ -399,6 +417,7 @@ class FinalPolicy(Policy):
         return self._copy_quaternion(self._fixed_target_orientation)
 
     def _estimate_port(self, get_observation) -> Optional[np.ndarray]:
+        """현재 task hint와 YOLO 비전 추정기로 목표 포트의 base 좌표를 반복 추정한다."""
         port_hint = str(getattr(self._task, "port_name", "") or "")
         target_module_name = str(getattr(self._task, "target_module_name", "") or "")
         port_type = self._port_type()
@@ -427,6 +446,7 @@ class FinalPolicy(Policy):
         return None
 
     def _stage_lift_up(self, get_observation, move_robot) -> bool:
+        """초기 위치에서 z축으로 살짝 들어 올려 이후 접근 경로의 여유 공간을 확보한다."""
         lift_m = float(FinalPolicyConfig.INITIAL_LIFT_M)
         self.get_logger().info(
             f"[stage 1/5] lift_up Start: dz={lift_m * 1000.0:.1f}mm"
@@ -462,6 +482,7 @@ class FinalPolicy(Policy):
         return True
 
     def _stage_detect(self, get_observation) -> bool:
+        """YOLO로 목표 포트를 검출하고 포트 위치와 목표 wrist 자세를 캐시에 저장한다."""
         self.get_logger().info("[stage 2/5] Detection Start")
         self._vision_debug_save_enabled = True
         vision = self._vision_for_port_type(self._port_type())
@@ -502,6 +523,7 @@ class FinalPolicy(Policy):
             self._vision_debug_save_enabled = False
 
     def _stage_approach(self, get_observation, move_robot) -> bool:
+        """검출된 포트 앞의 목표 TCP 위치까지 단일 접근 경로로 이동한다."""
         self.get_logger().info("[stage 3/5] Approach Start")
         obs = get_observation()
         start_pose = self._tcp_pose(obs)
@@ -572,6 +594,7 @@ class FinalPolicy(Policy):
         return True
 
     def _yaw_axis(self, pose) -> np.ndarray:
+        """현재 TCP 자세 기준의 yaw 회전축을 base 좌표계 벡터로 계산한다."""
         q = quat_to_tuple(pose.orientation)
         rotated = quaternion_multiply(
             quaternion_multiply(q, (0.0, 0.0, 0.0, 1.0)),
@@ -584,10 +607,12 @@ class FinalPolicy(Policy):
         return axis / norm
 
     def _select_offset(self, prediction: dict[str, object]) -> np.ndarray:
+        """task 포트 인덱스에 맞는 pose 모델 offset 출력을 선택한다."""
         key = "port1_position_m" if self._port_id() == 1 else "port0_position_m"
         return np.asarray(prediction[key], dtype=np.float64)
 
     def _pose_predictor_for_align(self) -> PosePredictor:
+        """yaw align stage에서만 pose 모델을 lazy 로드한다."""
         if self._pose_predictor is None:
             from final_policy.pose_prediction import PosePredictor
 
@@ -606,6 +631,7 @@ class FinalPolicy(Policy):
         return self._pose_predictor
 
     def _stage_yaw_align(self, get_observation, move_robot) -> bool:
+        """pose 예측과 force retry를 이용해 포트 중심과 yaw를 반복 보정한다."""
         self.get_logger().info("[stage 4/5] Yaw Alignment Start")
         pose_predictor = self._pose_predictor_for_align()
         baseline_force = self._force_vector(get_observation())
@@ -725,6 +751,7 @@ class FinalPolicy(Policy):
         force_norm: Optional[float],
         baseline_norm: Optional[float],
     ) -> tuple[bool, str]:
+        """삽입 중 기준 force 대비 급격한 상승/하강이 있으면 막힘으로 판단한다."""
         if force_norm is None or baseline_norm is None:
             return False, ""
         delta = force_norm - baseline_norm
@@ -742,6 +769,7 @@ class FinalPolicy(Policy):
         return False, ""
 
     def _stage_insert(self, get_observation, move_robot) -> bool:
+        """목표 자세를 유지하며 z 방향으로 조금씩 내려 삽입을 수행한다."""
         self.get_logger().info("[stage 5/5] insert start")
         obs = get_observation()
         pose = self._tcp_pose(obs)
@@ -864,6 +892,7 @@ class FinalPolicy(Policy):
         move_robot: MoveRobotCallback,
         send_feedback: SendFeedbackCallback,
     ):
+        """aic_model에서 호출되는 정책 진입점. stage들을 순서대로 실행한다."""
         self._task = task
         self._send_feedback = send_feedback
         self._cached_port_base = None
