@@ -16,31 +16,37 @@ from transforms3d._gohlketransforms import quaternion_multiply
 
 from ais_pose_prediction.config import PosePredictionConfig
 from ais_pose_prediction.predictor import PosePredictor
-from distance_prediction_policy.DebugSfpDistancePolicy import (
-    DebugSfpDistancePolicy,
-    _resolve_sc_yolo_model_path,
-    _resolve_sfp_yolo_model_path,
-)
+from distance_prediction_policy.DebugSfpDistancePolicy import DebugSfpDistancePolicy
 from distance_prediction_policy.config import DistancePredictionConfig
+from final_policy.model_store import (
+    POSE_MODEL,
+    SC_YOLO_MODEL,
+    SFP_YOLO_MODEL,
+    resolve_model_path,
+)
 from motion_planning_node.core.geometry import quat_to_tuple, tuple_to_quat
 from motion_planning_node.core.vision import VisionPortEstimator
 
 
 class FinalPolicy(DebugSfpDistancePolicy):
     """Final policy driven by the unified pose prediction model.
-
     Stages:
     1. detect
     2. approach
     3. yaw rotation + align
     4. insert
     """
-
     def __init__(self, parent_node):
         Policy.__init__(self, parent_node)
         self._task: Optional[Task] = None
-        self._sfp_yolo_model_path = _resolve_sfp_yolo_model_path()
-        self._sc_yolo_model_path = _resolve_sc_yolo_model_path()
+        self._sfp_yolo_model_path = resolve_model_path(
+            SFP_YOLO_MODEL,
+            logger=self.get_logger(),
+        )
+        self._sc_yolo_model_path = resolve_model_path(
+            SC_YOLO_MODEL,
+            logger=self.get_logger(),
+        )
         self._yolo_model_path = self._sfp_yolo_model_path
         self._cached_port_base: Optional[np.ndarray] = None
         self._target_orientation = None
@@ -56,11 +62,19 @@ class FinalPolicy(DebugSfpDistancePolicy):
         )
         self._yolo_conf_thresh = self._sfp_yolo_conf_thresh
         self._vision_by_port_type = {}
+        self._vision_debug_save_enabled = False
         self._vision = self._vision_for_port_type("sfp")
-        self._pose_predictor = PosePredictor(logger=self.get_logger())
+        self._pose_model_path = resolve_model_path(
+            POSE_MODEL,
+            logger=self.get_logger(),
+        )
+        self._pose_predictor = PosePredictor(
+            checkpoint_path=self._pose_model_path,
+            logger=self.get_logger(),
+        )
         self.get_logger().info(
             "FinalPolicy ready: "
-            f"pose_model={PosePredictionConfig.CHECKPOINT_PATH}, "
+            f"pose_model={self._pose_model_path}, "
             f"sfp_yolo={self._sfp_yolo_model_path}, "
             f"sc_yolo={self._sc_yolo_model_path}"
         )

@@ -1,5 +1,5 @@
 """
-DataCollect policy
+LeRobot episode collection policy implementation.
 ──────────────────────────
 모든 데이터 수집 로직(AutoCapture + LeRobot)이 통합된 단일 정책 파일.
 """
@@ -125,7 +125,7 @@ class DataCollect(Policy):
         self._stop_file = Path(os.environ.get("AIC_STOP_FILE", "/tmp/aic_policy_stop"))
         threading.Thread(target=self._watch_stop_file, daemon=True).start()
 
-        self.get_logger().info(f"[DataCollect] Unified Policy Initialized. Root: {self.capture_root}")
+        self.get_logger().info(f"[LeRobot] Unified Policy Initialized. Root: {self.capture_root}")
 
     # ── 인프라 로직 ──────────────────────────────────────────────────────────
 
@@ -194,9 +194,9 @@ class DataCollect(Policy):
         port_frame = f"task_board/{task.target_module_name}/{task.port_name}_link"
         entrance_frame = f"{port_frame}_entrance"
         if self._wait_for_tf("base_link", entrance_frame, timeout_sec=2.0):
-            self.get_logger().info(f"[DataCollect] Using port entrance frame: {entrance_frame}")
+            self.get_logger().info(f"[LeRobot] Using port entrance frame: {entrance_frame}")
             return entrance_frame
-        self.get_logger().warn(f"[DataCollect] Port entrance TF unavailable, falling back to: {port_frame}")
+        self.get_logger().warn(f"[LeRobot] Port entrance TF unavailable, falling back to: {port_frame}")
         return port_frame
 
     def set_pose_target(self, move_robot, pose, stiffness=None, damping=None):
@@ -242,7 +242,7 @@ class DataCollect(Policy):
         if self._lerobot_dataset is not None:
             recorder = LeRobotRecorder(self._lerobot_dataset, scenario_params_vec)
         else:
-            self.get_logger().info("[DataCollect] LeRobot dataset disabled; running motion without episode recording.")
+            self.get_logger().info("[LeRobot] LeRobot dataset disabled; running motion without episode recording.")
         
         port_frame, plug_frame = self._select_port_frame(task), f"{task.cable_name}/{task.plug_name}_link"
         if not self._wait_for_tf("base_link", port_frame) or not self._wait_for_tf("base_link", plug_frame): return False
@@ -297,7 +297,7 @@ class DataCollect(Policy):
                 confidence, class_name, x1, y1, x2, y2 = best_detection
                 recording_started = True
                 self.get_logger().info(
-                    "[DataCollect] YOLO DETECTION -> Recording Started "
+                    "[LeRobot] YOLO DETECTION -> Recording Started "
                     f"class={class_name} conf={confidence:.3f} "
                     f"bbox=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}) "
                     f"center=({0.5 * (x1 + x2):.1f},{0.5 * (y1 + y2):.1f})"
@@ -393,7 +393,7 @@ class DataCollect(Policy):
         if recorder is not None:
             recorder.save_episode(insertion_success=success)
         self._write_episode_summary(episode_dir, {"task_id": task.id, "success": success, "mode": "lerobot" if recorder is not None else "yolo_only"})
-        self.get_logger().info(f"DataCollect complete. Success: {success}")
+        self.get_logger().info(f"LeRobot complete. Success: {success}")
         return True
 
     def _write_episode_summary(self, episode_dir: Path, summary: dict) -> None:

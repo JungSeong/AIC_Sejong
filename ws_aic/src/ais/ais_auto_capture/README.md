@@ -17,7 +17,7 @@
 
 **흐름**
 1. trial별 랜덤 파라미터로 aic_engine config YAML 생성
-2. Zenoh 라우터 → Gazebo(`aic_gz_bringup`) → `DataCollect` policy 순으로 시작
+2. Zenoh 라우터 → Gazebo(`aic_gz_bringup`) → `LeRobot` policy 순으로 시작
 3. `episode_summary.json` 파일 수로 완료 감지
 4. Gazebo 종료 → 다음 세트 반복
 
@@ -49,8 +49,8 @@ python3 collect_data_aarch.py \
 
 **흐름 (시나리오당)**
 1. 랜덤 파라미터로 aic_engine config YAML 생성 + scenario_params JSON 저장
-2. Zenoh 라우터 → Gazebo → `DataCollect` policy 시작
-   - `DataCollect` policy를 사용해야 Task Board가 실제로 spawn됨
+2. Zenoh 라우터 → Gazebo → `LeRobot` policy 시작
+   - `LeRobot` policy를 사용해야 Task Board가 실제로 spawn됨
    - `autocapture`는 lifecycle만 수행하므로 entity spawn이 보장되지 않음
 3. 카메라 데이터 및 포트 TF 확인 후 스냅샷 N장 수집
 4. YOLO 라벨 자동 생성 (TF 기반 핀홀 투영)

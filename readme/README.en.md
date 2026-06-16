@@ -1,100 +1,88 @@
 # AIC Sejong
 
-[![Documentation](https://img.shields.io/badge/Documentation-GitHub%20Pages-0A66C2)](https://jungseong.github.io/contests/aic-sejong/)
-[![Staged Policy](https://img.shields.io/badge/Staged%20Policy-Cable%20Insertion-0A66C2)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
-[![Vision Pipeline](https://img.shields.io/badge/Vision%20Pipeline-YOLO%20%2B%20Stereo-5B5FC7)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
-[![Data Workflow](https://img.shields.io/badge/Data%20Workflow-Recording%20%26%20Training-FFB000)](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
-
 [한국어](README.ko.md) | [English](README.en.md)
 
-A local workspace for the AI for Industry Challenge. The project develops, trains, and evaluates UR5e cable-insertion policies.
+Solution code for the AI for Industry Challenge hosted by Intrinsic and Open Robotics (70th/166 Teams) <br>
 
-## Documentation
+[![Hugging Face Hub](https://img.shields.io/badge/Hugging%20Face-aic--sejong--team-FFD21E?logo=huggingface&logoColor=000)](https://huggingface.co/aic-sejong-team)
 
-- [Getting Started](https://jungseong.github.io/contests/aic-sejong/#getting-started)
-- [Core Workflows](https://jungseong.github.io/contests/aic-sejong/#core-workflows)
+## Competition Overview
+The AI for Industry Challenge evaluates perception accuracy and insertion success rate for simulation-based policies that make a UR5e robot arm insert a cable into a target port.
 
-## Repository Structure
+<details>
+<summary><strong>[1] Cable-Insertion Task and Policy Design</strong></summary>
+
+Participants must estimate the port position and execute cable insertion policies using camera observations, robot state, and force/torque sensor information.
+
+| Component | Role |
+|-----------|------|
+| UR5e robot arm | Execute cable-insertion motions |
+| YOLO-pose | Detect port pose and key points |
+| Multiview triangulation | Estimate the 3D port position from multiple camera views |
+| Vision and F/T sensors | Detect insertion failures and decide retry behavior |
+| Gazebo/AIC Simulator | Support repeated experiments, policy validation, and data collection |
+
+This solution implements yaw/XYZ alignment logic to reduce port-position estimation error and builds a sensor-based retry flow for insertion-failure scenarios.
+
+</details>
+
+<details>
+<summary><strong>[2] Data Collection and Collaboration Management</strong></summary>
+
+To reduce bottlenecks in repeated experimental data collection, the project implements a Gazebo-based automatic data collection node and manages YOLO training data and LeRobot-format datasets.
+
+| Item | Purpose |
+|------|---------|
+| Gazebo auto-collection node | Generate repeated experimental data and reduce collection time |
+| YOLO training data | Train port detection and pose-estimation models |
+| LeRobot dataset | Manage policy training and reproducible experiments |
+| GitHub | Manage code, experiment artifacts, and collaboration issues |
+| Hugging Face Hub | Share and load models and datasets |
+| Notion | Document schedules, roles, and meeting notes |
+
+Project artifacts are organized for use through the [Hugging Face Hub](https://huggingface.co/aic-sejong-team).
+
+</details>
+
+## Key Contributions
 
 ```
-AIC_Sejong/
-├── README.md
-│
-└── ws_aic/                  ← workspace root
-    ├── model/               ← trained model weights
-    │   ├── ais_yolo/        ← YOLO model weights
-    │   │   └── weights/
-    │   └── ais_distance_prediction/
-    │
-    └── src/                 ← source root (pixi.toml location)
-        ├── pixi.toml        ← workspace environment definition
-        ├── pixi.lock        ← pinned dependencies
-        │
-        ├── aic/             ← official AIC repository (git submodule)
-        │   ├── aic_model/                  ← aic_model node (policy loader)
-        │   ├── aic_adapter/                ← model node adapter (C++)
-        │   ├── aic_example_policies/       ← example policies (WaveArm, CheatCode, RunACT, etc.)
-        │   ├── aic_bringup/                ← simulation launch files
-        │   ├── aic_engine/                 ← task orchestration + scoring
-        │   ├── aic_controller/             ← robot arm impedance controller
-        │   ├── aic_interfaces/             ← ROS 2 message/service interfaces
-        │   │   ├── aic_control_interfaces
-        │   │   ├── aic_engine_interfaces
-        │   │   ├── aic_model_interfaces
-        │   │   └── aic_task_interfaces
-        │   └── aic_utils/
-        │       ├── lerobot_robot_aic/      ← LeRobot ↔ AIC bridge driver
-        │       ├── aic_teleoperation/      ← teleoperation utilities
-        │       └── aic_mujoco/             ← MuJoCo simulator support
-        │
-        ├── ais/             ← ★ team-developed packages
-        │   ├── ais_auto_capture/       ← automated data collection for YOLO training
-        │   ├── ais_early_prediction/   ← early failure prediction (Transformer-based)
-        │   ├── ais_eda/                ← multi-view bias exploratory data analysis
-        │   ├── ais_encoder/            ← multimodal representation learning (Vision + Touch)
-        │   ├── ais_load_model_from_hf/ ← HuggingFace model load/upload utility
-        │   ├── ais_motion_planning/    ← YOLO + stereo-based port detection and motion planning
-        │   ├── docker/                 ← Dockerfile, docker-compose.yaml
-        │   └── ais_ours_policy/        ← ROS 2 node wrapper
-        │       ├── data_gen_node/      ← data generation node
-        │       └── motion_planning_node/ ← motion planning node
-        │
-        ├── data/            ← datasets
-        │   ├── lerobot/     ← LeRobot format datasets (master branch)
-        │   └── yolo/        ← YOLO training data (by date, e.g. 20260426/)
-        │
-        └── docs/            ← documentation
-            └── summaries/   ← Claude session summaries (0405, 0409, ... 0423)
+1. Implemented YOLO-pose based port-pose estimation and multiview triangulation based port-position estimation, with yaw/XYZ alignment logic to reduce position-estimation error (XX% performance improvement)
+2. Implemented a Vision and F/T sensor based retry logic for insertion-failure scenarios (YY% performance improvement)
+3. Built a Gazebo-based automatic data collection node to reduce repeated-experiment data collection bottlenecks
+4. Managed distributed experiment artifacts and collaboration flow across GitHub, Hugging Face Hub, and Notion
+5. Recruited teammates through the OROCA Naver Cafe and MODULABS, coordinated schedules and roles, and documented the project
 ```
+<br>
+
+## Models and Data
+
+Project model and dataset artifacts are managed on the [Hugging Face Hub](https://huggingface.co/aic-sejong-team).
+
+| Resource | Link |
+|----------|------|
+| Organization | [aic-sejong-team](https://huggingface.co/aic-sejong-team) |
+| LeRobot Dataset | [aic-sejong-team/aic-dataset](https://huggingface.co/datasets/aic-sejong-team/aic-dataset) |
+| Entrance Dataset | [aic-sejong-team/aic-entrance-dataset](https://huggingface.co/datasets/aic-sejong-team/aic-entrance-dataset) |
+| ACT Policy | [aic-sejong-team/act_AIC](https://huggingface.co/aic-sejong-team/act_AIC) |
 
 ## Getting Started
 
-### Requirements
-
-- Ubuntu 24.04
-- NVIDIA GPU recommended
-- Docker, NVIDIA Container Toolkit, Distrobox, Pixi
-
-### Install Dependencies
-
+### 1. Install Dependencies
 ```bash
 git clone https://github.com/JungSeong/AIC_Sejong.git ~/AIC_Sejong
 cd ~/AIC_Sejong/ws_aic/src
 pixi install
 ```
 
-### Prepare Eval Container
-
+### 2. Prepare the Eval Container
 ```bash
 export DBX_CONTAINER_MANAGER=docker
 docker pull ghcr.io/intrinsic-dev/aic/aic_eval:latest
 distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval
 ```
 
-## Main Workflows
-
-### Simulation and Policy Execution
-
+### 3. Run a Policy
 ```bash
 # Terminal 1
 distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=false start_aic_engine:=true
@@ -103,33 +91,29 @@ distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=false start_aic_engi
 cd ~/AIC_Sejong/ws_aic/src
 pixi run ros2 run aic_model aic_model \
   --ros-args -p use_sim_time:=true \
-  -p policy:=my_policy_node.StagedPolicy
+  -p policy:=final_policy.FinalPolicy
 ```
 
-### YOLO Data Collection
+## Repository Map
 
-```bash
-cd ~/AIC_Sejong/ws_aic/src
-pixi run python ais/ais_motion_planning/collect_dataset.py
-```
+| Path | Role |
+|------|------|
+| `data/` | Competition train/dev/test metadata and submission file |
+| `ws_aic/src/aic/` | Official AIC repository and ROS 2 based evaluation environment |
+| `ws_aic/src/ais/` | Team-developed packages |
+| `ws_aic/src/ais/ais_motion_planning/` | YOLO + multiview based port detection and motion planning |
+| `ws_aic/src/ais/ais_auto_capture/` | Gazebo-based automatic data collection |
+| `ws_aic/src/ais/ais_yolo_train/` | YOLO training-data collection and evaluation |
+| `ws_aic/src/ais/ais_retry_classifier/` | Insertion-failure detection and retry-decision experiments |
+| `ws_aic/src/ais/ais_load_model_from_hf/` | Hugging Face Hub model/dataset upload and load utilities |
+| `ws_aic/src/ais/ais_eda/` | Multiview bias and position-estimation error analysis notebooks |
+| `ws_aic/src/docs/` | Experiment documents and session summaries |
+| `readme/` | Korean and English README documents |
 
-### ACT Training
+## Links
 
-```bash
-cd ~/AIC_Sejong/ws_aic/src
-pixi run lerobot-train \
-  --dataset.repo_id=aic-sejong-team/AIC \
-  --policy.type=act \
-  --output_dir=./model/ais_act \
-  --job_name=act_AIC \
-  --policy.device=cuda \
-  --wandb.enable=true \
-  --policy.repo_id=aic-sejong-team/act_AIC
-```
-
-## References
-
-- Official guide: `ws_aic/src/aic/docs/getting_started.md`
-- Scoring rules: `ws_aic/src/aic/docs/scoring.md`
-- Policy guide: `ws_aic/src/aic/docs/policy.md`
-- Motion planning package: `ws_aic/src/ais/ais_motion_planning/`
+- [Hugging Face Hub](https://huggingface.co/aic-sejong-team)
+- [Motion Planning Package](../ws_aic/src/ais/ais_motion_planning/README.md)
+- [Automatic Data Collection Package](../ws_aic/src/ais/ais_auto_capture/README.md)
+- [Retry Classifier Package](../ws_aic/src/ais/ais_retry_classifier/README.md)
+- [Experiment Pseudocode Document](<../ws_aic/src/docs/psuedo code/pseudo_code.md>)

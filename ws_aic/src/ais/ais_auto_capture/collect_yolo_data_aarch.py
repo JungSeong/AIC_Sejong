@@ -621,10 +621,10 @@ def count_completed_episodes() -> int:
 
 
 def start_aic_model(dry_run: bool = False):
-    """datacollect policy로 trial을 실제 실행해 Task Board가 반드시 spawn되도록 한다.
+    """LeRobot policy로 trial을 실제 실행해 Task Board가 반드시 spawn되도록 한다.
 
     autocapture는 lifecycle만 수행해 trial이 시작되지 않으므로 entity spawn이
-    보장되지 않는다. datacollect를 사용하면 aic_engine이 trial을 시작하고
+    보장되지 않는다. LeRobot을 사용하면 aic_engine이 trial을 시작하고
     Task Board를 spawn한다. LeRobot 저장은 env var 제거로 비활성화한다.
     """
     env = _ros2_env()
@@ -638,12 +638,12 @@ def start_aic_model(dry_run: bool = False):
     cmd = (
         f"source {WS_AIC_SETUP} && "
         f"ros2 run aic_model aic_model "
-        f"--ros-args -p policy:=data_gen_node.DataCollect"
+        f"--ros-args -p policy:=data_gen_node.LeRobot"
     )
     if dry_run:
         print(f"[DRY-RUN] aic_model: {cmd}")
         return None
-    print("[aic_model] 시작 (datacollect policy — Task Board spawn 보장, LeRobot 저장 비활성)...")
+    print("[aic_model] 시작 (LeRobot policy — Task Board spawn 보장, LeRobot 저장 비활성)...")
     proc = subprocess.Popen(cmd, shell=True, executable="/bin/bash",
                             env=env, stderr=subprocess.STDOUT)
     time.sleep(1)
@@ -798,7 +798,7 @@ def run_yolo_collection_loop(
                           else make_sc_trial_config(rail_idx, diversify))
                 save_engine_config(config, ENGINE_CONFIG_TMP)
 
-                # datacollect policy가 읽는 scenario_params 파일 생성
+                # LeRobot policy가 읽는 scenario_params 파일 생성
                 if scenario_type == "nic":
                     task_key = f"nic_rail{rail_idx}_task_1"
                     params = {"trial_type": 0, "rail_idx": rail_idx,
@@ -827,7 +827,7 @@ def run_yolo_collection_loop(
                     )
 
                 # 2. Gazebo + aic_model 시작
-                # datacollect policy가 trial을 실제로 실행해야 Task Board가 spawn된다.
+                # LeRobot policy가 trial을 실제로 실행해야 Task Board가 spawn된다.
                 # ─ 중요: aic_engine의 aic_model 탐색 타임아웃은 ~10-15초이므로
                 #         Gazebo 시작 직후 빠르게 aic_model을 올려야 씬 spawn에 성공한다.
                 episodes_before = count_completed_episodes()

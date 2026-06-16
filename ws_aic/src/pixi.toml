@@ -76,6 +76,7 @@ transforms3d = "*"
 data-gen-node              = { path = "ais/ais_policy/data_gen_node",        editable = true }
 motion-planning-node       = { path = "ais/ais_policy/motion_planning_node", editable = true }
 distance-prediction-policy = { path = "ais/ais_policy/distance_prediction", editable = true }
+final-policy               = { path = "ais/ais_policy/final_policy",        editable = true }
 policy-investigator        = { path = "ais/ais_policy/policy_investigator",  editable = true }
 ais-reinforcement-learning = { path = "ais/ais_reinforcement_learning",      editable = true }
 ais-retry-classifier       = { path = "ais/ais_retry_classifier",            editable = true }

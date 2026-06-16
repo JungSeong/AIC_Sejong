@@ -12,7 +12,7 @@ distrobox + pixi 환경을 사용한다.
     3. distrobox 내에서 bash -c "/entrypoint.sh ..." 로 Gazebo + AIC engine 시작
        (spawn_task_board:=false, spawn_cable:=false → 엔진이 YAML에서 직접 스폰)
     4. Gazebo 초기화 대기
-    5. pixi run ros2 run으로 aic_model + DataCollect 정책 시작
+    5. pixi run ros2 run으로 aic_model + LeRobot 정책 시작
     6. episode_summary.json 수로 완료 감지 (프로세스 조기 종료 감지 포함)
     7. 프로세스 종료 → 다음 세트
 
@@ -81,14 +81,17 @@ EPISODE_TRACKING_DIR = Path("/tmp/aic_episodes")
 POLICY_STOP_FILE     = Path("/tmp/aic_policy_stop")
 
 POLICY_MODULES = {
-    "DataCollect": "data_gen_node.DataCollect",
+    "LeRobot": "data_gen_node.LeRobot",
+    "DataCollect": "data_gen_node.LeRobot",
     "DataCollect2": "data_gen_node.DataCollect2",
 }
 DEFAULT_REPO_IDS = {
+    "LeRobot": "aic-sejong-team/aic-dataset",
     "DataCollect": "aic-sejong-team/aic-dataset",
     "DataCollect2": "aic-sejong-team/aic-entrance-dataset",
 }
 DEFAULT_LEROBOT_OUT_DIRS = {
+    "LeRobot": Path("ws_aic/data/lerobot"),
     "DataCollect": Path("ws_aic/data/lerobot"),
     "DataCollect2": Path("ws_aic/data/aic-entrance-dataset"),
 }
@@ -535,7 +538,7 @@ def start_gazebo(
 
 def start_policy(
     step_hz: float = 20.0,
-    data_policy: str = "DataCollect",
+    data_policy: str = "LeRobot",
     lerobot_out_dir: "Path | None" = None,
     lerobot_repo_id: str = "",
     lerobot_run_id: str = "",
@@ -544,7 +547,7 @@ def start_policy(
     dry_run: bool = False,
 ) -> "subprocess.Popen | None":
     """
-    pixi run으로 aic_model + DataCollect 계열 정책 노드 시작.
+    pixi run으로 aic_model + LeRobot/DataCollect2 계열 정책 노드 시작.
     대부분의 설정(Hz, YOLO 경로 등)은 이제 policy.py 내부 기본값으로 처리됨.
     """
     env = os.environ.copy()
@@ -864,8 +867,8 @@ def main():
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
     parser.add_argument("--step-hz",          type=float, default=20.0,
                         help="스텝 샘플링 주파수 Hz (기본: 10Hz)")
-    parser.add_argument("--data-policy",      choices=sorted(POLICY_MODULES), default="DataCollect",
-                        help="수집 정책 선택. DataCollect2는 entrance frame 기준 데이터셋용")
+    parser.add_argument("--data-policy",      choices=sorted(POLICY_MODULES), default="LeRobot",
+                        help="수집 정책 선택. LeRobot은 기본 에피소드, DataCollect2는 entrance frame 기준 데이터셋용")
     parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",
