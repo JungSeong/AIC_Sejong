@@ -4,7 +4,6 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 
 def _resolve_project_root() -> Path:
@@ -16,55 +15,39 @@ def _resolve_project_root() -> Path:
 
 PROJECT_ROOT = _resolve_project_root()
 MODEL_ROOT = PROJECT_ROOT / "model"
-LEGACY_MODEL_ROOT = PROJECT_ROOT / "ws_aic" / "model"
-
 
 @dataclass(frozen=True)
 class ModelSpec:
     name: str
     env_key: str
     local_rel_path: Path
-    hf_repo_env_key: str
     hf_path_env_key: str
     default_hf_repo_id: str
-    legacy_rel_paths: tuple[Path, ...] = ()
-
 
 DEFAULT_HF_REPO_ID = "aic-sejong-team/aic-final-policy-models"
-DEFAULT_YOLO_HF_REPO_ID = "aic-sejong-team/yolo-port-keypoint-detection"
+DEFAULT_YOLO_HF_REPO_ID = "aic-sejong-team/detection"
 
-POSE_MODEL = ModelSpec(
-    name="pose prediction",
-    env_key="AIC_POSE_MODEL_PATH",
-    local_rel_path=Path("ais_pose_prediction/pose_resnet50_v4.0/best.pt"),
-    hf_repo_env_key="AIC_POSE_HF_REPO_ID",
-    hf_path_env_key="AIC_POSE_HF_PATH",
-    default_hf_repo_id=DEFAULT_HF_REPO_ID,
-)
 SFP_YOLO_MODEL = ModelSpec(
     name="SFP YOLO",
     env_key="AIC_SFP_YOLO_MODEL_PATH",
-    local_rel_path=Path("ais_yolo/approach/SFP/weights/best.pt"),
-    hf_repo_env_key="AIC_YOLO_HF_REPO_ID",
+    local_rel_path=Path("approach/SFP/weights/best.pt"),
     hf_path_env_key="AIC_SFP_YOLO_HF_PATH",
     default_hf_repo_id=DEFAULT_YOLO_HF_REPO_ID,
-    legacy_rel_paths=(
-        Path("yolo-port-keypoint-detection/approach/SFP/weights/best.pt"),
-        Path("ais_yolo/weights/best.pt"),
-    ),
 )
 SC_YOLO_MODEL = ModelSpec(
     name="SC YOLO",
     env_key="AIC_SC_YOLO_MODEL_PATH",
-    local_rel_path=Path("ais_yolo/approach/SC/weights/best.pt"),
-    hf_repo_env_key="AIC_YOLO_HF_REPO_ID",
+    local_rel_path=Path("approach/SC/weights/best.pt"),
     hf_path_env_key="AIC_SC_YOLO_HF_PATH",
     default_hf_repo_id=DEFAULT_YOLO_HF_REPO_ID,
-    legacy_rel_paths=(
-        Path("yolo-port-keypoint-detection/approach/SC/weights/best.pt"),
-    ),
 )
-
+POSE_MODEL = ModelSpec(
+    name="pose prediction",
+    env_key="AIC_POSE_MODEL_PATH",
+    local_rel_path=Path("ais_pose_prediction/pose_resnet50_v4.0/best.pt"),
+    hf_path_env_key="AIC_POSE_HF_PATH",
+    default_hf_repo_id=DEFAULT_HF_REPO_ID,
+)
 
 def _log(logger, level: str, message: str) -> None:
     if logger is None:
@@ -72,30 +55,10 @@ def _log(logger, level: str, message: str) -> None:
     getattr(logger, level)(message)
 
 
-def _candidate_paths(spec: ModelSpec) -> Iterable[Path]:
-    yield MODEL_ROOT / spec.local_rel_path
-    for rel_path in spec.legacy_rel_paths:
-        yield MODEL_ROOT / rel_path
-    yield LEGACY_MODEL_ROOT / spec.local_rel_path
-    for rel_path in spec.legacy_rel_paths:
-        yield LEGACY_MODEL_ROOT / rel_path
-
-
-def _first_existing(paths: Iterable[Path]) -> Path | None:
-    for path in paths:
-        if path.expanduser().is_file():
-            return path.expanduser()
-    return None
-
-
 def _repo_candidates(spec: ModelSpec) -> list[str]:
     candidates = [
-        os.environ.get(spec.hf_repo_env_key, "").strip(),
-        os.environ.get("AIC_HF_MODEL_REPO_ID", "").strip(),
         spec.default_hf_repo_id,
     ]
-    if spec.default_hf_repo_id != DEFAULT_HF_REPO_ID:
-        candidates.append(DEFAULT_HF_REPO_ID)
     result = []
     for repo_id in candidates:
         if repo_id and repo_id not in result:
@@ -115,10 +78,7 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
     hf_path = Path(
         os.environ.get(spec.hf_path_env_key, "").strip() or spec.local_rel_path
     )
-    repo_type = os.environ.get(
-        f"{spec.hf_repo_env_key}_TYPE",
-        os.environ.get("AIC_HF_MODEL_REPO_TYPE", "model"),
-    )
+    repo_type = os.environ.get("AIC_HF_MODEL_REPO_TYPE", "model")
     revision = os.environ.get("AIC_HF_MODEL_REVISION", "main")
     expected_path = MODEL_ROOT / spec.local_rel_path
     MODEL_ROOT.mkdir(parents=True, exist_ok=True)
@@ -128,7 +88,7 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
         _log(
             logger,
             "info",
-            f"{spec.name} model missing locally; downloading {hf_path} "
+            f"{spec.name} model missing from {spec.env_key}; downloading {hf_path} "
             f"from Hugging Face repo {repo_id}",
         )
         try:
@@ -160,7 +120,7 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
     raise FileNotFoundError(
         f"{spec.name} model not found under {MODEL_ROOT} and Hugging Face "
         "download failed. Set "
-        f"{spec.env_key}=<local file> or {spec.hf_repo_env_key}=<repo id>. "
+        f"{spec.env_key}=<local file>. "
         f"Download attempts: {' | '.join(errors)}"
     )
 
@@ -176,12 +136,13 @@ def resolve_model_path(spec: ModelSpec, logger=None) -> str:
             logger,
             "warn",
             f"{spec.env_key} is set but file does not exist: {path}; "
-            f"falling back to {MODEL_ROOT}",
+            "downloading from the default Hugging Face repo",
         )
-
-    local_path = _first_existing(_candidate_paths(spec))
-    if local_path is not None:
-        _log(logger, "info", f"{spec.name} model from local path: {local_path}")
-        return str(local_path)
+    else:
+        _log(
+            logger,
+            "info",
+            f"{spec.env_key} is not set; downloading from the default Hugging Face repo",
+        )
 
     return str(_download_from_hugging_face(spec, logger=logger))

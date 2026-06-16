@@ -10,11 +10,9 @@
   <depend>aic_control_interfaces</depend>
   <depend>aic_model</depend>
   <depend>aic_task_interfaces</depend>
-  <depend>ais_pose_prediction</depend>
-  <depend>distance_prediction_policy</depend>
   <depend>geometry_msgs</depend>
-  <depend>motion_planning_node</depend>
   <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
 
   <export>
     <build_type>ament_python</build_type>

@@ -75,6 +75,7 @@ export DBX_CONTAINER_MANAGER=docker
 docker pull ghcr.io/intrinsic-dev/aic/aic_eval:latest
 distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval
 ```
+<br>
 
 ### 3. 최종 Policy 실행
 
@@ -101,6 +102,9 @@ pixi run ros2 run aic_model aic_model \
 시뮬레이터는 항상 먼저 실행해야 합니다
 ```bash
 export DBX_CONTAINER_MANAGER=docker
+export AIC_POSE_HF_PATH=~/AIC_Sejong/model/
+export AIC_SFP_YOLO_HF_PATH=~/AIC_Sejong/model/approach/SFP
+export AIC_SC_YOLO_HF_PATH=~/AIC_Sejong/model/approach/SC
 
 distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=true start_aic_engine:=true
 ```

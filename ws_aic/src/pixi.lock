@@ -3328,10 +3328,11 @@ packages:
 - pypi: ./ais/ais_policy/final_policy
   name: final-policy
   version: 0.0.1
-  sha256: 79bb19aa3974e397ec3668f27e9b9100fa36dd7b9e3bb960dd23fd6b3eeb7f68
+  sha256: 68b956a3f182816a0f28c323aa2cd780429eea67f2abed7e31bf35543e29c5de
   requires_dist:
   - numpy
   - torch
+  - torchvision
   - huggingface-hub
   requires_python: '>=3.10'
 - conda: https://conda.anaconda.org/conda-forge/noarch/flake8-7.3.0-pyhd8ed1ab_0.conda
