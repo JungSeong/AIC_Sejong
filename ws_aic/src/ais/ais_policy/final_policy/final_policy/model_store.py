@@ -64,6 +64,39 @@ def _log(logger, level: str, message: str) -> None:
     getattr(logger, level)(message)
 
 
+def _local_model_path(spec: ModelSpec) -> Path:
+    """PROJECT_ROOT/model 아래 모델별 상대 경로의 실제 파일 위치를 반환한다."""
+    return MODEL_ROOT / spec.local_rel_path
+
+
+def _hf_model_path(spec: ModelSpec, logger=None) -> Path:
+    """HF snapshot에서 받을 모델 경로를 repo 상대 경로로 정규화한다."""
+    raw_path = os.environ.get(spec.hf_path_env_key, "").strip()
+    if not raw_path:
+        return spec.local_rel_path
+
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        try:
+            rel_path = path.relative_to(MODEL_ROOT)
+        except ValueError:
+            _log(
+                logger,
+                "warn",
+                f"{spec.hf_path_env_key} is an absolute local path outside {MODEL_ROOT}: "
+                f"{path}; using default HF path {spec.local_rel_path}",
+            )
+            return spec.local_rel_path
+
+        if rel_path == spec.local_rel_path or rel_path in spec.local_rel_path.parents:
+            return spec.local_rel_path
+        return rel_path
+
+    if path == spec.local_rel_path or path in spec.local_rel_path.parents:
+        return spec.local_rel_path
+    return path
+
+
 def _repo_candidates(spec: ModelSpec) -> list[str]:
     """모델 스펙에서 실제 다운로드를 시도할 HF repo 후보 목록을 만든다."""
     candidates = [
@@ -86,12 +119,10 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
             "Run `pixi install` first."
         ) from exc
 
-    hf_path = Path(
-        os.environ.get(spec.hf_path_env_key, "").strip() or spec.local_rel_path
-    )
+    hf_path = _hf_model_path(spec, logger=logger)
     repo_type = os.environ.get("AIC_HF_MODEL_REPO_TYPE", "model")
     revision = os.environ.get("AIC_HF_MODEL_REVISION", "main")
-    expected_path = MODEL_ROOT / spec.local_rel_path
+    expected_path = _local_model_path(spec)
     MODEL_ROOT.mkdir(parents=True, exist_ok=True)
 
     errors = []
@@ -137,7 +168,7 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
 
 
 def resolve_model_path(spec: ModelSpec, logger=None) -> str:
-    """환경변수 경로를 우선 사용하고, 없으면 기본 HF repo에서 모델을 내려받는다."""
+    """환경변수, PROJECT_ROOT/model 상대 경로, HF 다운로드 순서로 모델 경로를 찾는다."""
     env_path = os.environ.get(spec.env_key)
     if env_path:
         path = Path(env_path).expanduser()
@@ -148,13 +179,24 @@ def resolve_model_path(spec: ModelSpec, logger=None) -> str:
             logger,
             "warn",
             f"{spec.env_key} is set but file does not exist: {path}; "
-            "downloading from the default Hugging Face repo",
+            "falling back to the project model directory",
         )
     else:
         _log(
             logger,
             "info",
-            f"{spec.env_key} is not set; downloading from the default Hugging Face repo",
+            f"{spec.env_key} is not set; checking the project model directory",
         )
 
+    local_path = _local_model_path(spec)
+    if local_path.is_file():
+        _log(logger, "info", f"{spec.name} model from project model directory: {local_path}")
+        return str(local_path)
+
+    _log(
+        logger,
+        "info",
+        f"{spec.name} model not found at {local_path}; "
+        "downloading from the default Hugging Face repo",
+    )
     return str(_download_from_hugging_face(spec, logger=logger))

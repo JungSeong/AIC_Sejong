@@ -54,15 +54,14 @@ class FinalPolicy(Policy):
         self._target_orientation = None
         self._fixed_target_orientation = None
         self._sfp_yolo_conf_thresh = float(
-            os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5")
+            os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.8")
         )
         self._sc_yolo_conf_thresh = float(
             os.environ.get(
                 "AIC_DEBUG_SC_YOLO_CONF_THRESH",
-                os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.5"),
+                os.environ.get("AIC_DEBUG_SFP_YOLO_CONF_THRESH", "0.8"),
             )
         )
-        self._yolo_conf_thresh = self._sfp_yolo_conf_thresh
         self._vision_by_port_type = {}
         self._vision_debug_save_enabled = False
         self._pose_model_path: Optional[str] = None
@@ -446,7 +445,9 @@ class FinalPolicy(Policy):
         return None
 
     def _stage_lift_up(self, get_observation, move_robot) -> bool:
-        """초기 위치에서 z축으로 살짝 들어 올려 이후 접근 경로의 여유 공간을 확보한다."""
+        """
+        초기 위치에서 z축으로 들어 올려 전체 Task Board 전체를 볼 수 있도록 한다
+        """
         lift_m = float(FinalPolicyConfig.INITIAL_LIFT_M)
         self.get_logger().info(
             f"[stage 1/5] lift_up Start: dz={lift_m * 1000.0:.1f}mm"
@@ -482,7 +483,9 @@ class FinalPolicy(Policy):
         return True
 
     def _stage_detect(self, get_observation) -> bool:
-        """YOLO로 목표 포트를 검출하고 포트 위치와 목표 wrist 자세를 캐시에 저장한다."""
+        """
+        YOLO로 목표 포트를 검출하고 포트 위치와 목표 wrist 자세를 캐시에 저장한다.
+        """
         self.get_logger().info("[stage 2/5] Detection Start")
         self._vision_debug_save_enabled = True
         vision = self._vision_for_port_type(self._port_type())
@@ -523,7 +526,9 @@ class FinalPolicy(Policy):
             self._vision_debug_save_enabled = False
 
     def _stage_approach(self, get_observation, move_robot) -> bool:
-        """검출된 포트 앞의 목표 TCP 위치까지 단일 접근 경로로 이동한다."""
+        """
+            검출된 포트 앞의 목표 TCP 위치까지 단일 접근 경로로 이동한다.
+        """
         self.get_logger().info("[stage 3/5] Approach Start")
         obs = get_observation()
         start_pose = self._tcp_pose(obs)
@@ -543,9 +548,9 @@ class FinalPolicy(Policy):
 
         tcp_offset = np.array(
             [
-                FinalPolicyConfig.APPROACH_TCP_OFFSET_X_M,
-                FinalPolicyConfig.APPROACH_TCP_OFFSET_Y_M,
-                FinalPolicyConfig.APPROACH_TCP_OFFSET_Z_M,
+                FinalPolicyConfig.TCP_OFFSET_X,
+                FinalPolicyConfig.TCP_OFFSET_Y,
+                FinalPolicyConfig.TCP_OFFSET_Z,
             ],
             dtype=np.float64,
         )

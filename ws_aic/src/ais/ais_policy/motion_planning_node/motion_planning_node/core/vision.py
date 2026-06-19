@@ -80,6 +80,7 @@ class VisionPortEstimator:
         self._cache_max_age_sec = float(os.environ.get("AIC_YOLO_CACHE_MAX_AGE_SEC", "0.75"))
         self._async_wait_sec = float(os.environ.get("AIC_YOLO_ASYNC_WAIT_SEC", "2.0"))
         self._async_poll_sec = float(os.environ.get("AIC_YOLO_ASYNC_POLL_SEC", "0.02"))
+        self._yolo_device = os.environ.get("AIC_YOLO_DEVICE", "").strip() or None
         self._request_lock = threading.Lock()
         self._request_event = threading.Event()
         self._request: Optional[dict[str, Any]] = None
@@ -245,6 +246,8 @@ class VisionPortEstimator:
                 self._loaded = True
                 if self._logger:
                     self._logger.info(f"YOLO 모델 로드: {self._model_path}")
+                    if self._yolo_device:
+                        self._logger.info(f"YOLO device override: {self._yolo_device}")
             except Exception as e:
                 if self._logger:
                     self._logger.error(f"YOLO 로드 실패: {e}")
@@ -365,7 +368,10 @@ class VisionPortEstimator:
 
         # YOLO 추론부터 conf_thresh 이상만 받는다. 후보/로그/저장 이미지 모두 같은
         # 기준을 사용한다.
-        results = self._model(image, verbose=False, conf=self._conf_thresh)
+        predict_kwargs = {"verbose": False, "conf": self._conf_thresh}
+        if self._yolo_device:
+            predict_kwargs["device"] = self._yolo_device
+        results = self._model(image, **predict_kwargs)
         raw_dets = []
         for r in results:
             keypoints_xy = None

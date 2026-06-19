@@ -62,14 +62,15 @@ class FinalPolicyConfig:
         ("left", "center", "right"),
     )
 
+    TCP_OFFSET_X: float = _env_float("AIC_APPROACH_TCP_OFFSET_X_M", 0.0)
+    TCP_OFFSET_Y: float = _env_float("AIC_APPROACH_TCP_OFFSET_Y_M", 0.015)
+    TCP_OFFSET_Z: float = _env_float("AIC_APPROACH_TCP_OFFSET_Z_M", 0.045)
+    APPROACH_Z_OFFSET_SFP: float = _env_float("AIC_APPROACH_Z_OFFSET_SFP_M", 0.150)
+    APPROACH_Z_OFFSET_SC: float = _env_float("AIC_APPROACH_Z_OFFSET_SC_M", 0.050)
+
     APPROACH_VISION_RETRIES: int = _env_int("AIC_APPROACH_VISION_RETRIES", 20)
     APPROACH_RETRY_DT: float = _env_float("AIC_APPROACH_RETRY_DT", 0.1)
-    APPROACH_Z_OFFSET_SFP_M: float = _env_float("AIC_APPROACH_Z_OFFSET_SFP_M", 0.150)
-    APPROACH_Z_OFFSET_SC_M: float = _env_float("AIC_APPROACH_Z_OFFSET_SC_M", 0.050)
     APPROACH_NEAR_Z_OFFSET_M: float = _env_float("AIC_APPROACH_NEAR_Z_OFFSET_M", 0.020)
-    APPROACH_TCP_OFFSET_X_M: float = _env_float("AIC_APPROACH_TCP_OFFSET_X_M", 0.0)
-    APPROACH_TCP_OFFSET_Y_M: float = _env_float("AIC_APPROACH_TCP_OFFSET_Y_M", 0.015)
-    APPROACH_TCP_OFFSET_Z_M: float = _env_float("AIC_APPROACH_TCP_OFFSET_Z_M", 0.045)
     APPROACH_SFP_MANUAL_ROTATION_DEG: float = _env_float(
         "AIC_APPROACH_SFP_MANUAL_ROTATION_DEG",
         -21.21,

@@ -45,10 +45,10 @@ def interp_profile(t: float, quintic: bool = True) -> float:
     return s_curve_quintic(t) if quintic else s_curve(t)
 
 
-def project_3d_to_pixel(point_3d_base, k_matrix, t_base_to_cam):
-    """base 좌표계의 3D 점을 특정 카메라 이미지 픽셀 좌표로 투영한다."""
+def project_3d_to_pixel(point_3d_base, k_matrix, t_camera_base):
+    """base 좌표계의 3D 점을 T_camera_base와 K로 특정 카메라 픽셀에 투영한다."""
     point_h = np.append(point_3d_base, 1.0)
-    point_cam = t_base_to_cam @ point_h
+    point_cam = t_camera_base @ point_h
     x, y, z = point_cam[:3]
     if z < 1e-6:
         return -1.0, -1.0

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-
 import os
 import time
+
 from pathlib import Path
 from typing import Optional
-
 from aic_model.policy import (
     GetObservationCallback,
     MoveRobotCallback,
@@ -12,7 +11,6 @@ from aic_model.policy import (
     SendFeedbackCallback,
 )
 from aic_task_interfaces.msg import Task
-
 
 class SpawnHold(Policy):
     """Passive policy that keeps an aic_engine-spawned trial scene alive."""

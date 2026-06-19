@@ -33,6 +33,7 @@ services:
       AIC_ROUTER_ADDR: eval:7447
       AIC_MODEL_PASSWD: CHANGE_IN_PROD
       # AIC_ENABLE_ACL: true
+      AIC_YOLO_DEVICE: ${AIC_YOLO_DEVICE:-cpu}
 networks:
   default:
     internal: true

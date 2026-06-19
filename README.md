@@ -97,6 +97,36 @@ pixi run ros2 run aic_model aic_model \
 ```
 <br>
 
+#### 3. TF Tree 확인
+시뮬레이터 실행 후 Pixi 환경에서 TF tree를 확인할 수 있습니다.
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src
+pixi install
+
+# 현재 TF tree를 frames.pdf로 저장
+pixi run ros2 run tf2_tools view_frames
+
+# 특정 두 frame 사이 transform 확인
+pixi run ros2 run tf2_ros tf2_echo base_link task_board/<module>/<port>_link_entrance
+```
+
+실시간 TF tree GUI가 필요한 경우:
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src
+pixi run ros2 run rqt_tf_tree rqt_tf_tree
+```
+
+노드/토픽 연결 그래프는 TF tree가 아니라 ROS graph입니다.
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src
+pixi run ros2 run rqt_graph rqt_graph
+```
+
+<br>
+
 ### 4. 데이터 수집 Policy 실행
 
 #### 4-1. 시뮬레이터 실행
@@ -110,7 +140,7 @@ export AIC_SC_YOLO_HF_PATH=~/AIC_Sejong/model/approach/SC
 distrobox enter -r aic_eval -- /entrypoint.sh ground_truth:=true start_aic_engine:=true
 ```
 
-#### 4-2.1. 기본 LeRobot 데이터셋 수집
+#### 4-2.1. 기본 LeRobot 데이터셋 수집 노드 실행
 
 ```bash
 export AIC_LEROBOT_OUT_DIR=~/AIC_Sejong/data/lerobot
@@ -124,18 +154,29 @@ pixi run ros2 run aic_model aic_model \
   -p policy:=data_gen_node.LeRobot
 ```
 
-#### 4-2.2. Entrance frame 기준 YOLO/Vision-Offset 데이터 수집
+#### 4-2.2. Entrance frame 기준 YOLO/Vision-Offset 데이터 수집 노드 실행
 ```bash
-export AIC_LEROBOT_OUT_DIR=~/AIC_Sejong/data/lerobot
-export AIC_LEROBOT_REPO_ID=aic-sejong-team/aic-dataset
-export AIC_LEROBOT_VERSION=v1.0
-export AIC_LEROBOT_PUSH_TO_HUB=false
+export AIC_VISION_OFFSET_PUSH_TO_HUB=true
+export AIC_VISION_OFFSET_REPO_ID=aic-sejong-team/aic-vision-offset-dataset
+export AIC_VISION_OFFSET_HF_REVISION=main
+export AIC_VISION_OFFSET_HF_PRIVATE=true
+export AIC_VISION_OFFSET_UPLOAD_ON_PORT_TYPE=sc
 
 cd ~/AIC_Sejong/ws_aic/src
 pixi run ros2 run aic_model aic_model \
   --ros-args -p use_sim_time:=true \
   -p policy:=data_gen_node.PortOffsetCollect
 ```
+
+수집이 `status=ok`로 끝나고 collect sample이 1개 이상 저장되면 `$AIC_VISION_OFFSET_DATASET_DIR` 전체를 Hugging Face dataset repo로 업로드합니다. 기본 설정은 SFP trial에서는 업로드를 건너뛰고, SC trial이 끝난 뒤 한 번 업로드합니다. 업로드하려면 먼저 Pixi 환경에서 쓰기 권한이 있는 계정으로 로그인합니다.
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src
+pixi run hf auth login
+pixi run hf auth whoami
+```
+
+`401 Repository Not Found`가 발생하면 repo가 없거나, 현재 HF token이 해당 organization/repo에 대한 dataset write 권한을 갖고 있지 않은 상태입니다. `AIC_VISION_OFFSET_REPO_ID`를 본인 계정/조직의 dataset repo로 바꾸거나, 해당 repo에 write 권한이 있는 token으로 다시 로그인합니다.
 
  `AIC_LEROBOT_OUT_DIR`과 `AIC_LEROBOT_REPO_ID`를 entrance dataset 경로로 바꾼 뒤 policy를 `data_gen_node.DataCollect2`로 지정합니다.
 

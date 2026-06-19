@@ -6,24 +6,31 @@ import os
 import re
 import threading
 import time
-from pathlib import Path
-from typing import Any, Optional
-
 import numpy as np
 
 from final_policy.config import FinalPolicyConfig
 from final_policy.geometry import project_3d_to_pixel
+from pathlib import Path
+from typing import Any, Optional
 
+def _resolve_project_root() -> Path:
+    """현재 파일 위치에서 AIC_Sejong 프로젝트 루트를 역추적한다."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "ws_aic" / "src").is_dir():
+            return parent
+    return Path(__file__).resolve().parents[6]
+
+DEFAULT_DEBUG_ROOT_DIR = _resolve_project_root() / "debug"
 
 class VisionPortEstimator:
-    """비동기 YOLO 추론과 다중 카메라 삼각측량으로 포트 base 좌표를 추정한다."""
-
+    """
+    비동기 YOLO 추론 및 다중 카메라 삼각측량으로 base_link 기준 포트 좌표를 추정하는 함수
+    """
     CAMERAS = [
         ("left", "left_camera/optical"),
         ("center", "center_camera/optical"),
         ("right", "right_camera/optical"),
     ]
-
     CLASS_NAMES = {0: "port_pair", 1: "sc_port", 2: "sfp_tip", 3: "sc_tip"}
     TOOL0_TO_TCP_Z = 0.1965
     TOOL0_TO_OPTICAL = {
@@ -42,7 +49,7 @@ class VisionPortEstimator:
     }
     DEBUG_SAVE_DIR: str = os.environ.get(
         "AIC_DEBUG_SAVE_DIR",
-        str(Path.home() / "aic_debug" / "yolo_detections"),
+        str(DEFAULT_DEBUG_ROOT_DIR),
     )
 
     def __init__(
@@ -72,6 +79,7 @@ class VisionPortEstimator:
         self._cache_max_age_sec = float(os.environ.get("AIC_YOLO_CACHE_MAX_AGE_SEC", "0.75"))
         self._async_wait_sec = float(os.environ.get("AIC_YOLO_ASYNC_WAIT_SEC", "10.0"))
         self._async_poll_sec = float(os.environ.get("AIC_YOLO_ASYNC_POLL_SEC", "0.02"))
+        self._yolo_device = os.environ.get("AIC_YOLO_DEVICE", "").strip() or None
         self._request_lock = threading.Lock()
         self._request_event = threading.Event()
         self._request: Optional[dict[str, Any]] = None
@@ -241,6 +249,8 @@ class VisionPortEstimator:
                 self._loaded = True
                 if self._logger:
                     self._logger.info(f"YOLO model loaded: {self._model_path}")
+                    if self._yolo_device:
+                        self._logger.info(f"YOLO device override: {self._yolo_device}")
             except Exception as exc:
                 if self._logger:
                     self._logger.error(f"YOLO load failed: {exc}")
@@ -379,7 +389,10 @@ class VisionPortEstimator:
         """단일 카메라 이미지에서 YOLO 검출을 수행하고 포트 후보 2D 점을 추출한다."""
         import cv2
 
-        results = self._model(image, verbose=False, conf=self._conf_thresh)
+        predict_kwargs = {"verbose": False, "conf": self._conf_thresh}
+        if self._yolo_device:
+            predict_kwargs["device"] = self._yolo_device
+        results = self._model(image, **predict_kwargs)
         raw_dets = []
         for result in results:
             keypoints_xy = None
@@ -511,12 +524,12 @@ class VisionPortEstimator:
         return passed_dets
 
     @staticmethod
-    def _triangulate(u_a, v_a, k_a, t_base_to_a, u_b, v_b, k_b, t_base_to_b) -> np.ndarray:
+    def _triangulate(u_a, v_a, k_a, t_base_to_optA, u_b, v_b, k_b, t_base_to_optB) -> np.ndarray:
         """두 카메라의 2D 픽셀 대응점으로 base 좌표계의 3D 점을 삼각측량한다."""
         import cv2
 
-        p_a = k_a @ t_base_to_a[:3, :]
-        p_b = k_b @ t_base_to_b[:3, :]
+        p_a = k_a @ t_base_to_optA[:3, :]
+        p_b = k_b @ t_base_to_optB[:3, :]
         pts_4d = cv2.triangulatePoints(
             p_a,
             p_b,

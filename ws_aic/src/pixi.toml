@@ -34,6 +34,9 @@ ros-kilted-sensor-msgs = "*"                                                    
 ros-kilted-std-msgs = "*"                                                              # lerobot_robot_ros
 ros-kilted-std-srvs = "*"
 ros-kilted-tf2-ros-py = "*"
+ros-kilted-tf2-tools = "*"
+ros-kilted-rqt-tf-tree = "*"
+ros-kilted-rqt-graph = "*"
 
 # AIC 공식 패키지 (aic/)
 ros-kilted-aic-control-interfaces = { path = "aic/aic_interfaces/aic_control_interfaces" }
