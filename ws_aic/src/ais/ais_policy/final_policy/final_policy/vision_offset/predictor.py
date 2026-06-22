@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from sensor_msgs.msg import Image
 
 from final_policy.config import FinalPolicyConfig
+from final_policy.model_store import format_model_log
 from final_policy.vision_offset.model import build_vision_offset_model
 
 
@@ -110,10 +111,12 @@ class VisionOffsetPredictor:
         self.model.eval()
         self._log(
             "info",
-            "Vision-offset model loaded: "
-            f"path={self.checkpoint_path}, model={model_name}, "
-            f"backbone={backbone_name}, feature_dim={feature_dim}, "
-            f"image_size={self.image_size}, cameras={self.cameras}",
+            format_model_log(
+                "Vision-offset model loaded: "
+                f"path={self.checkpoint_path}, model={model_name}, "
+                f"backbone={backbone_name}, feature_dim={feature_dim}, "
+                f"image_size={self.image_size}, cameras={self.cameras}"
+            ),
         )
 
     def _camera_image(self, observation, camera: str) -> Optional[Image]:

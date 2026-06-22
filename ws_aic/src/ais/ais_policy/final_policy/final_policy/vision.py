@@ -10,6 +10,7 @@ import numpy as np
 
 from final_policy.config import FinalPolicyConfig
 from final_policy.geometry import project_3d_to_pixel
+from final_policy.model_store import format_model_log
 from pathlib import Path
 from typing import Any, Optional
 
@@ -176,6 +177,11 @@ class VisionPortEstimator:
             parts = [part for part in fallback_parts if part]
         self._debug_task_label = "_".join(parts)[:80] if parts else "task_unknown"
 
+    @property
+    def debug_task_label(self) -> str:
+        """현재 디버그 이미지 파일명에 쓰는 task 라벨을 반환한다."""
+        return self._debug_task_label
+
     def _worker_is_alive(self) -> bool:
         """YOLO 추론 워커 스레드가 살아있는지 확인한다."""
         return self._worker_thread is not None and self._worker_thread.is_alive()
@@ -185,10 +191,13 @@ class VisionPortEstimator:
         *,
         enable_debug_save: Optional[bool] = None,
         reset_counts: bool = False,
+        reset_cache: bool = False,
     ) -> None:
         """비동기 YOLO 추론 워커를 시작하고 필요하면 디버그 저장 상태를 갱신한다."""
         if enable_debug_save is not None:
             self.set_debug_save_enabled(enable_debug_save, reset_counts=reset_counts)
+        if reset_cache:
+            self.clear_cache()
 
         if self._worker_is_alive():
             if self._worker_stop_event.is_set():
@@ -209,6 +218,11 @@ class VisionPortEstimator:
                 f"Vision: YOLO detection worker started (conf>={self._conf_thresh:.2f})"
             )
 
+    def load_model(self) -> bool:
+        """YOLO 모델을 동기적으로 미리 로드하고 성공 여부를 반환한다."""
+        self._ensure_loaded()
+        return self._loaded
+
     def stop_detection(self) -> None:
         """비동기 YOLO 추론 워커를 멈추고 대기 중인 요청을 비운다."""
         if not self._worker_is_alive():
@@ -225,6 +239,16 @@ class VisionPortEstimator:
         if self._logger:
             self._logger.info("Vision: YOLO detection worker stopped")
 
+    def clear_cache(self) -> None:
+        """이전 task의 비동기 추정 결과가 섞이지 않도록 후보 캐시를 비운다."""
+        with self._cache_lock:
+            self._cache = {
+                "target_class_id": None,
+                "candidates": [],
+                "updated_at": 0.0,
+                "request_id": 0,
+            }
+
     def _ensure_loaded(self):
         """YOLO 모델을 최초 사용 시점에 로드한다."""
         with self._load_lock:
@@ -233,8 +257,10 @@ class VisionPortEstimator:
             if not os.path.isfile(self._model_path):
                 if self._logger:
                     self._logger.error(
-                        f"YOLO model file not found: {self._model_path}\n"
-                        "Set AIC_SFP_YOLO_MODEL_PATH or AIC_SC_YOLO_MODEL_PATH."
+                        format_model_log(
+                            f"YOLO model file not found: {self._model_path}\n"
+                            "Set AIC_SFP_YOLO_MODEL_PATH or AIC_SC_YOLO_MODEL_PATH."
+                        )
                     )
                 return
             try:
@@ -248,12 +274,18 @@ class VisionPortEstimator:
                 self._model = YOLO(self._model_path)
                 self._loaded = True
                 if self._logger:
-                    self._logger.info(f"YOLO model loaded: {self._model_path}")
+                    self._logger.info(
+                        format_model_log(f"YOLO model loaded: {self._model_path}")
+                    )
                     if self._yolo_device:
-                        self._logger.info(f"YOLO device override: {self._yolo_device}")
+                        self._logger.info(
+                            format_model_log(
+                                f"YOLO device override: {self._yolo_device}"
+                            )
+                        )
             except Exception as exc:
                 if self._logger:
-                    self._logger.error(f"YOLO load failed: {exc}")
+                    self._logger.error(format_model_log(f"YOLO load failed: {exc}"))
 
     def _estimate_worker(self) -> None:
         """백그라운드에서 최신 요청 하나를 처리하고 결과 후보를 캐시에 저장한다."""
@@ -273,6 +305,7 @@ class VisionPortEstimator:
                 candidates = self._estimate_all_sync(
                     request["obs"],
                     request["target_class_id"],
+                    target_port_index=request.get("target_port_index"),
                 )
             except Exception as exc:
                 candidates = []
@@ -286,7 +319,12 @@ class VisionPortEstimator:
                     "request_id": request["request_id"],
                 }
 
-    def _submit_estimate(self, obs, target_class_id: int) -> int:
+    def _submit_estimate(
+        self,
+        obs,
+        target_class_id: int,
+        target_port_index: Optional[int] = None,
+    ) -> int:
         """워커에 새 추정 요청을 넣고 요청 id를 반환한다."""
         if not self._worker_is_alive():
             self.start_detection()
@@ -296,10 +334,25 @@ class VisionPortEstimator:
             self._request = {
                 "obs": obs,
                 "target_class_id": target_class_id,
+                "target_port_index": target_port_index,
                 "request_id": request_id,
             }
             self._request_event.set()
             return request_id
+
+    def request_estimate(
+        self,
+        obs,
+        target_class_id: int,
+        port_hint: Optional[str] = None,
+    ) -> int:
+        """비동기 포트 추정 요청을 워커에 넘기고 즉시 반환한다."""
+        target_port_index = self._extract_named_index(port_hint or "", "sfp_port")
+        return self._submit_estimate(
+            obs,
+            target_class_id,
+            target_port_index=target_port_index,
+        )
 
     def _cached_candidates(
         self,
@@ -316,6 +369,29 @@ class VisionPortEstimator:
         if (time.time() - float(cache.get("updated_at", 0.0))) > self._cache_max_age_sec:
             return None
         return list(cache.get("candidates") or [])
+
+    def cached_estimate(
+        self,
+        target_class_id: int,
+        port_hint: Optional[str] = None,
+        target_module_name: Optional[str] = None,
+        min_request_id: int = 0,
+    ) -> Optional[np.ndarray]:
+        """현재 캐시에 있는 최신 후보 중 task hint와 맞는 포트 base 좌표를 즉시 반환한다."""
+        candidates = self._cached_candidates(
+            target_class_id,
+            min_request_id=min_request_id,
+        )
+        if not candidates:
+            return None
+
+        if port_hint is not None or target_module_name is not None:
+            return self.select_by_task_hint(
+                candidates,
+                port_name=port_hint or "",
+                target_module_name=target_module_name or "",
+            )
+        return candidates[0]["pos"]
 
     @staticmethod
     def _image_from_msg(img_msg):
@@ -385,7 +461,13 @@ class VisionPortEstimator:
                 )
             return None
 
-    def _detect(self, image: np.ndarray, cam_name: str = "") -> list:
+    def _detect(
+        self,
+        image: np.ndarray,
+        cam_name: str = "",
+        target_class_id: Optional[int] = None,
+        target_port_index: Optional[int] = None,
+    ) -> list:
         """단일 카메라 이미지에서 YOLO 검출을 수행하고 포트 후보 2D 점을 추출한다."""
         import cv2
 
@@ -483,10 +565,46 @@ class VisionPortEstimator:
                 color = colors.get(det["class_id"], colors[-1])
                 if det.get("port_index") == 1:
                     color = (255, 0, 255)
+                is_target_class = (
+                    target_class_id is not None
+                    and int(det["class_id"]) == int(target_class_id)
+                )
+                det_port_index = det.get("port_index")
+                is_target_port = (
+                    target_port_index is None
+                    or det_port_index is None
+                    or int(det_port_index) == int(target_port_index)
+                )
+                is_target = is_target_class and is_target_port
+                center = (int(round(det["u"])), int(round(det["v"])))
 
                 cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 3)
-                cv2.circle(debug_img, (int(det["u"]), int(det["v"])), 5, color, -1)
+                cv2.circle(debug_img, center, 5, color, -1)
+                if is_target:
+                    cross_size = 18
+                    cross_color = (0, 255, 255)
+                    for thickness, line_color in ((8, (0, 0, 0)), (4, cross_color)):
+                        cv2.line(
+                            debug_img,
+                            (center[0] - cross_size, center[1] - cross_size),
+                            (center[0] + cross_size, center[1] + cross_size),
+                            line_color,
+                            thickness,
+                            cv2.LINE_AA,
+                        )
+                        cv2.line(
+                            debug_img,
+                            (center[0] - cross_size, center[1] + cross_size),
+                            (center[0] + cross_size, center[1] - cross_size),
+                            line_color,
+                            thickness,
+                            cv2.LINE_AA,
+                        )
+                    cv2.circle(debug_img, center, 10, (0, 0, 0), 4, cv2.LINE_AA)
+                    cv2.circle(debug_img, center, 10, cross_color, 2, cv2.LINE_AA)
                 label = f"{det['class_name']} {det['conf']:.2f}"
+                if is_target:
+                    label = f"TARGET {label}"
                 cv2.putText(
                     debug_img,
                     label,
@@ -546,7 +664,11 @@ class VisionPortEstimator:
         target_module_name: Optional[str] = None,
     ) -> Optional[np.ndarray]:
         """포트 후보들 중 task hint와 가장 맞는 하나의 base 좌표를 반환한다."""
-        candidates = self.estimate_all(obs, target_class_id)
+        candidates = self.estimate_all(
+            obs,
+            target_class_id,
+            port_hint=port_hint,
+        )
         if not candidates:
             return None
 
@@ -562,12 +684,22 @@ class VisionPortEstimator:
 
         return candidates[0]["pos"]
 
-    def estimate_all(self, obs, target_class_id: int) -> list:
+    def estimate_all(
+        self,
+        obs,
+        target_class_id: int,
+        port_hint: Optional[str] = None,
+    ) -> list:
         """비동기 추론 요청 후 timeout 안에 들어온 모든 3D 포트 후보를 반환한다."""
         if obs is None:
             return []
 
-        request_id = self._submit_estimate(obs, target_class_id)
+        target_port_index = self._extract_named_index(port_hint or "", "sfp_port")
+        request_id = self._submit_estimate(
+            obs,
+            target_class_id,
+            target_port_index=target_port_index,
+        )
         deadline = time.time() + max(0.0, self._async_wait_sec)
         while time.time() < deadline:
             cached = self._cached_candidates(target_class_id, min_request_id=request_id)
@@ -585,7 +717,12 @@ class VisionPortEstimator:
             )
         return []
 
-    def _estimate_all_sync(self, obs, target_class_id: int) -> list:
+    def _estimate_all_sync(
+        self,
+        obs,
+        target_class_id: int,
+        target_port_index: Optional[int] = None,
+    ) -> list:
         """세 카메라의 YOLO 결과를 동기적으로 모아 3D 포트 후보 리스트를 만든다."""
         self._ensure_loaded()
         if not self._loaded:
@@ -612,7 +749,12 @@ class VisionPortEstimator:
             self._logger.info(f"Vision: detecting target_class_id={target_class_id}")
         detections = {}
         for name in ["left", "center", "right"]:
-            dets = self._detect(images[name], cam_name=name)
+            dets = self._detect(
+                images[name],
+                cam_name=name,
+                target_class_id=target_class_id,
+                target_port_index=target_port_index,
+            )
             detections[name] = [det for det in dets if det["class_id"] == target_class_id]
 
         cams_with_dets = [name for name, dets in detections.items() if dets]

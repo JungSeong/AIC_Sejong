@@ -8,7 +8,7 @@
 #   rviz_gui:=true \
 #   spawn_task_board:=false \
 #   spawn_cable:=false \
-#   aic_engine_config_file:=/home/swlinux/Desktop/workspace/AIC_Sejong/debug/triangulation_cases.yaml
+#   aic_engine_config_file:=/home/swlinux/Desktop/workspace/AIC_Sejong/triangulation/triangulation_cases.yaml
 #
 # Ground-truth entrance frames:
 # - SFP: task_board/nic_card_mount_N/sfp_port_{0,1}_link_entrance
@@ -420,12 +420,12 @@ trials:
     scene:
       task_board:
         pose:
-          x: 0.16
-          y: -0.18
+          x: 0.15
+          y: -0.20
           z: 1.14
           roll: 0.0
           pitch: 0.0
-          yaw: 3.0
+          yaw: 3.1415
         nic_rail_0:
           entity_present: false
         nic_rail_1:
@@ -438,10 +438,10 @@ trials:
           entity_present: true
           entity_name: "nic_card_4"
           entity_pose:
-            translation: 0.012
+            translation: 0.006
             roll: 0.0
             pitch: 0.0
-            yaw: -0.0873
+            yaw: -0.0436
         sc_rail_0:
           entity_present: false
         sc_rail_1:
@@ -598,12 +598,12 @@ trials:
     scene:
       task_board:
         pose:
-          x: 0.17
-          y: 0.0
+          x: 0.16
+          y: -0.03
           z: 1.14
           roll: 0.0
           pitch: 0.0
-          yaw: 3.0
+          yaw: 3.1415
         nic_rail_0:
           entity_present: false
         nic_rail_1:
@@ -618,7 +618,7 @@ trials:
           entity_present: true
           entity_name: "sc_mount_0"
           entity_pose:
-            translation: -0.06
+            translation: -0.03
             roll: 0.0
             pitch: 0.0
             yaw: 0.0

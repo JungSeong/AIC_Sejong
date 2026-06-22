@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +17,9 @@ def _resolve_project_root() -> Path:
 
 PROJECT_ROOT = _resolve_project_root()
 MODEL_ROOT = PROJECT_ROOT / "model"
+MODEL_LOG_COLOR = "\033[1;96m"
+MODEL_LOG_RESET = "\033[0m"
+MODEL_LOG_DISABLED_VALUES = {"0", "false", "no", "off"}
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,8 @@ class ModelSpec:
     local_rel_path: Path
     hf_path_env_key: str
     default_hf_repo_id: str
+    default_hf_rel_path: Path | None = None
+    download_root_rel_path: Path | None = None
 
 
 DEFAULT_HF_REPO_ID = "aic-sejong-team/aic-final-policy-models"
@@ -59,24 +63,40 @@ POSE_MODEL = ModelSpec(
 SFP_VISION_OFFSET_MODEL = ModelSpec(
     name="SFP vision offset",
     env_key="AIC_SFP_VISION_OFFSET_MODEL_PATH",
-    local_rel_path=Path("SFP/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
+    local_rel_path=Path("align/SFP/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
     hf_path_env_key="AIC_SFP_VISION_OFFSET_HF_PATH",
     default_hf_repo_id=DEFAULT_VISION_OFFSET_HF_REPO_ID,
+    default_hf_rel_path=Path("SFP/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
+    download_root_rel_path=Path("align"),
 )
 SC_VISION_OFFSET_MODEL = ModelSpec(
     name="SC vision offset",
     env_key="AIC_SC_VISION_OFFSET_MODEL_PATH",
-    local_rel_path=Path("SC/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
+    local_rel_path=Path("align/SC/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
     hf_path_env_key="AIC_SC_VISION_OFFSET_HF_PATH",
     default_hf_repo_id=DEFAULT_VISION_OFFSET_HF_REPO_ID,
+    default_hf_rel_path=Path("SC/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
+    download_root_rel_path=Path("align"),
 )
+
+
+def format_model_log(message: str) -> str:
+    """모델 다운로드/로드 관련 로그를 터미널에서 눈에 띄도록 포맷한다."""
+    text = f"[MODEL] {message}"
+    color_enabled = (
+        os.environ.get("AIC_MODEL_LOG_COLOR", "1").strip().lower()
+        not in MODEL_LOG_DISABLED_VALUES
+    )
+    if not color_enabled:
+        return text
+    return f"{MODEL_LOG_COLOR}{text}{MODEL_LOG_RESET}"
 
 
 def _log(logger, level: str, message: str) -> None:
     """ROS logger가 전달된 경우에만 해당 레벨로 메시지를 남긴다."""
     if logger is None:
         return
-    getattr(logger, level)(message)
+    getattr(logger, level)(format_model_log(message))
 
 
 def _local_model_path(spec: ModelSpec) -> Path:
@@ -84,11 +104,24 @@ def _local_model_path(spec: ModelSpec) -> Path:
     return MODEL_ROOT / spec.local_rel_path
 
 
+def _default_hf_model_path(spec: ModelSpec) -> Path:
+    """HF repo 안에서 기본으로 찾을 모델 상대 경로를 반환한다."""
+    return spec.default_hf_rel_path or spec.local_rel_path
+
+
+def _download_root(spec: ModelSpec) -> Path:
+    """HF snapshot을 실제로 받을 로컬 디렉토리를 반환한다."""
+    if spec.download_root_rel_path is None:
+        return MODEL_ROOT
+    return MODEL_ROOT / spec.download_root_rel_path
+
+
 def _hf_model_path(spec: ModelSpec, logger=None) -> Path:
     """HF snapshot에서 받을 모델 경로를 repo 상대 경로로 정규화한다."""
+    default_hf_path = _default_hf_model_path(spec)
     raw_path = os.environ.get(spec.hf_path_env_key, "").strip()
     if not raw_path:
-        return spec.local_rel_path
+        return default_hf_path
 
     path = Path(raw_path).expanduser()
     if path.is_absolute():
@@ -99,16 +132,16 @@ def _hf_model_path(spec: ModelSpec, logger=None) -> Path:
                 logger,
                 "warn",
                 f"{spec.hf_path_env_key} is an absolute local path outside {MODEL_ROOT}: "
-                f"{path}; using default HF path {spec.local_rel_path}",
+                f"{path}; using default HF path {default_hf_path}",
             )
-            return spec.local_rel_path
+            return default_hf_path
 
         if rel_path == spec.local_rel_path or rel_path in spec.local_rel_path.parents:
-            return spec.local_rel_path
+            return default_hf_path
         return rel_path
 
     if path == spec.local_rel_path or path in spec.local_rel_path.parents:
-        return spec.local_rel_path
+        return default_hf_path
     return path
 
 
@@ -138,7 +171,8 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
     repo_type = os.environ.get("AIC_HF_MODEL_REPO_TYPE", "model")
     revision = os.environ.get("AIC_HF_MODEL_REVISION", "main")
     expected_path = _local_model_path(spec)
-    MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+    download_root = _download_root(spec)
+    download_root.mkdir(parents=True, exist_ok=True)
 
     errors = []
     for repo_id in _repo_candidates(spec):
@@ -153,23 +187,20 @@ def _download_from_hugging_face(spec: ModelSpec, logger=None) -> Path:
                 repo_id=repo_id,
                 repo_type=repo_type,
                 revision=revision,
-                local_dir=str(MODEL_ROOT),
+                local_dir=str(download_root),
                 allow_patterns=[str(hf_path)],
             )
         except Exception as exc:
             errors.append(f"{repo_id}: {exc}")
             continue
 
-        downloaded_path = MODEL_ROOT / hf_path
-        if downloaded_path.is_file():
-            if downloaded_path != expected_path:
-                expected_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(downloaded_path, expected_path)
-            _log(logger, "info", f"{spec.name} model ready: {expected_path}")
-            return expected_path
+        downloaded_path = download_root / hf_path
         if expected_path.is_file():
             _log(logger, "info", f"{spec.name} model ready: {expected_path}")
             return expected_path
+        if downloaded_path.is_file():
+            _log(logger, "info", f"{spec.name} model ready: {downloaded_path}")
+            return downloaded_path
         errors.append(
             f"{repo_id}: downloaded snapshot did not contain {hf_path}"
         )

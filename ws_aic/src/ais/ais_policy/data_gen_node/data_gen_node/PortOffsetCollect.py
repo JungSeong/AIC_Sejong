@@ -89,7 +89,7 @@ class PortOffsetCollect(Policy):
     _apply_collect_offset = sampling._apply_collect_offset
 
     def __init__(self, parent_node):
-        os.environ.setdefault("AIC_COLLECT_STEPS", "200")
+        os.environ.setdefault("AIC_COLLECT_STEPS", "1000")
         os.environ.setdefault("AIC_YOLO_DEVICE", "cpu")
         dataset_dir = Path(
             os.environ.setdefault(
@@ -116,7 +116,7 @@ class PortOffsetCollect(Policy):
         ).strip().lower()
         self._rpy_sample_count = 0
         self._rpy_val_ratio = float(
-            os.environ.get("AIC_RPY_RANDOMIZATION_VAL_RATIO", "0.2")
+            os.environ.get("AIC_RPY_RANDOMIZATION_VAL_RATIO", "0.3")
         )
         self._rpy_visibility_margin_px = float(
             os.environ.get("AIC_RPY_VISIBILITY_MARGIN_PX", "8.0")
