@@ -33,6 +33,7 @@ class ModelSpec:
 
 DEFAULT_HF_REPO_ID = "aic-sejong-team/aic-final-policy-models"
 DEFAULT_YOLO_HF_REPO_ID = "aic-sejong-team/detection"
+DEFAULT_VISION_OFFSET_HF_REPO_ID = "aic-sejong-team/aic-vision-offset-models"
 
 SFP_YOLO_MODEL = ModelSpec(
     name="SFP YOLO",
@@ -54,6 +55,20 @@ POSE_MODEL = ModelSpec(
     local_rel_path=Path("ais_pose_prediction/pose_resnet50_v4.0/best.pt"),
     hf_path_env_key="AIC_POSE_HF_PATH",
     default_hf_repo_id=DEFAULT_HF_REPO_ID,
+)
+SFP_VISION_OFFSET_MODEL = ModelSpec(
+    name="SFP vision offset",
+    env_key="AIC_SFP_VISION_OFFSET_MODEL_PATH",
+    local_rel_path=Path("SFP/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
+    hf_path_env_key="AIC_SFP_VISION_OFFSET_HF_PATH",
+    default_hf_repo_id=DEFAULT_VISION_OFFSET_HF_REPO_ID,
+)
+SC_VISION_OFFSET_MODEL = ModelSpec(
+    name="SC vision offset",
+    env_key="AIC_SC_VISION_OFFSET_MODEL_PATH",
+    local_rel_path=Path("SC/cross_attention_bilinear/cross_attention_bilinear_best.pt"),
+    hf_path_env_key="AIC_SC_VISION_OFFSET_HF_PATH",
+    default_hf_repo_id=DEFAULT_VISION_OFFSET_HF_REPO_ID,
 )
 
 

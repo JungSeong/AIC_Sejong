@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import numpy as np
 
 from typing import TYPE_CHECKING, Optional
@@ -23,15 +22,16 @@ from final_policy.geometry import (
     tuple_to_quat,
 )
 from final_policy.model_store import (
-    POSE_MODEL,
     SC_YOLO_MODEL,
+    SC_VISION_OFFSET_MODEL,
     SFP_YOLO_MODEL,
+    SFP_VISION_OFFSET_MODEL,
     resolve_model_path,
 )
 from final_policy.vision import VisionPortEstimator
 
 if TYPE_CHECKING:
-    from final_policy.pose_prediction import PosePredictor
+    from final_policy.vision_offset import VisionOffsetPredictor
 
 
 class FinalPolicy(Policy):
@@ -48,8 +48,11 @@ class FinalPolicy(Policy):
         self._task: Optional[Task] = None
         self._sfp_yolo_model_path: Optional[str] = None
         self._sc_yolo_model_path: Optional[str] = None
+        self._sfp_vision_offset_model_path: Optional[str] = None
+        self._sc_vision_offset_model_path: Optional[str] = None
         self._yolo_model_path = self._sfp_yolo_model_path
         self._models_ready = False
+        self._vision_offset_models_ready = False
         self._cached_port_base: Optional[np.ndarray] = None
         self._target_orientation = None
         self._fixed_target_orientation = None
@@ -64,13 +67,12 @@ class FinalPolicy(Policy):
         )
         self._vision_by_port_type = {}
         self._vision_debug_save_enabled = False
-        self._pose_model_path: Optional[str] = None
-        self._pose_predictor: Optional[PosePredictor] = None
+        self._vision_offset_predictor_by_port_type: dict[str, VisionOffsetPredictor] = {}
         self._send_feedback: Optional[SendFeedbackCallback] = None
         self.get_logger().info(
             "FinalPolicy ready: "
             "yolo_models=lazy, "
-            "pose_model=lazy"
+            "vision_offset_models=lazy"
         )
 
     @staticmethod
@@ -155,11 +157,16 @@ class FinalPolicy(Policy):
             )
         )
 
-    def _port_id(self) -> int:
-        """task.port_name 끝의 숫자를 읽어 포트 인덱스로 사용한다."""
-        text = str(getattr(self._task, "port_name", "") or "")
-        match = re.search(r"_(\d+)$", text)
-        return int(match.group(1)) if match is not None else 0
+    @staticmethod
+    def _rpy_delta_quat_base(rpy_rad: np.ndarray):
+        """base_link 축 기준 roll/pitch/yaw 보정량을 쿼터니언 증분으로 변환한다."""
+        roll, pitch, yaw = [float(value) for value in np.asarray(rpy_rad, dtype=np.float64)]
+        q_roll = FinalPolicy._axis_angle_quat(np.array([1.0, 0.0, 0.0]), roll)
+        q_pitch = FinalPolicy._axis_angle_quat(np.array([0.0, 1.0, 0.0]), pitch)
+        q_yaw = FinalPolicy._axis_angle_quat(np.array([0.0, 0.0, 1.0]), yaw)
+        return FinalPolicy._normalize_quat(
+            quaternion_multiply(q_yaw, quaternion_multiply(q_pitch, q_roll))
+        )
 
     def _port_type(self) -> str:
         """task 문자열들에서 sc 여부를 찾아 sc/sfp 포트 타입을 판별한다."""
@@ -223,6 +230,44 @@ class FinalPolicy(Policy):
             send_feedback("Final Policy: Models are ready")
         return True
 
+    def _ensure_vision_offset_models_ready(
+        self,
+        send_feedback: Optional[SendFeedbackCallback] = None,
+    ) -> bool:
+        """SFP/SC vision-offset 모델 경로를 준비한다. 없으면 HF 다운로드가 끝날 때까지 대기한다."""
+        if self._vision_offset_models_ready:
+            return True
+
+        if send_feedback is not None:
+            send_feedback("Final Policy: prepare vision-offset models")
+        self.get_logger().info("FinalPolicy vision-offset model preparation start")
+
+        if self._sfp_vision_offset_model_path is None:
+            if send_feedback is not None:
+                send_feedback("Final Policy: preparing SFP vision-offset model")
+            self._sfp_vision_offset_model_path = resolve_model_path(
+                SFP_VISION_OFFSET_MODEL,
+                logger=self.get_logger(),
+            )
+
+        if self._sc_vision_offset_model_path is None:
+            if send_feedback is not None:
+                send_feedback("Final Policy: preparing SC vision-offset model")
+            self._sc_vision_offset_model_path = resolve_model_path(
+                SC_VISION_OFFSET_MODEL,
+                logger=self.get_logger(),
+            )
+
+        self._vision_offset_models_ready = True
+        self.get_logger().info(
+            "FinalPolicy vision-offset model preparation done: "
+            f"sfp={self._sfp_vision_offset_model_path}, "
+            f"sc={self._sc_vision_offset_model_path}"
+        )
+        if send_feedback is not None:
+            send_feedback("Final Policy: Vision-offset models are ready")
+        return True
+
     def _vision_for_port_type(self, port_type: str) -> VisionPortEstimator:
         """포트 타입에 맞는 VisionPortEstimator를 lazy 생성하고 재사용한다."""
         self._ensure_yolo_models_ready()
@@ -251,6 +296,32 @@ class FinalPolicy(Policy):
             self._vision_by_port_type[port_type] = vision
         return self._vision_by_port_type[port_type]
 
+    def _vision_offset_predictor_for_align(self):
+        """현재 task의 SFP/SC 타입에 맞는 vision-offset predictor를 lazy 로드한다."""
+        from final_policy.vision_offset import VisionOffsetPredictor
+
+        self._ensure_vision_offset_models_ready(self._send_feedback)
+        port_type = self._port_type()
+        port_type = "sc" if port_type == "sc" else "sfp"
+        if port_type not in self._vision_offset_predictor_by_port_type:
+            checkpoint_path = (
+                self._sc_vision_offset_model_path
+                if port_type == "sc"
+                else self._sfp_vision_offset_model_path
+            )
+            if self._send_feedback is not None:
+                self._send_feedback(
+                    f"Final Policy: loading {port_type.upper()} vision-offset model"
+                )
+            self.get_logger().info(
+                f"Loading {port_type.upper()} vision-offset model: {checkpoint_path}"
+            )
+            self._vision_offset_predictor_by_port_type[port_type] = VisionOffsetPredictor(
+                checkpoint_path=checkpoint_path,
+                logger=self.get_logger(),
+            )
+        return self._vision_offset_predictor_by_port_type[port_type]
+
     def _initial_approach_z_offset(self) -> float:
         """포트 타입별 초기 접근 z offset을 반환한다."""
         if self._port_type() == "sc":
@@ -274,18 +345,6 @@ class FinalPolicy(Policy):
         if self._port_type() == "sc":
             return FinalPolicyConfig.SC_INSERTION_DAMPING
         return FinalPolicyConfig.SFP_INSERTION_DAMPING
-
-    def _align_correction_base(self, offset_m: np.ndarray) -> np.ndarray:
-        """pose 모델의 포트 offset을 base 좌표계 보정 방향으로 변환한다."""
-        offset = np.asarray(offset_m, dtype=np.float64)
-        return np.array(
-            [
-                float(FinalPolicyConfig.ALIGN_CORRECTION_X_SIGN) * offset[0],
-                float(FinalPolicyConfig.ALIGN_CORRECTION_Y_SIGN) * offset[1],
-                -offset[2],
-            ],
-            dtype=np.float64,
-        )
 
     def _align_retry_step_base(
         self,
@@ -598,51 +657,16 @@ class FinalPolicy(Policy):
         self.get_logger().info("[stage 3/5] Approach Done")
         return True
 
-    def _yaw_axis(self, pose) -> np.ndarray:
-        """현재 TCP 자세 기준의 yaw 회전축을 base 좌표계 벡터로 계산한다."""
-        q = quat_to_tuple(pose.orientation)
-        rotated = quaternion_multiply(
-            quaternion_multiply(q, (0.0, 0.0, 0.0, 1.0)),
-            (q[0], -q[1], -q[2], -q[3]),
-        )
-        axis = np.array([rotated[1], rotated[2], rotated[3]], dtype=np.float64)
-        norm = float(np.linalg.norm(axis))
-        if norm < 1e-12:
-            return np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        return axis / norm
-
-    def _select_offset(self, prediction: dict[str, object]) -> np.ndarray:
-        """task 포트 인덱스에 맞는 pose 모델 offset 출력을 선택한다."""
-        key = "port1_position_m" if self._port_id() == 1 else "port0_position_m"
-        return np.asarray(prediction[key], dtype=np.float64)
-
-    def _pose_predictor_for_align(self) -> PosePredictor:
-        """yaw align stage에서만 pose 모델을 lazy 로드한다."""
-        if self._pose_predictor is None:
-            from final_policy.pose_prediction import PosePredictor
-
-            if self._send_feedback is not None:
-                self._send_feedback("Final Policy: preparing pose model")
-            self._pose_model_path = resolve_model_path(
-                POSE_MODEL,
-                logger=self.get_logger(),
-            )
-            self._pose_predictor = PosePredictor(
-                checkpoint_path=self._pose_model_path,
-                logger=self.get_logger(),
-            )
-            if self._send_feedback is not None:
-                self._send_feedback("Final Policy: pose model ready")
-        return self._pose_predictor
-
     def _stage_yaw_align(self, get_observation, move_robot) -> bool:
-        """pose 예측과 force retry를 이용해 포트 중심과 yaw를 반복 보정한다."""
-        self.get_logger().info("[stage 4/5] Yaw Alignment Start")
-        pose_predictor = self._pose_predictor_for_align()
+        """vision-offset 모델의 6D base_link 보정값으로 포트와 plug tip을 정렬한다."""
+        self.get_logger().info(
+            f"[stage 4/5] Vision Offset Alignment Start ({self._port_type().upper()})"
+        )
+        vision_offset_predictor = self._vision_offset_predictor_for_align()
         baseline_force = self._force_vector(get_observation())
         stable_count = 0
-        last_xy = None
-        last_yaw = None
+        last_position_error = None
+        last_rpy_error = None
 
         for step in range(FinalPolicyConfig.ALIGN_MAX_STEPS):
             obs = get_observation()
@@ -674,48 +698,75 @@ class FinalPolicy(Policy):
                 self.sleep_for(FinalPolicyConfig.COMMAND_SETTLE_S)
                 continue
 
-            prediction = pose_predictor.predict(obs)
-            if prediction is None:
+            correction = vision_offset_predictor.predict(obs)
+            if correction is None:
                 self.sleep_for(FinalPolicyConfig.DT)
                 continue
 
-            offset_m = self._select_offset(prediction)
-            dyaw = float(prediction["dyaw_rad"])
-            correction_base = self._align_correction_base(offset_m)
-            xy_error = float(np.linalg.norm(offset_m[:2]))
-            yaw_error = abs(dyaw)
-            last_xy = xy_error
-            last_yaw = yaw_error
+            correction = np.asarray(correction, dtype=np.float64).reshape(-1)
+            if correction.size != 6 or not np.isfinite(correction).all():
+                self.get_logger().warn(
+                    f"vision_offset_align[{step:03d}]: invalid correction={correction}"
+                )
+                self.sleep_for(FinalPolicyConfig.DT)
+                continue
 
-            if xy_error < FinalPolicyConfig.XY_TOL_M and yaw_error < FinalPolicyConfig.YAW_TOL_RAD:
+            position_correction = correction[:3]
+            rpy_correction = correction[3:]
+            if (
+                float(np.max(np.abs(position_correction)))
+                > float(FinalPolicyConfig.VISION_OFFSET_MAX_ABS_POSITION_M)
+                or float(np.max(np.abs(rpy_correction)))
+                > float(FinalPolicyConfig.VISION_OFFSET_MAX_ABS_RPY_RAD)
+            ):
+                self.get_logger().warn(
+                    f"vision_offset_align[{step:03d}]: prediction rejected, "
+                    f"xyz=({position_correction[0]*1000:+.2f}, "
+                    f"{position_correction[1]*1000:+.2f}, "
+                    f"{position_correction[2]*1000:+.2f})mm, "
+                    f"rpy=({math.degrees(rpy_correction[0]):+.2f}, "
+                    f"{math.degrees(rpy_correction[1]):+.2f}, "
+                    f"{math.degrees(rpy_correction[2]):+.2f})deg"
+                )
+                self.sleep_for(FinalPolicyConfig.DT)
+                continue
+
+            position_error = float(np.linalg.norm(position_correction))
+            rpy_error = float(np.linalg.norm(rpy_correction))
+            last_position_error = position_error
+            last_rpy_error = rpy_error
+
+            if (
+                position_error < FinalPolicyConfig.VISION_OFFSET_XYZ_TOL_M
+                and rpy_error < FinalPolicyConfig.VISION_OFFSET_RPY_TOL_RAD
+            ):
                 stable_count += 1
             else:
                 stable_count = 0
             if stable_count >= FinalPolicyConfig.STABLE_STEPS:
                 self.get_logger().info(
-                    "yaw_align stable: "
-                    f"xy={xy_error * 1000.0:.2f}mm, "
-                    f"dyaw={math.degrees(yaw_error):.2f}deg"
+                    "vision_offset_align stable: "
+                    f"xyz_norm={position_error * 1000.0:.2f}mm, "
+                    f"rpy_norm={math.degrees(rpy_error):.2f}deg"
                 )
                 return True
 
-            step_xy = np.clip(
-                correction_base[:2] * FinalPolicyConfig.XY_GAIN,
-                -FinalPolicyConfig.MAX_XY_STEP_M,
-                FinalPolicyConfig.MAX_XY_STEP_M,
+            step_xyz = np.clip(
+                position_correction * FinalPolicyConfig.VISION_OFFSET_POSITION_GAIN,
+                -FinalPolicyConfig.VISION_OFFSET_MAX_XYZ_STEP_M,
+                FinalPolicyConfig.VISION_OFFSET_MAX_XYZ_STEP_M,
             )
-            yaw_step = float(
-                np.clip(
-                    dyaw * FinalPolicyConfig.YAW_GAIN,
-                    -FinalPolicyConfig.MAX_YAW_STEP_RAD,
-                    FinalPolicyConfig.MAX_YAW_STEP_RAD,
-                )
+            step_rpy = np.clip(
+                rpy_correction * FinalPolicyConfig.VISION_OFFSET_RPY_GAIN,
+                -FinalPolicyConfig.VISION_OFFSET_MAX_RPY_STEP_RAD,
+                FinalPolicyConfig.VISION_OFFSET_MAX_RPY_STEP_RAD,
             )
 
             target_pose = self._copy_pose(tcp_pose)
-            target_pose.position.x += float(step_xy[0])
-            target_pose.position.y += float(step_xy[1])
-            q_delta = self._axis_angle_quat(self._yaw_axis(tcp_pose), yaw_step)
+            target_pose.position.x += float(step_xyz[0])
+            target_pose.position.y += float(step_xyz[1])
+            target_pose.position.z += float(step_xyz[2])
+            q_delta = self._rpy_delta_quat_base(step_rpy)
             q_target = self._normalize_quat(
                 quaternion_multiply(q_delta, quat_to_tuple(tcp_pose.orientation))
             )
@@ -727,26 +778,33 @@ class FinalPolicy(Policy):
                 damping=list(FinalPolicyConfig.ALIGN_DAMPING),
             )
             self.get_logger().info(
-                f"yaw_align[{step:03d}]: "
-                f"offset=({offset_m[0]*1000:+.2f}, {offset_m[1]*1000:+.2f}, {offset_m[2]*1000:+.2f})mm, "
-                f"cmd_xy=({step_xy[0]*1000:+.2f}, {step_xy[1]*1000:+.2f})mm, "
-                f"dyaw={math.degrees(dyaw):+.2f}deg, "
-                f"cmd_yaw={math.degrees(yaw_step):+.2f}deg, "
+                f"vision_offset_align[{step:03d}]: "
+                f"correction_xyz=({position_correction[0]*1000:+.2f}, "
+                f"{position_correction[1]*1000:+.2f}, "
+                f"{position_correction[2]*1000:+.2f})mm, "
+                f"cmd_xyz=({step_xyz[0]*1000:+.2f}, "
+                f"{step_xyz[1]*1000:+.2f}, {step_xyz[2]*1000:+.2f})mm, "
+                f"correction_rpy=({math.degrees(rpy_correction[0]):+.2f}, "
+                f"{math.degrees(rpy_correction[1]):+.2f}, "
+                f"{math.degrees(rpy_correction[2]):+.2f})deg, "
+                f"cmd_rpy=({math.degrees(step_rpy[0]):+.2f}, "
+                f"{math.degrees(step_rpy[1]):+.2f}, "
+                f"{math.degrees(step_rpy[2]):+.2f})deg, "
                 f"stable={stable_count}/{FinalPolicyConfig.STABLE_STEPS}"
             )
             self.sleep_for(FinalPolicyConfig.COMMAND_SETTLE_S)
 
-        if last_xy is None or last_yaw is None:
-            self.get_logger().error("yaw_align failed: no pose predictions")
+        if last_position_error is None or last_rpy_error is None:
+            self.get_logger().error("vision_offset_align failed: no model predictions")
             return False
         success = (
-            last_xy < FinalPolicyConfig.XY_TOL_M * 1.5
-            and last_yaw < FinalPolicyConfig.YAW_TOL_RAD * 1.5
+            last_position_error < FinalPolicyConfig.VISION_OFFSET_XYZ_TOL_M * 1.5
+            and last_rpy_error < FinalPolicyConfig.VISION_OFFSET_RPY_TOL_RAD * 1.5
         )
         self.get_logger().info(
-            f"[stage 4/5] yaw_rotation_align done: success={success}, "
-            f"last_xy={last_xy * 1000.0:.2f}mm, "
-            f"last_dyaw={math.degrees(last_yaw):.2f}deg"
+            f"[stage 4/5] vision_offset_align done: success={success}, "
+            f"last_xyz_norm={last_position_error * 1000.0:.2f}mm, "
+            f"last_rpy_norm={math.degrees(last_rpy_error):.2f}deg"
         )
         return success
 
@@ -910,6 +968,7 @@ class FinalPolicy(Policy):
         )
         try:
             self._ensure_yolo_models_ready(send_feedback)
+            self._ensure_vision_offset_models_ready(send_feedback)
         except Exception as exc:
             self.get_logger().error(f"FinalPolicy model preparation failed: {exc}")
             send_feedback("failed: prepare_models exception")
@@ -919,7 +978,7 @@ class FinalPolicy(Policy):
             ("lift_up", lambda: self._stage_lift_up(get_observation, move_robot)),
             ("detect", lambda: self._stage_detect(get_observation)),
             ("approach", lambda: self._stage_approach(get_observation, move_robot)),
-            # ("yaw_rotation_align", lambda: self._stage_yaw_align(get_observation, move_robot)),
+            ("vision_offset_align", lambda: self._stage_yaw_align(get_observation, move_robot)),
             # ("insert", lambda: self._stage_insert(get_observation, move_robot)),
         )
         for name, stage in stages:

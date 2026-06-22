@@ -6,7 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "final-policy"
 version = "0.0.1"
 requires-python = ">=3.10"
-dependencies = ["numpy", "torch", "torchvision", "huggingface-hub"]
+dependencies = ["numpy", "torch", "torchvision", "timm", "huggingface-hub"]
 
 [tool.setuptools]
-packages = ["final_policy", "final_policy.pose_prediction"]
+packages = [
+    "final_policy",
+    "final_policy.pose_prediction",
+    "final_policy.vision_offset",
+]

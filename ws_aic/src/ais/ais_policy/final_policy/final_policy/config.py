@@ -140,6 +140,35 @@ class FinalPolicyConfig:
     )
     ALIGN_STIFFNESS: tuple = (80.0, 80.0, 80.0, 45.0, 45.0, 45.0)
     ALIGN_DAMPING: tuple = (45.0, 45.0, 45.0, 18.0, 18.0, 18.0)
+    VISION_OFFSET_POSITION_GAIN: float = _env_float(
+        "AIC_VISION_OFFSET_POSITION_GAIN",
+        0.65,
+    )
+    VISION_OFFSET_RPY_GAIN: float = _env_float("AIC_VISION_OFFSET_RPY_GAIN", 0.8)
+    VISION_OFFSET_MAX_XYZ_STEP_M: float = _env_float(
+        "AIC_VISION_OFFSET_MAX_XYZ_STEP_M",
+        0.003,
+    )
+    VISION_OFFSET_MAX_RPY_STEP_RAD: float = _env_float(
+        "AIC_VISION_OFFSET_MAX_RPY_STEP_RAD",
+        0.02,
+    )
+    VISION_OFFSET_XYZ_TOL_M: float = _env_float(
+        "AIC_VISION_OFFSET_XYZ_TOL_M",
+        0.003,
+    )
+    VISION_OFFSET_RPY_TOL_RAD: float = _env_float(
+        "AIC_VISION_OFFSET_RPY_TOL_RAD",
+        0.01,
+    )
+    VISION_OFFSET_MAX_ABS_POSITION_M: float = _env_float(
+        "AIC_VISION_OFFSET_MAX_ABS_POSITION_M",
+        0.08,
+    )
+    VISION_OFFSET_MAX_ABS_RPY_RAD: float = _env_float(
+        "AIC_VISION_OFFSET_MAX_ABS_RPY_RAD",
+        0.6,
+    )
 
     XY_GAIN: float = _env_float("AIC_POSE_XY_GAIN", 0.65)
     YAW_GAIN: float = _env_float("AIC_POSE_YAW_GAIN", 0.8)
