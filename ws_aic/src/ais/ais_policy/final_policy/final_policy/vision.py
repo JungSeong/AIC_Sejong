@@ -447,6 +447,14 @@ class VisionPortEstimator:
         matrix[:3, 3] = [pose.position.x, pose.position.y, pose.position.z]
         return matrix
 
+    @staticmethod
+    def _map_sfp_model_port_index(model_port_index: int) -> int:
+        """YOLO keypoint group 번호를 task/TF의 SFP 포트 번호로 변환한다."""
+        port_index = int(model_port_index)
+        if FinalPolicyConfig.SFP_YOLO_PORT_INDEX_FLIP:
+            return 1 - port_index
+        return port_index
+
     def _base_to_camera_optical_matrix(self, obs, camera_name: str) -> Optional[np.ndarray]:
         """현재 TCP pose와 고정 카메라 extrinsic으로 base->camera optical 행렬을 계산한다."""
         try:
@@ -490,11 +498,14 @@ class VisionPortEstimator:
                 if keypoints_xy is not None and box_idx < len(keypoints_xy):
                     kpts = np.asarray(keypoints_xy[box_idx], dtype=np.float64)
                     if len(kpts) >= 8:
-                        for port_index, start in enumerate((0, 4)):
+                        for model_port_index, start in enumerate((0, 4)):
                             group = kpts[start:start + 4]
                             if not np.all(np.isfinite(group)):
                                 continue
                             center = np.mean(group, axis=0)
+                            port_index = self._map_sfp_model_port_index(
+                                model_port_index
+                            )
                             raw_dets.append(
                                 {
                                     "class_id": cls,
@@ -505,6 +516,7 @@ class VisionPortEstimator:
                                     "xyxy": xyxy,
                                     "point_name": f"sfp_port_{port_index}",
                                     "port_index": port_index,
+                                    "model_port_index": model_port_index,
                                     "keypoints": group,
                                 }
                             )
@@ -550,6 +562,7 @@ class VisionPortEstimator:
                         f"  [{cam_name}] {flag} {det['class_name']} "
                         f"point={det.get('point_name', 'bbox_center')} "
                         f"conf={det['conf']:.3f} (thresh={self._conf_thresh}) "
+                        f"model_port_index={det.get('model_port_index')} "
                         f"uv=({det['u']:.0f},{det['v']:.0f})"
                     )
             else:
@@ -603,6 +616,8 @@ class VisionPortEstimator:
                     cv2.circle(debug_img, center, 10, (0, 0, 0), 4, cv2.LINE_AA)
                     cv2.circle(debug_img, center, 10, cross_color, 2, cv2.LINE_AA)
                 label = f"{det['class_name']} {det['conf']:.2f}"
+                if det.get("model_port_index") is not None:
+                    label = f"{label} model={det.get('model_port_index')}"
                 if is_target:
                     label = f"TARGET {label}"
                 cv2.putText(
@@ -755,13 +770,22 @@ class VisionPortEstimator:
                 target_class_id=target_class_id,
                 target_port_index=target_port_index,
             )
-            detections[name] = [det for det in dets if det["class_id"] == target_class_id]
+            detections[name] = [
+                det
+                for det in dets
+                if det["class_id"] == target_class_id
+                and (
+                    target_port_index is None
+                    or det.get("port_index") == target_port_index
+                )
+            ]
 
         cams_with_dets = [name for name, dets in detections.items() if dets]
         if len(cams_with_dets) < 2:
             if self._logger:
                 self._logger.warn(
-                    f"Vision: fewer than 2 cameras detected target ({cams_with_dets})"
+                    f"Vision: fewer than 2 cameras detected target "
+                    f"({cams_with_dets}, target_port_index={target_port_index})"
                 )
             return []
 
@@ -873,7 +897,9 @@ class VisionPortEstimator:
                 f"Vision: {len(unique)} candidate ports "
                 f"(best=({unique[0]['pos'][0]:+.3f}, "
                 f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}), "
-                f"point={unique[0].get('point_name')})"
+                f"point={unique[0].get('point_name')}, "
+                f"port_index={unique[0].get('port_index')}, "
+                f"target_port_index={target_port_index})"
             )
 
         return unique
@@ -935,6 +961,8 @@ class VisionPortEstimator:
             ]
             if same_port:
                 port_candidates = same_port
+            else:
+                return None
 
         sc_port_index = self._extract_named_index(port_name, "sc_port")
         if sc_port_index is None:

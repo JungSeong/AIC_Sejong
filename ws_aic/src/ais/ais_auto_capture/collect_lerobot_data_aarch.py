@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-collect_data_aarch.py
-─────────────────────
-collect_data.py 와 동일하지만, distrobox 대신 소스 빌드된 ROS2 환경을
+collect_lerobot_data_aarch.py
+─────────────────────────────
+collect_lerobot_data.py 와 동일하지만, distrobox 대신 소스 빌드된 ROS2 환경을
 직접 사용한다 (Ubuntu 24.04 + ROS2 Kilted 소스 빌드 기준, aarch64 CPU에서 돌리기 위한 목적).
 
 흐름:
@@ -13,16 +13,16 @@ collect_data.py 와 동일하지만, distrobox 대신 소스 빌드된 ROS2 환�
     4. ros2 launch aic_bringup aic_gz_bringup.launch.py 로 Gazebo 시작
        (spawn_task_board:=false, spawn_cable:=false → 엔진이 YAML에서 직접 스폰)
     5. Gazebo 초기화 대기
-    6. aic_model + LeRobot/DataCollect2 정책 시작
+    6. aic_model + LeRobot 정책 시작
     7. AIC_CAPTURE_DIR에서 episode_summary.json 수로 완료 감지
     8. 세 프로세스 모두 종료 → 다음 세트
 
 사용법:
-  python3 collect_data_aarch.py                                              # 기본: 10 세트 × 7 에피소드
-  python3 collect_data_aarch.py --sets 50 --diversify                        # 50세트, 보드 위치도 랜덤화
-  python3 collect_data_aarch.py --sets 5 --dry-run                           # 명령어만 출력 (실행 X)
-  python3 collect_data_aarch.py --headless                                   # Gazebo GUI·RViz 없이 실행
-  python3 collect_data_aarch.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds  # LeRobot 저장
+  python3 collect_lerobot_data_aarch.py                                              # 기본: 10 세트 × 7 에피소드
+  python3 collect_lerobot_data_aarch.py --sets 50 --diversify                        # 50세트, 보드 위치도 랜덤화
+  python3 collect_lerobot_data_aarch.py --sets 5 --dry-run                           # 명령어만 출력 (실행 X)
+  python3 collect_lerobot_data_aarch.py --headless                                   # Gazebo GUI·RViz 없이 실행
+  python3 collect_lerobot_data_aarch.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds  # LeRobot 저장
 """
 
 import argparse
@@ -80,17 +80,14 @@ POLICY_STOP_FILE     = Path("/tmp/aic_policy_stop")
 POLICY_MODULES = {
     "LeRobot": "data_gen_node.LeRobot",
     "DataCollect": "data_gen_node.LeRobot",
-    "DataCollect2": "data_gen_node.DataCollect2",
 }
 DEFAULT_REPO_IDS = {
     "LeRobot": "aic-sejong-team/aic-dataset",
     "DataCollect": "aic-sejong-team/aic-dataset",
-    "DataCollect2": "aic-sejong-team/aic-entrance-dataset",
 }
 DEFAULT_LEROBOT_OUT_DIRS = {
     "LeRobot": Path("../../data/lerobot"),
     "DataCollect": Path("../../data/lerobot"),
-    "DataCollect2": Path("../../data/lerobot_entrance"),
 }
 
 # 소스 빌드된 ROS2 워크스페이스
@@ -633,7 +630,7 @@ def start_policy(
     dry_run: bool = False,
 ) -> "subprocess.Popen | None":
     """
-    aic_model + LeRobot/DataCollect2 계열 정책 노드 시작.
+    aic_model + LeRobot 계열 정책 노드 시작.
 
     LeRobot = AutoCapture + F/T 센서 Tare + LeRobot 직접 저장.
     lerobot_out_dir / lerobot_repo_id 미지정 시 raw 포맷으로 fallback.
@@ -665,7 +662,7 @@ def start_policy(
         env["AIC_LEROBOT_RUN_ID"]       = lerobot_run_id
         env["AIC_LEROBOT_FPS"]          = str(int(step_hz))
         env["AIC_LEROBOT_VERSION"]      = lerobot_version
-        # push는 모든 세트 완료 후 collect_data_aarch.py가 직접 수행한다.
+        # push는 모든 세트 완료 후 collect_lerobot_data_aarch.py가 직접 수행한다.
         # policy_proc는 세트 종료마다 SIGTERM으로 죽기 때문에 push_to_hub가
         # 실행되지 않는 문제를 방지하기 위해 per-set push는 비활성화한다.
         env["AIC_LEROBOT_PUSH_TO_HUB"] = "false"
@@ -981,11 +978,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
         예시:
-        python3 collect_data_aarch.py                                              # 10 세트 × 7 에피소드
-        python3 collect_data_aarch.py --sets 50 --diversify                        # 50세트, 보드 위치 랜덤화
-        python3 collect_data_aarch.py --sets 5 --dry-run                           # 명령어만 출력
-        python3 collect_data_aarch.py --headless                                   # GUI 없이 백그라운드 실행
-        python3 collect_data_aarch.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds
+        python3 collect_lerobot_data_aarch.py                                              # 10 세트 × 7 에피소드
+        python3 collect_lerobot_data_aarch.py --sets 50 --diversify                        # 50세트, 보드 위치 랜덤화
+        python3 collect_lerobot_data_aarch.py --sets 5 --dry-run                           # 명령어만 출력
+        python3 collect_lerobot_data_aarch.py --headless                                   # GUI 없이 백그라운드 실행
+        python3 collect_lerobot_data_aarch.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds
     """,
     )
     parser.add_argument("--sets",             type=int,  default=10,
@@ -996,8 +993,8 @@ def main():
                         help=f"Gazebo 초기화 대기 시간(초, 기본: {GAZEBO_INIT_WAIT})")
     parser.add_argument("--step-hz",          type=float, default=20.0,
                         help="스텝 샘플링 주파수 Hz (기본: 20Hz)")
-    parser.add_argument("--data-policy",      choices=sorted(POLICY_MODULES), default="DataCollect2",
-                        help="수집 정책 선택. LeRobot은 기본 에피소드, DataCollect2는 entrance frame 기준 데이터셋용")
+    parser.add_argument("--data-policy",      choices=sorted(POLICY_MODULES), default="LeRobot",
+                        help="수집 정책 선택. LeRobot/DataCollect는 기본 LeRobot 에피소드 수집용")
     parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",

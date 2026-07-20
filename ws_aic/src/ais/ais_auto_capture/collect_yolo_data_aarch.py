@@ -2,7 +2,7 @@
 """
 collect_yolo_data_aarch.py
 ───────────────────────────
-collect_data_aarch.py의 다양한 시나리오 생성/Gazebo 관리와
+collect_lerobot_data_aarch.py의 다양한 시나리오 생성/Gazebo 관리와
 collect_dataset.py의 YOLO 데이터셋 수집(카메라→TF→bbox)을 통합한 스크립트.
 
 각 시나리오(NIC rail 0~4, SC rail 0~1)마다:
@@ -836,7 +836,7 @@ def run_yolo_collection_loop(
 
                 # Gazebo 기본 인프라(controller_manager 등) 대기 — 짧게
                 # aic_engine 탐색 타임아웃은 ~17초이므로 최대한 빨리 aic_model을 올려야 한다.
-                # collect_data_aarch.py도 25초 뒤 policy를 시작하는데,
+                # collect_lerobot_data_aarch.py도 25초 뒤 policy를 시작하는데,
                 # Gazebo 부팅 자체에 ~10초 걸리므로 실제 탐색 시작은 t=10s — 잔여 17초 안에 등록 가능.
                 GAZEBO_PRE_WAIT = 5   # 최소 대기: ROS2 기본 노드가 올라오는 시간
                 print(f"[대기] Gazebo 인프라 대기 중... ({GAZEBO_PRE_WAIT}초)")

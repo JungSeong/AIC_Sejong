@@ -420,8 +420,8 @@ trials:
     scene:
       task_board:
         pose:
-          x: 0.15
-          y: -0.20
+          x: 0.16
+          y: -0.16
           z: 1.14
           roll: 0.0
           pitch: 0.0

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-collect_data.py
-───────────────
-collect_data_aarch.py와 동일한 로직이지만, aarch64 소스 빌드 대신
+collect_lerobot_data.py
+───────────────────────
+collect_lerobot_data_aarch.py와 동일한 로직이지만, aarch64 소스 빌드 대신
 distrobox + pixi 환경을 사용한다.
 
 흐름:
@@ -17,12 +17,12 @@ distrobox + pixi 환경을 사용한다.
     7. 프로세스 종료 → 다음 세트
 
 사용법:
-  python3 collect_data.py                                              # 기본: 10 세트 × 7 에피소드
-  python3 collect_data.py --sets 50 --diversify                        # 50세트, 보드 위치도 랜덤화
-  python3 collect_data.py --sets 5 --dry-run                           # 명령어만 출력 (실행 X)
-  python3 collect_data.py --gazebo-wait 60                             # Gazebo 초기화 대기를 60초로
-  python3 collect_data.py --headless                                   # Gazebo GUI·RViz 없이 백그라운드 실행
-  python3 collect_data.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds  # LeRobot 저장
+  python3 collect_lerobot_data.py                                              # 기본: 10 세트 × 7 에피소드
+  python3 collect_lerobot_data.py --sets 50 --diversify                        # 50세트, 보드 위치도 랜덤화
+  python3 collect_lerobot_data.py --sets 5 --dry-run                           # 명령어만 출력 (실행 X)
+  python3 collect_lerobot_data.py --gazebo-wait 60                             # Gazebo 초기화 대기를 60초로
+  python3 collect_lerobot_data.py --headless                                   # Gazebo GUI·RViz 없이 백그라운드 실행
+  python3 collect_lerobot_data.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds  # LeRobot 저장
 """
 
 import argparse
@@ -83,17 +83,14 @@ POLICY_STOP_FILE     = Path("/tmp/aic_policy_stop")
 POLICY_MODULES = {
     "LeRobot": "data_gen_node.LeRobot",
     "DataCollect": "data_gen_node.LeRobot",
-    "DataCollect2": "data_gen_node.DataCollect2",
 }
 DEFAULT_REPO_IDS = {
     "LeRobot": "aic-sejong-team/aic-dataset",
     "DataCollect": "aic-sejong-team/aic-dataset",
-    "DataCollect2": "aic-sejong-team/aic-entrance-dataset",
 }
 DEFAULT_LEROBOT_OUT_DIRS = {
     "LeRobot": Path("ws_aic/data/lerobot"),
     "DataCollect": Path("ws_aic/data/lerobot"),
-    "DataCollect2": Path("ws_aic/data/aic-entrance-dataset"),
 }
 
 # ──────────────────────────────────────────
@@ -547,7 +544,7 @@ def start_policy(
     dry_run: bool = False,
 ) -> "subprocess.Popen | None":
     """
-    pixi run으로 aic_model + LeRobot/DataCollect2 계열 정책 노드 시작.
+    pixi run으로 aic_model + LeRobot 계열 정책 노드 시작.
     대부분의 설정(Hz, YOLO 경로 등)은 이제 policy.py 내부 기본값으로 처리됨.
     """
     env = os.environ.copy()
@@ -851,12 +848,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
         예시:
-        python3 collect_data.py                                              # 10 세트 × 7 에피소드
-        python3 collect_data.py --sets 50 --diversify                        # 50세트, 보드 위치도 랜덤화
-        python3 collect_data.py --sets 5 --dry-run                           # 명령어만 출력
-        python3 collect_data.py --gazebo-wait 60                             # Gazebo 초기화 대기 60초
-        python3 collect_data.py --headless                                   # Gazebo & RViz GUI 없이 실행
-        python3 collect_data.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds
+        python3 collect_lerobot_data.py                                              # 10 세트 × 7 에피소드
+        python3 collect_lerobot_data.py --sets 50 --diversify                        # 50세트, 보드 위치도 랜덤화
+        python3 collect_lerobot_data.py --sets 5 --dry-run                           # 명령어만 출력
+        python3 collect_lerobot_data.py --gazebo-wait 60                             # Gazebo 초기화 대기 60초
+        python3 collect_lerobot_data.py --headless                                   # Gazebo & RViz GUI 없이 실행
+        python3 collect_lerobot_data.py --lerobot-out-dir ~/data --lerobot-repo-id aic-sejong/ds
 """,
     )
     parser.add_argument("--sets",             type=int,  default=10,
@@ -868,7 +865,7 @@ def main():
     parser.add_argument("--step-hz",          type=float, default=20.0,
                         help="스텝 샘플링 주파수 Hz (기본: 10Hz)")
     parser.add_argument("--data-policy",      choices=sorted(POLICY_MODULES), default="LeRobot",
-                        help="수집 정책 선택. LeRobot은 기본 에피소드, DataCollect2는 entrance frame 기준 데이터셋용")
+                        help="수집 정책 선택. LeRobot/DataCollect는 기본 LeRobot 에피소드 수집용")
     parser.add_argument("--headless",         action="store_true",
                         help="Gazebo GUI·RViz 없이 백그라운드 실행 (gazebo_gui:=false launch_rviz:=false)")
     parser.add_argument("--dry-run",          action="store_true",
@@ -882,7 +879,7 @@ def main():
     parser.add_argument("--yolo-model",       type=Path, default=None,
                         help=f"YOLO 모델 .pt 경로 (기본: {YOLO_MODEL_DEFAULT})")
     parser.add_argument("--push-to-hub",      dest="push_to_hub", action="store_true", default=True,
-                        help="수집 완료 후 HuggingFace Hub에 vision offset 데이터셋 업로드 (기본: 활성)")
+                        help="수집 완료 후 HuggingFace Hub에 LeRobot 데이터셋 업로드 (기본: 활성)")
     parser.add_argument("--no-push-to-hub",   dest="push_to_hub", action="store_false",
                         help="HuggingFace Hub 업로드 비활성화")
 

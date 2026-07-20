@@ -27,6 +27,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """환경변수를 bool로 읽고, 값이 없거나 알 수 없는 값이면 기본값을 반환한다."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _env_str(name: str, default: str) -> str:
     """환경변수를 소문자 문자열로 정규화해서 반환한다."""
     value = os.environ.get(name)
@@ -49,6 +62,34 @@ class FinalPolicyConfig:
     """FinalPolicy의 접근, 정렬, 삽입 단계에서 공유하는 튜닝 파라미터."""
 
     DEVICE: str = os.environ.get("AIC_POSE_DEVICE", "auto")
+    PUBLISH_TRIANGULATED_PORT_XYZ: bool = _env_bool(
+        "AIC_PUBLISH_TRIANGULATED_PORT_XYZ",
+        False,
+    )
+    TRIANGULATED_PORT_XYZ_TOPIC: str = os.environ.get(
+        "AIC_TRIANGULATED_PORT_XYZ_TOPIC",
+        "/final_policy/triangulated_port_xyz",
+    )
+    TRIANGULATED_PORT_XYZ_FRAME_ID: str = os.environ.get(
+        "AIC_TRIANGULATED_PORT_XYZ_FRAME_ID",
+        "base_link",
+    )
+    TRIANGULATION_DEBUG_SAVE_ENABLED: bool = _env_bool(
+        "AIC_TRIANGULATION_DEBUG_SAVE",
+        True,
+    )
+    TRIANGULATION_EVAL_ONLY: bool = _env_bool(
+        "AIC_TRIANGULATION_EVAL_ONLY",
+        False,
+    )
+    TRIANGULATION_DEBUG_FIXED_FRAME: str = os.environ.get(
+        "AIC_TRIANGULATION_DEBUG_FIXED_FRAME",
+        "world",
+    )
+    SFP_YOLO_PORT_INDEX_FLIP: bool = _env_bool(
+        "AIC_SFP_YOLO_PORT_INDEX_FLIP",
+        True,
+    )
     CAMERAS: tuple[str, ...] = _env_cameras(
         "AIC_POSE_CAMERAS",
         ("left", "center", "right"),
@@ -90,6 +131,10 @@ class FinalPolicyConfig:
     INITIAL_LIFT_SETTLE_S: float = _env_float(
         "AIC_DISTANCE_INITIAL_LIFT_SETTLE_S",
         0.50,
+    )
+    LIFT_DETECT_TO_APPROACH_SETTLE_S: float = _env_float(
+        "AIC_LIFT_DETECT_TO_APPROACH_SETTLE_S",
+        2.0,
     )
 
     DT: float = _env_float("AIC_DISTANCE_DT", 0.05)

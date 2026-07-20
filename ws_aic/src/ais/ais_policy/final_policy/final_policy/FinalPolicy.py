@@ -14,7 +14,7 @@ from aic_model.policy import (
     SendFeedbackCallback,
 )
 from aic_task_interfaces.msg import Task
-from geometry_msgs.msg import Point, Pose, Quaternion
+from geometry_msgs.msg import Point, PointStamped, Pose, Quaternion
 from transforms3d._gohlketransforms import quaternion_multiply, quaternion_slerp
 from final_policy.config import FinalPolicyConfig
 from final_policy.geometry import (
@@ -68,17 +68,59 @@ class FinalPolicy(Policy):
         self._vision_by_port_type = {}
         self._vision_debug_save_enabled = False
         self._align_debug_call_count = 0
+        self._triangulation_debug_call_count = 0
         self._yolo_download_threads: dict[str, threading.Thread] = {}
         self._yolo_download_lock = threading.Lock()
         self._vision_offset_predictor_by_port_type: dict[str, VisionOffsetPredictor] = {}
         self._vision_offset_download_threads: dict[str, threading.Thread] = {}
         self._vision_offset_download_lock = threading.Lock()
+        self._triangulated_port_xyz_pub = self._create_triangulated_port_xyz_publisher()
         self._send_feedback: Optional[SendFeedbackCallback] = None
         self.get_logger().info(
             "FinalPolicy ready: "
             "yolo_model=initial_load, "
             "vision_offset_model=initial_load, "
             "background_download=enabled"
+        )
+
+    def _create_triangulated_port_xyz_publisher(self):
+        """옵션이 켜진 경우 triangulation 포트 XYZ 평가 토픽 publisher를 만든다."""
+        if not FinalPolicyConfig.PUBLISH_TRIANGULATED_PORT_XYZ:
+            return None
+        topic = str(FinalPolicyConfig.TRIANGULATED_PORT_XYZ_TOPIC or "").strip()
+        if not topic:
+            self.get_logger().warn(
+                "AIC_PUBLISH_TRIANGULATED_PORT_XYZ is true, but topic is empty"
+            )
+            return None
+        publisher = self._parent_node.create_publisher(PointStamped, topic, 10)
+        self.get_logger().info(
+            "Triangulated port XYZ publisher enabled: "
+            f"topic={topic}, frame={FinalPolicyConfig.TRIANGULATED_PORT_XYZ_FRAME_ID}"
+        )
+        return publisher
+
+    def _publish_triangulated_port_xyz(self, port: np.ndarray, label: str) -> None:
+        """캐시된 triangulation 결과를 PointStamped로 발행한다."""
+        if self._triangulated_port_xyz_pub is None:
+            return
+        port = np.asarray(port, dtype=np.float64).reshape(-1)
+        if port.size < 3 or not np.isfinite(port[:3]).all():
+            self.get_logger().warn(
+                f"Triangulated port XYZ publish skipped: invalid port={port}"
+            )
+            return
+        msg = PointStamped()
+        msg.header.stamp = self.time_now().to_msg()
+        msg.header.frame_id = str(FinalPolicyConfig.TRIANGULATED_PORT_XYZ_FRAME_ID)
+        msg.point.x = float(port[0])
+        msg.point.y = float(port[1])
+        msg.point.z = float(port[2])
+        self._triangulated_port_xyz_pub.publish(msg)
+        self.get_logger().info(
+            "Triangulated port XYZ published: "
+            f"label={label}, topic={FinalPolicyConfig.TRIANGULATED_PORT_XYZ_TOPIC}, "
+            f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})"
         )
 
     @staticmethod
@@ -556,6 +598,301 @@ class FinalPolicy(Policy):
             return None
         return Path(debug_root) / "align"
 
+    def _triangulation_debug_save_dir(self) -> Optional[Path]:
+        """triangulation GT/PRED 비교 디버그 이미지를 저장할 디렉토리를 반환한다."""
+        if not FinalPolicyConfig.TRIANGULATION_DEBUG_SAVE_ENABLED:
+            return None
+        debug_root = getattr(VisionPortEstimator, "DEBUG_SAVE_DIR", None)
+        if not debug_root:
+            return None
+        return Path(debug_root) / "triangulation"
+
+    def _target_port_entrance_frame(self) -> str:
+        """현재 task의 실제 포트 entrance GT frame 이름을 만든다."""
+        module = str(getattr(self._task, "target_module_name", "") or "")
+        port_name = str(getattr(self._task, "port_name", "") or "")
+        if self._port_type() == "sc":
+            return f"task_board/{module}/sc_port_base_link_entrance"
+        if port_name.endswith("_link"):
+            return f"task_board/{module}/{port_name}_entrance"
+        return f"task_board/{module}/{port_name}_link_entrance"
+
+    def _lookup_frame_base(
+        self,
+        target_frame: str,
+        *,
+        warn_on_failure: bool = True,
+    ) -> Optional[np.ndarray]:
+        """TF에서 base_link 기준 target_frame 좌표를 조회한다."""
+        buffer = getattr(self._parent_node, "_tf_buffer", None)
+        if buffer is None:
+            if warn_on_failure:
+                self.get_logger().warn(
+                    "[Triangulation Debug] parent node has no TF buffer"
+                )
+            return None
+        try:
+            from rclpy.duration import Duration
+            from rclpy.time import Time
+
+            transform = buffer.lookup_transform("base_link", target_frame, Time()).transform
+            return np.array(
+                [
+                    float(transform.translation.x),
+                    float(transform.translation.y),
+                    float(transform.translation.z),
+                ],
+                dtype=np.float64,
+            )
+        except Exception as direct_exc:
+            fixed_frame = str(
+                FinalPolicyConfig.TRIANGULATION_DEBUG_FIXED_FRAME or ""
+            ).strip()
+            if fixed_frame:
+                try:
+                    transform = buffer.lookup_transform_full(
+                        "base_link",
+                        Time(),
+                        target_frame,
+                        Time(),
+                        fixed_frame,
+                        timeout=Duration(seconds=0.2),
+                    ).transform
+                    return np.array(
+                        [
+                            float(transform.translation.x),
+                            float(transform.translation.y),
+                            float(transform.translation.z),
+                        ],
+                        dtype=np.float64,
+                    )
+                except Exception as full_exc:
+                    if warn_on_failure:
+                        self.get_logger().warn(
+                            f"[Triangulation Debug] GT lookup failed: base_link <- "
+                            f"{target_frame} via {fixed_frame}: {full_exc} "
+                            f"(direct: {direct_exc})"
+                        )
+                    return None
+            if warn_on_failure:
+                self.get_logger().warn(
+                    f"[Triangulation Debug] GT lookup failed: base_link <- "
+                    f"{target_frame}: {direct_exc}"
+                )
+            return None
+
+    def _lookup_gt_port_base(self) -> tuple[str, Optional[np.ndarray]]:
+        """TF에서 base_link 기준 실제 포트 entrance 좌표를 조회한다."""
+        target_frame = self._target_port_entrance_frame()
+        return target_frame, self._lookup_frame_base(target_frame)
+
+    @staticmethod
+    def _projected_point_visible(point_px: np.ndarray, image_shape: tuple[int, ...]) -> bool:
+        """투영된 픽셀이 이미지 내부에 있는지 확인한다."""
+        if not np.isfinite(point_px).all():
+            return False
+        height, width = image_shape[:2]
+        return 0.0 <= point_px[0] < float(width) and 0.0 <= point_px[1] < float(height)
+
+    @staticmethod
+    def _draw_triangulation_point(
+        image: np.ndarray,
+        point_px: np.ndarray,
+        label: str,
+        color: tuple[int, int, int],
+    ) -> None:
+        """debug 이미지 위에 PRED/GT 포인트 마커와 라벨을 그린다."""
+        import cv2
+
+        x = int(round(float(point_px[0])))
+        y = int(round(float(point_px[1])))
+        cv2.drawMarker(
+            image,
+            (x, y),
+            (0, 0, 0),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=26,
+            thickness=7,
+            line_type=cv2.LINE_AA,
+        )
+        cv2.drawMarker(
+            image,
+            (x, y),
+            color,
+            markerType=cv2.MARKER_CROSS,
+            markerSize=22,
+            thickness=3,
+            line_type=cv2.LINE_AA,
+        )
+        cv2.circle(image, (x, y), 6, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.circle(image, (x, y), 6, color, 2, cv2.LINE_AA)
+        text_xy = (x + 8, max(16, y - 8))
+        cv2.putText(
+            image,
+            label,
+            text_xy,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 0),
+            4,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            label,
+            text_xy,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    def _save_triangulation_debug_images(
+        self,
+        *,
+        obs,
+        vision: VisionPortEstimator,
+        predicted_port: np.ndarray,
+        label: str,
+    ) -> None:
+        """PRED triangulation 좌표와 GT 좌표를 카메라 이미지에 투영해 저장한다."""
+        save_dir = self._triangulation_debug_save_dir()
+        if save_dir is None or obs is None or vision is None:
+            return
+
+        try:
+            import cv2
+
+            predicted_port = np.asarray(predicted_port, dtype=np.float64).reshape(3)
+            target_frame, gt_port = self._lookup_gt_port_base()
+            frame_id = self._triangulation_debug_call_count
+            self._triangulation_debug_call_count += 1
+            if frame_id == 0:
+                self.get_logger().info(f"[Triangulation Debug] dir: {save_dir}")
+
+            task_label = VisionPortEstimator._sanitize_debug_token(
+                getattr(vision, "debug_task_label", "task_unknown")
+            ) or "task_unknown"
+            target_frame_short = target_frame.replace("task_board/", "", 1)
+            error = None if gt_port is None else predicted_port - gt_port
+            error_norm_mm = (
+                None if error is None else float(np.linalg.norm(error) * 1000.0)
+            )
+            saved_count = 0
+
+            for cam_name, _ in VisionPortEstimator.CAMERAS:
+                img_msg = getattr(obs, f"{cam_name}_image", None)
+                camera_info = getattr(obs, f"{cam_name}_camera_info", None)
+                if img_msg is None or camera_info is None:
+                    continue
+
+                debug_img = VisionPortEstimator._image_from_msg(img_msg).copy()
+                k_matrix = np.asarray(camera_info.k, dtype=np.float64).reshape(3, 3)
+                t_camera_base = vision._base_to_camera_optical_matrix(obs, cam_name)
+                pred_px = None
+                gt_px = None
+                if t_camera_base is not None:
+                    pred_px = np.array(
+                        project_3d_to_pixel(predicted_port, k_matrix, t_camera_base),
+                        dtype=np.float64,
+                    )
+                    if self._projected_point_visible(pred_px, debug_img.shape):
+                        self._draw_triangulation_point(
+                            debug_img,
+                            pred_px,
+                            "PRED",
+                            (0, 255, 255),
+                        )
+
+                    if gt_port is not None:
+                        gt_px = np.array(
+                            project_3d_to_pixel(gt_port, k_matrix, t_camera_base),
+                            dtype=np.float64,
+                        )
+                        if self._projected_point_visible(gt_px, debug_img.shape):
+                            self._draw_triangulation_point(
+                                debug_img,
+                                gt_px,
+                                "GT",
+                                (255, 0, 255),
+                            )
+
+                    if (
+                        gt_px is not None
+                        and pred_px is not None
+                        and self._projected_point_visible(pred_px, debug_img.shape)
+                        and self._projected_point_visible(gt_px, debug_img.shape)
+                    ):
+                        cv2.line(
+                            debug_img,
+                            tuple(np.round(pred_px).astype(int)),
+                            tuple(np.round(gt_px).astype(int)),
+                            (255, 255, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                text_lines = [
+                    f"task={task_label} source={label} cam={cam_name}",
+                    f"target_gt={target_frame_short}",
+                    (
+                        "pred_xyz="
+                        f"({predicted_port[0]:+.4f}, "
+                        f"{predicted_port[1]:+.4f}, "
+                        f"{predicted_port[2]:+.4f})m"
+                    ),
+                ]
+                if gt_port is None:
+                    text_lines.extend(
+                        [
+                            f"gt=unavailable frame={target_frame}",
+                            "error=unavailable",
+                        ]
+                    )
+                else:
+                    text_lines.extend(
+                        [
+                            (
+                                "gt_xyz="
+                                f"({gt_port[0]:+.4f}, "
+                                f"{gt_port[1]:+.4f}, "
+                                f"{gt_port[2]:+.4f})m"
+                            ),
+                            (
+                                "err_mm="
+                                f"dx={error[0] * 1000.0:+.1f} "
+                                f"dy={error[1] * 1000.0:+.1f} "
+                                f"dz={error[2] * 1000.0:+.1f} "
+                                f"norm={error_norm_mm:.1f}"
+                            ),
+                        ]
+                    )
+
+                VisionPortEstimator._put_text_lines(debug_img, text_lines, 10, 24)
+                fname = (
+                    save_dir
+                    / VisionPortEstimator._sanitize_debug_token(cam_name or "camera")
+                    / f"{task_label}__triangulation_{frame_id:04d}.jpg"
+                )
+                os.makedirs(fname.parent, exist_ok=True)
+                if cv2.imwrite(str(fname), debug_img):
+                    saved_count += 1
+                    self.get_logger().info(
+                        f"\033[1;92m[Triangulation Debug] saved: {fname}\033[0m"
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"[Triangulation Debug] save failed: {fname}"
+                    )
+            if saved_count == 0:
+                self.get_logger().warn(
+                    "[Triangulation Debug] no images saved "
+                    f"(task={task_label}, source={label})"
+                )
+        except Exception as exc:
+            self.get_logger().warn(f"[Triangulation Debug] save failed: {exc}")
+
     @staticmethod
     def _pose_position_array(pose: Pose) -> np.ndarray:
         """Pose의 position을 base_link 3D numpy 벡터로 변환한다."""
@@ -876,16 +1213,42 @@ class FinalPolicy(Policy):
         except Exception as exc:
             self.get_logger().warn(f"[Align Debug] save failed: {exc}")
 
-    def _cache_detected_port(self, port: np.ndarray, tcp_pose: Pose, label: str) -> None:
+    def _cache_detected_port(
+        self,
+        port: np.ndarray,
+        tcp_pose: Pose,
+        label: str,
+        *,
+        obs=None,
+        vision: Optional[VisionPortEstimator] = None,
+    ) -> None:
         """검출된 포트 base 좌표와 접근에 사용할 wrist orientation을 캐시에 저장한다."""
         self._cached_port_base = np.asarray(port, dtype=np.float64)
         self._target_orientation = self._target_wrist_orientation(tcp_pose)
+        self._publish_triangulated_port_xyz(self._cached_port_base, label)
+        if obs is not None and vision is not None:
+            self._save_triangulation_debug_images(
+                obs=obs,
+                vision=vision,
+                predicted_port=self._cached_port_base,
+                label=label,
+            )
         self.get_logger().info(
             f"{label}: detection cached, "
             f"port_base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f}), "
             f"axis={FinalPolicyConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS}, "
             f"angle={self._manual_rotation_deg():+.2f}deg"
         )
+
+    def _settle_after_lift_detect(self) -> None:
+        """lift_up_detect 성공 후 approach로 넘어가기 전에 잠시 안정화한다."""
+        settle_s = float(FinalPolicyConfig.LIFT_DETECT_TO_APPROACH_SETTLE_S)
+        if settle_s <= 0.0:
+            return
+        self.get_logger().info(
+            f"lift_up_detect settle before approach: {settle_s:.2f}s"
+        )
+        self.sleep_for(settle_s)
 
     def _cached_port_estimate(
         self,
@@ -957,6 +1320,7 @@ class FinalPolicy(Policy):
 
         try:
             obs = get_observation()
+            latest_obs = obs
             start_pose = self._tcp_pose(obs)
             if start_pose is None:
                 self.get_logger().error("lift_up_detect failed: missing TCP pose")
@@ -973,7 +1337,14 @@ class FinalPolicy(Policy):
                 port = self._cached_port_estimate(vision, target_class_id)
                 if port is None:
                     return False
-                self._cache_detected_port(port, current_pose, label)
+                self._cache_detected_port(
+                    port,
+                    current_pose,
+                    label,
+                    obs=latest_obs,
+                    vision=vision,
+                )
+                self._settle_after_lift_detect()
                 self.get_logger().info("[lift_up_detect] Done")
                 return True
 
@@ -1023,6 +1394,7 @@ class FinalPolicy(Policy):
                 self.sleep_for(FinalPolicyConfig.INITIAL_LIFT_DT)
 
                 obs = get_observation()
+                latest_obs = obs
                 current_pose = self._tcp_pose(obs) or pose
                 if obs is not None:
                     vision.request_estimate(
@@ -1047,7 +1419,14 @@ class FinalPolicy(Policy):
                     "lift_up_detect failed: YOLO port estimate unavailable"
                 )
                 return False
-            self._cache_detected_port(port, current_pose, "lift_up_detect fallback")
+            self._cache_detected_port(
+                port,
+                current_pose,
+                "lift_up_detect fallback",
+                obs=obs,
+                vision=vision,
+            )
+            self._settle_after_lift_detect()
             self.get_logger().info("[lift_up_detect] Done")
             return True
         finally:
@@ -1344,6 +1723,17 @@ class FinalPolicy(Policy):
             f"target={task.target_module_name}, port={task.port_name}, "
             f"cable={task.cable_name}, plug={task.plug_name}"
         )
+        triangulation_eval_only = bool(FinalPolicyConfig.TRIANGULATION_EVAL_ONLY)
+        if triangulation_eval_only:
+            self.get_logger().info(
+                "FinalPolicy triangulation eval-only mode: "
+                "will stop after lift_up_detect"
+            )
+            if not FinalPolicyConfig.PUBLISH_TRIANGULATED_PORT_XYZ:
+                self.get_logger().warn(
+                    "AIC_TRIANGULATION_EVAL_ONLY=1 but "
+                    "AIC_PUBLISH_TRIANGULATED_PORT_XYZ is disabled"
+                )
         try:
             self._preload_detection_model_for_current_task()
         except Exception as exc:
@@ -1354,24 +1744,30 @@ class FinalPolicy(Policy):
             return False
         self._start_background_yolo_model_downloads()
 
-        try:
-            self._vision_offset_predictor_for_align()
-        except Exception as exc:
-            self.get_logger().error(
-                format_model_log(
-                    f"FinalPolicy initial vision-offset model load failed: {exc}"
+        if not triangulation_eval_only:
+            try:
+                self._vision_offset_predictor_for_align()
+            except Exception as exc:
+                self.get_logger().error(
+                    format_model_log(
+                        f"FinalPolicy initial vision-offset model load failed: {exc}"
+                    )
                 )
-            )
-            send_feedback("failed: load vision_offset model")
-            return False
-        self._start_background_vision_offset_model_downloads()
+                send_feedback("failed: load vision_offset model")
+                return False
+            self._start_background_vision_offset_model_downloads()
 
-        stages = (
+        stages = [
             ("lift_up_detect", lambda: self._stage_lift_up_detect(get_observation, move_robot)),
-            ("approach", lambda: self._stage_approach(get_observation, move_robot)),
-            ("vision_offset_align", lambda: self._stage_align(get_observation, move_robot)),
-            ("insert", lambda: self._stage_insert(get_observation, move_robot)),
-        )
+        ]
+        if not triangulation_eval_only:
+            stages.extend(
+                [
+                    ("approach", lambda: self._stage_approach(get_observation, move_robot)),
+                    ("vision_offset_align", lambda: self._stage_align(get_observation, move_robot)),
+                    ("insert", lambda: self._stage_insert(get_observation, move_robot)),
+                ]
+            )
         for name, stage in stages:
             send_feedback(f"Final Policy: {name}")
             try:
@@ -1383,6 +1779,12 @@ class FinalPolicy(Policy):
                 self.get_logger().error(f"FinalPolicy exception at {name}: {exc}")
                 send_feedback(f"failed: {name} exception")
                 return False
+        if triangulation_eval_only:
+            send_feedback("Final Policy: triangulation eval done")
+            self.get_logger().info(
+                "FinalPolicy triangulation eval done; waiting for next task"
+            )
+            return True
         send_feedback("Final Policy: done")
         self.get_logger().info("FinalPolicy done")
         return True

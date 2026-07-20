@@ -52,6 +52,10 @@ distrobox enter -r aic_eval -- /entrypoint.sh \
 
 ```bash
 cd ~/AIC_Sejong/ws_aic/src
+export AIC_PUBLISH_TRIANGULATED_PORT_XYZ=1
+export AIC_TRIANGULATION_EVAL_ONLY=1
+export AIC_TRIANGULATED_PORT_XYZ_TOPIC=/final_policy/triangulated_port_xyz
+export AIC_TRIANGULATED_PORT_XYZ_FRAME_ID=base_link
 pixi run ros2 run aic_model aic_model \
   --ros-args -p use_sim_time:=true \
   -p policy:=final_policy.FinalPolicy
@@ -64,10 +68,21 @@ pixi run ros2 run aic_model aic_model \
 아래 명령을 별도 터미널에서 먼저 실행한 뒤 FinalPolicy를 실행하면, detection stage에서 publish된 추론 XYZ를 받아 한 번 비교합니다.
 
 ```bash
-python3 /home/swlinux/Desktop/workspace/AIC_Sejong/triangulation/evaluate_triangulation_xyz.py \
+pixi run python /home/swlinux/Desktop/workspace/AIC_Sejong/triangulation/evaluate_triangulation_xyz.py \
   --case-name case_01_sfp_rail0_port0_left \
   --prediction-topic /final_policy/triangulated_port_xyz \
+  --fixed-frame world \
   --once
+```
+
+전체 10개 case를 순서대로 평가하려면 engine이 `triangulation_cases.yaml`의 다음 trial로 넘어갈 때마다 FinalPolicy가 publish하는 값을 하나씩 받도록 evaluator를 all-cases 모드로 실행합니다.
+
+```bash
+pixi run python /home/swlinux/Desktop/workspace/AIC_Sejong/triangulation/evaluate_triangulation_xyz.py \
+  --all-cases \
+  --prediction-topic /final_policy/triangulated_port_xyz \
+  --fixed-frame world \
+  --overwrite
 ```
 
 저장 파일은 `triangulation/results/triangulation_xyz_results.csv`, `triangulation_xyz_results.jsonl`, `triangulation_xyz_summary.json`입니다.
@@ -75,9 +90,11 @@ python3 /home/swlinux/Desktop/workspace/AIC_Sejong/triangulation/evaluate_triang
 | 입력 | 내용 |
 |------|------|
 | `--case-name` | `triangulation_cases.yaml`의 case 이름 |
+| `--all-cases` | YAML에 정의된 10개 case를 순서대로 평가 |
 | `--prediction-topic` | FinalPolicy가 publish하는 `geometry_msgs/PointStamped` 추론 XYZ |
 | `--target-frame` | YAML 밖의 frame을 직접 비교할 때 사용 |
 | `--predictions` | GT/추론 XYZ가 들어 있는 CSV/JSONL/JSON을 오프라인 비교 |
+| `--fixed-frame` | TF 시간 extrapolation fallback에 사용할 고정 frame. 기본값은 `world` |
 | `--overwrite` | 기존 결과를 덮어쓰고 새로 저장 |
 
-10개 case는 engine case를 바꿔 실행한 뒤 같은 평가 명령을 반복하면 결과 파일에 누적됩니다.
+단일 case는 engine case를 바꿔 실행한 뒤 같은 평가 명령을 반복하면 결과 파일에 누적됩니다. 전체 case 모드는 `triangulation_cases.yaml`의 `trials` 순서를 기준으로 누적합니다.

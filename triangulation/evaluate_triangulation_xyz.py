@@ -386,6 +386,7 @@ def lookup_gt_xyz(
     target_frame: str,
     timeout_s: float,
     *,
+    fixed_frame: str = "",
     spin_during_wait: bool = False,
 ) -> tuple[float, float, float]:
     from rclpy.duration import Duration
@@ -402,8 +403,27 @@ def lookup_gt_xyz(
                 timeout=Duration(seconds=min(0.2, max(timeout_s, 0.0))),
             ).transform
             return float(tf.translation.x), float(tf.translation.y), float(tf.translation.z)
-        except Exception as exc:  # pragma: no cover - depends on ROS runtime.
-            last_error = exc
+        except Exception as direct_exc:  # pragma: no cover - depends on ROS runtime.
+            last_error = direct_exc
+            if fixed_frame:
+                try:
+                    tf = buffer.lookup_transform_full(
+                        base_frame,
+                        Time(),
+                        target_frame,
+                        Time(),
+                        fixed_frame,
+                        timeout=Duration(seconds=min(0.2, max(timeout_s, 0.0))),
+                    ).transform
+                    return (
+                        float(tf.translation.x),
+                        float(tf.translation.y),
+                        float(tf.translation.z),
+                    )
+                except Exception as full_exc:
+                    last_error = RuntimeError(
+                        f"{full_exc} (direct: {direct_exc})"
+                    )
             if spin_during_wait:
                 import rclpy
 
@@ -420,7 +440,16 @@ def run_ros(args: argparse.Namespace) -> None:
     from tf2_ros import Buffer, TransformListener
 
     cases = load_cases(args.cases)
-    case = select_runtime_case(args, cases)
+    runtime_cases = (
+        list(cases.values())
+        if args.all_cases
+        else [select_runtime_case(args, cases)]
+    )
+    if not runtime_cases:
+        raise SystemExit(f"No cases found in {args.cases}")
+    if args.all_cases and args.pred_xyz is not None:
+        raise SystemExit("--pred-xyz cannot be used with --all-cases")
+    current_case_index = 0
     rows = [] if args.overwrite else read_existing_rows(args.output_dir / "triangulation_xyz_results.csv")
 
     rclpy.init()
@@ -433,13 +462,14 @@ def run_ros(args: argparse.Namespace) -> None:
             buffer,
             node,
             args.base_frame,
-            case.target_frame,
+            runtime_cases[0].target_frame,
             args.tf_timeout,
+            fixed_frame=args.fixed_frame,
             spin_during_wait=True,
         )
         rows.append(
             make_row(
-                case,
+                runtime_cases[0],
                 gt_xyz,
                 tuple(args.pred_xyz),
                 base_frame=args.base_frame,
@@ -456,7 +486,9 @@ def run_ros(args: argparse.Namespace) -> None:
     msg_type = PoseStamped if args.message_type == "pose" else PointStamped
 
     def on_prediction(msg: Any) -> None:
+        nonlocal current_case_index
         try:
+            case = runtime_cases[current_case_index]
             pred_xyz = xyz_from_msg(msg, args.message_type)
             gt_xyz = lookup_gt_xyz(
                 buffer,
@@ -464,6 +496,7 @@ def run_ros(args: argparse.Namespace) -> None:
                 args.base_frame,
                 case.target_frame,
                 args.tf_timeout,
+                fixed_frame=args.fixed_frame,
             )
             timestamp = node.get_clock().now().nanoseconds / 1e9
             row = make_row(
@@ -484,17 +517,40 @@ def run_ros(args: argparse.Namespace) -> None:
                 f"{float(row['dy_mm']):+.3f}, "
                 f"{float(row['dz_mm']):+.3f})mm"
             )
-            if args.once:
+            if args.all_cases:
+                current_case_index += 1
+                if current_case_index >= len(runtime_cases):
+                    node.get_logger().info(
+                        f"All {len(runtime_cases)} triangulation cases evaluated."
+                    )
+                    rclpy.shutdown()
+                else:
+                    next_case = runtime_cases[current_case_index]
+                    node.get_logger().info(
+                        "Waiting for next case prediction: "
+                        f"{next_case.name} target_frame={next_case.target_frame}"
+                    )
+            elif args.once:
                 rclpy.shutdown()
         except Exception as exc:  # pragma: no cover - depends on ROS runtime.
             node.get_logger().error(str(exc))
 
     node.create_subscription(msg_type, args.prediction_topic, on_prediction, 10)
-    node.get_logger().info(
-        "triangulation evaluator listening: "
-        f"case={case.name}, target_frame={case.target_frame}, "
-        f"topic={args.prediction_topic}"
-    )
+    if args.all_cases:
+        first_case = runtime_cases[0]
+        node.get_logger().info(
+            "triangulation evaluator listening in all-cases mode: "
+            f"count={len(runtime_cases)}, first_case={first_case.name}, "
+            f"first_target_frame={first_case.target_frame}, "
+            f"topic={args.prediction_topic}"
+        )
+    else:
+        case = runtime_cases[0]
+        node.get_logger().info(
+            "triangulation evaluator listening: "
+            f"case={case.name}, target_frame={case.target_frame}, "
+            f"topic={args.prediction_topic}"
+        )
     try:
         rclpy.spin(node)
     except (ExternalShutdownException, KeyboardInterrupt):
@@ -519,6 +575,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pred-xyz", nargs=3, type=float, metavar=("X", "Y", "Z"))
     parser.add_argument("--predictions", type=Path)
     parser.add_argument("--tf-timeout", type=float, default=3.0)
+    parser.add_argument("--fixed-frame", default="world")
+    parser.add_argument("--all-cases", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
