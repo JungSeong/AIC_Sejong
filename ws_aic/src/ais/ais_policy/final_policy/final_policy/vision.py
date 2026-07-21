@@ -223,6 +223,17 @@ class VisionPortEstimator:
         self._ensure_loaded()
         return self._loaded
 
+    def supports_class_id(self, class_id: int) -> bool:
+        """현재 YOLO 체크포인트가 요청 class id를 실제 출력할 수 있는지 확인한다."""
+        self._ensure_loaded()
+        if not self._loaded or self._model is None:
+            return False
+        names = getattr(self._model, "names", {}) or {}
+        try:
+            return int(class_id) in {int(key) for key in names}
+        except (TypeError, ValueError):
+            return False
+
     def stop_detection(self) -> None:
         """비동기 YOLO 추론 워커를 멈추고 대기 중인 요청을 비운다."""
         if not self._worker_is_alive():

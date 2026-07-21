@@ -8,6 +8,7 @@ from data_gen_node.port_offset_geometry import _quat_from_axis_angle_xyzw, _quat
 import numpy as np
 
 def _stratified_axis(self, low: float, high: float, steps: int) -> np.ndarray:
+    """한 축 범위를 동일 구간으로 나눠 각 구간에서 uniform sample을 뽑는다."""
     if steps <= 1:
         return np.array([(low + high) * 0.5], dtype=float)
     edges = np.linspace(low, high, steps + 1, dtype=float)
@@ -16,6 +17,7 @@ def _stratified_axis(self, low: float, high: float, steps: int) -> np.ndarray:
     return values
 
 def _build_port_collect_samples(self, steps: int) -> list[dict[str, float]]:
+    """첫 영점과 독립 stratified XYZ/RPY sample 목록을 생성한다."""
     if steps <= 1:
         return [
             {
@@ -101,6 +103,7 @@ def _build_port_collect_samples(self, steps: int) -> list[dict[str, float]]:
     return samples
 
 def _sample_port_collect_offset(self, step_idx: int) -> dict[str, float]:
+    """현재 collect step에 대응하는 port-local offset sample을 반환한다."""
     if len(self._port_collect_samples) != max(1, self.collect_steps):
         self._port_collect_samples = self._build_port_collect_samples(
             max(1, self.collect_steps)
@@ -114,7 +117,7 @@ def _apply_collect_offset(
     port_axis: Optional[dict[str, float]],
     step_idx: int,
 ) -> tuple[Pose, dict[str, Any]]:
-    """Apply one stratified port-local XYZ offset and port-local RPY."""
+    """하나의 stratified port-local XYZ와 RPY offset을 목표 pose에 적용한다."""
     denom = float(max(1, self.collect_steps - 1))
     progress = float(np.clip(step_idx / denom, 0.0, 1.0))
     sample = self._sample_port_collect_offset(step_idx)

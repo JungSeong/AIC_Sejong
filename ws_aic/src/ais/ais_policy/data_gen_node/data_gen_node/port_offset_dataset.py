@@ -28,12 +28,14 @@ def _connector_dir_for_task(task) -> str:
 
 
 def _split_for_sample(self, sample_index: int) -> str:
+    """sample index를 설정된 비율에 따라 train 또는 validation으로 나눈다."""
     if self._rpy_val_ratio <= 0.0:
         return "train"
     period = max(1, round(1.0 / self._rpy_val_ratio))
     return "val" if sample_index % period == 0 else "train"
 
 def _write_rpy_data_yaml(self) -> None:
+    """XYZ/RPY 데이터셋의 경로·범위·안정화 조건을 data.yaml에 기록한다."""
     self._rpy_dataset_dir.mkdir(parents=True, exist_ok=True)
     (self._rpy_dataset_dir / "data.yaml").write_text(
         "\n".join(
@@ -50,8 +52,13 @@ def _write_rpy_data_yaml(self) -> None:
                 f"  dx: [{self.port_collect_x_min_m * 1000.0:.6f}, {self.port_collect_x_max_m * 1000.0:.6f}]",
                 f"  dy: [{self.port_collect_y_min_m * 1000.0:.6f}, {self.port_collect_y_max_m * 1000.0:.6f}]",
                 f"  dz: [{self.port_collect_z_min_m * 1000.0:.6f}, {self.port_collect_z_max_m * 1000.0:.6f}]",
-                f"base_z_offset_mm: {self._triangulation_stop_z_offset * 1000.0:.6f}",
+                f"base_z_offset_mm: {self.collect_base_z_offset_m * 1000.0:.6f}",
                 f"capture_settle_s: {getattr(self, 'collect_capture_settle_sec', 0.0):.6f}",
+                f"stability_timeout_s: {getattr(self, 'collect_stability_timeout_sec', 0.0):.6f}",
+                f"stable_samples: {getattr(self, 'collect_stable_samples', 1)}",
+                f"stability_poll_s: {getattr(self, 'collect_stability_poll_sec', 0.0):.6f}",
+                f"linear_speed_tol_mps: {getattr(self, 'collect_linear_speed_tol_mps', 0.0):.9f}",
+                f"angular_speed_tol_radps: {getattr(self, 'collect_angular_speed_tol_radps', 0.0):.9f}",
                 "collect_rpy_range_deg:",
                 f"  roll: [{np.rad2deg(self.port_collect_roll_min_rad):.6f}, {np.rad2deg(self.port_collect_roll_max_rad):.6f}]",
                 f"  pitch: [{np.rad2deg(self.port_collect_pitch_min_rad):.6f}, {np.rad2deg(self.port_collect_pitch_max_rad):.6f}]",
@@ -75,6 +82,7 @@ def _port_projection_for_camera(
     camera_name: str,
     port_tf: Transform,
 ) -> dict[str, Any]:
+    """base_link의 port 위치를 지정 camera 영상 좌표로 투영한다."""
     img_msg = self._image_msg_for_camera(obs, camera_name)
     k = self._camera_intrinsic_matrix(self._camera_info_for_camera(obs, camera_name))
     if img_msg is None or img_msg.width == 0 or img_msg.height == 0 or k is None:
@@ -117,6 +125,7 @@ def _port_projection_for_camera(
     }
 
 def _scenario_metadata(self, task) -> dict[str, Any]:
+    """현재 task ID에 대응하는 randomization metadata를 읽는다."""
     try:
         params = json.loads(
             self._scenario_params_file.read_text(encoding="utf-8")
@@ -138,6 +147,7 @@ def _save_xyz_rpy_sample(
     extras: dict[str, Any],
     detections_by_camera: Optional[dict[str, Optional[dict[str, Any]]]],
 ) -> None:
+    """안정화된 다중 camera 영상과 실제 XYZ/RPY label을 저장한다."""
     if obs is None:
         return
 
@@ -299,6 +309,7 @@ def _save_vision_offset_sample(
     extras: dict[str, Any],
     detections_by_camera: Optional[dict[str, Optional[dict[str, Any]]]] = None,
 ) -> None:
+    """기존 vision-offset 저장 API를 XYZ/RPY sample 저장기로 연결한다."""
     self._save_xyz_rpy_sample(
         episode_name,
         task,

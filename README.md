@@ -4,6 +4,8 @@
 
 Intrinsic 및 Open Robotics가 주관한 AI for Industry Challenge의 솔루션 코드입니다 <br>
 
+![Final Policy](readme/gif/FinalPolicy1.gif)
+
 ## 대회 설명
 AI for Industry Challenge는 Universal Robots(UR5e) 로봇 팔이 케이블을 지정된 포트에 삽입하는 Peg-In-Hole Task입니다.
 
@@ -131,7 +133,7 @@ pixi run ros2 run aic_model aic_model \
 
 #### 3-3. Vision-Offset 정렬 데이터셋 수집
 
-`data_gen_node.PortOffsetCollect`은 entrance frame 기준 포트 상대 offset/RPY, YOLO keypoint, triangulation, visibility 정보를 저장합니다. 현재 기본 출력 경로는 `AIC_VISION_OFFSET_DATASET_DIR`이며, 지정하지 않으면 노드 내부 기본 경로를 사용합니다.
+`data_gen_node.PortOffsetCollect`은 ROS 2 Ground Truth TF로 approach/collect 목표를 만들고, 안정화 후 entrance frame 기준 실제 plug-port offset/RPY와 camera visibility를 저장합니다. YOLO와 multi-view triangulation은 이 데이터 수집 policy의 제어 경로에 사용하지 않습니다. 현재 기본 출력 경로는 `AIC_VISION_OFFSET_DATASET_DIR`이며, 지정하지 않으면 노드 내부 기본 경로를 사용합니다.
 
 ```bash
 export AIC_VISION_OFFSET_DATASET_DIR=~/AIC_Sejong/data/vision_offset_dataset
@@ -160,7 +162,7 @@ pixi run hf auth whoami
 | Policy | 용도 | 저장 위치 | Output format |
 |--------|------|-----------|---------------|
 | `data_gen_node.LeRobot` | 기본 에피소드 수집 | `$AIC_LEROBOT_OUT_DIR/$AIC_LEROBOT_VERSION`, `/tmp/aic_episodes/<episode>/episode_summary.json` | LeRobot dataset (`meta/*.json`, `data/*.parquet`, `videos/*/*.mp4`) |
-| `data_gen_node.PortOffsetCollect` | vision-offset 정렬 학습 샘플 수집 | `$AIC_VISION_OFFSET_DATASET_DIR` | YOLO-style image/label dataset + metadata JSON/JSONL |
+| `data_gen_node.PortOffsetCollect` | GT-guided vision-offset 정렬 학습 샘플 수집 | `$AIC_VISION_OFFSET_DATASET_DIR` | multi-camera image + 실제 offset/RPY metadata JSON/JSONL |
 
 #### 3-4. 자동 수집 스크립트
 
@@ -183,7 +185,7 @@ pixi run python ais/ais_auto_capture/collect_portoffset_randomization.py \
   --trials 20 \
   --samples-per-trial 24 \
   --port-types sfp,sc \
-  --port-order round_robin \
+  --port-order random \
   --dataset-version v1.0 \
   --no-push-to-hub \
   --headless \
@@ -197,10 +199,39 @@ aarch64 소스 빌드 환경에서 LeRobot episode를 수집할 때는 동일한
 
 `collect_portoffset_randomization.py`는 Gazebo를 trial마다 rootless distrobox로 자동 실행하고, SFP/SC target과 simulator 조명을 함께 랜덤화합니다. 각 trial 시작 시 `Task Board`, `Port`, `Cable / Robot`, `Simulator / Lighting` 카테고리별 랜덤화 값이 색상/볼드 로그로 출력됩니다.
 
+#### 시나리오 랜덤화 분포
+
+각 연속 변수는 독립적으로 샘플링합니다. Gaussian 조명의 제한 범위는 `μ ± 3σ`이며, 범위 밖 표본은 다시 추출합니다.
+
+| 시나리오 요소 | 랜덤화 변수 | 분포 | 기본 파라미터 / 범위 |
+|---|---|---|---|
+| Task Board (SFP) | world X / Y / yaw | Continuous Uniform | X `U(0.13, 0.17) m`, Y `U(-0.25, -0.20) m`, yaw `U(0.55, 0.80) rad` |
+| Task Board (SC) | world X / Y / yaw | Continuous Uniform | X `U(0.15, 0.19) m`, Y `U(-0.05, 0.05) m`, yaw `U(0, 3.1415) rad` |
+| 삽입 포트 타입 | SFP / SC | Discrete Uniform | 기본 `--port-order random`: 각각 `P=0.5`; `round_robin` 선택 가능 |
+| SFP 삽입 포트 | NIC rail / SFP port index | Discrete Uniform | rail `{0,1,2,3,4}`, port `{0,1}`에서 동일 확률 선택 |
+| SFP 삽입 포트 | NIC translation / yaw | Continuous Uniform | translation `U(-0.0215, 0.0234) m`, yaw `U(-10, 10) deg` |
+| SC 삽입 포트 | SC rail / translation | Discrete + Continuous Uniform | rail `{0,1}` 동일 확률, translation `U(-0.06, 0.055) m`; local yaw는 `0`, world yaw는 Task Board yaw를 따름 |
+| 조명 ambient | scene ambient 밝기 | Truncated Gaussian | `N(μ=0.04, σ=0.0133)`, `[0, 0.08]` |
+| 조명 background | scene background 밝기 | Truncated Gaussian | `N(μ=0.14, σ=0.02)`, `[0.08, 0.20]` |
+| 조명 intensity | light intensity scale | Truncated Gaussian | `N(μ=1.0, σ=0.1167)`, `[0.65, 1.35]` |
+| 조명 RGB | diffuse 채널별 ΔR / ΔG / ΔB | Truncated Gaussian | 각 채널 `N(μ=0, σ=0.04)`, `[-0.12, 0.12]`; 최종 RGB는 `[0,1]`로 제한 |
+| 조명 위치 | pose ΔX / ΔY / ΔZ | Truncated Gaussian | ΔX·ΔY `N(0, 0.0833) m`, `[-0.25, 0.25] m`; ΔZ `N(0, 0.0667) m`, `[-0.20, 0.20] m` |
+
+![시나리오 랜덤화 분포 그래프](readme/photo/scenario_randomization_distributions.png)
+
+그래프는 시나리오의 `LIMITS`, 포트 개수 상수, 수집 CLI의 조명 기본값을 직접 읽어 생성합니다. 파라미터 변경 후 다음 명령을 다시 실행하면 PNG가 갱신됩니다.
+
+```bash
+cd ~/AIC_Sejong/ws_aic/src
+pixi run python ais/ais_auto_capture/plot_scenario_randomization.py
+```
+
+실행 시 `--light-intensity-scale-min`, `--light-intensity-scale-max`, `--light-color-jitter`, `--light-pose-xy-jitter-m`, `--light-pose-z-jitter-m`, `--ambient-min/max`, `--background-min/max`, `--port-types`, `--port-order`로 그래프 파라미터를 직접 덮어쓸 수 있습니다. 전체 옵션은 `--help`로 확인합니다.
+
 | 파라미터 종류 | 범위 | 역할 |
 |---|---|---|
 | Target port type | `--port-types sfp`, `sc`, `sfp,sc` 기본 `sfp,sc` | 수집할 포트 계열을 선택합니다. 기본은 SFP와 SC를 모두 수집합니다. |
-| Target port order | `--port-order round_robin` 또는 `random`, 기본 `round_robin` | SFP/SC trial 배치 순서를 결정합니다. |
+| Target port order | `--port-order random` 또는 `round_robin`, 기본 `random` | SFP/SC trial 배치 순서를 결정합니다. |
 | Trial count | `--trials`, 기본 `20` | 생성 및 수집할 Gazebo trial 개수입니다. |
 | Samples per trial | `--samples-per-trial`, 기본 `24` | 한 trial에서 저장할 vision-offset sample 수입니다. |
 | SFP task board X | `0.13 ~ 0.17 m` | SFP/NIC trial에서 task board의 world X 위치를 랜덤화합니다. |
@@ -223,13 +254,16 @@ aarch64 소스 빌드 환경에서 LeRobot episode를 수집할 때는 동일한
 | Collect RPY range | roll/pitch 기본 `±25 deg`, yaw 기본 `±35 deg` | PortOffsetCollect가 포트 기준 자세 offset sample을 생성하는 범위입니다. `--roll-*`, `--pitch-*`, `--yaw-*`로 축별 override할 수 있습니다. |
 | RPY norm cap | `--rpy-norm-max-rad`, 기본 미사용 | sampling된 RPY vector magnitude를 제한합니다. |
 | Actual RPY norm filter | `--actual-rpy-norm-max-rad`, 기본 `--rpy-norm-max-rad` 정책값 사용 | 저장 직전 실제 plug-port quaternion angle이 큰 sample을 제외합니다. |
-| Capture settle time | `--capture-settle-s`, 기본 `0.25 s` | offset 적용 후 이미지/metadata를 저장하기 전 안정화 대기 시간입니다. |
+| Capture settle time | `--capture-settle-s`, 기본 `1.0 s` | offset 적용 후 정지 판정을 시작하기 전 반드시 기다리는 최소 시간입니다. |
+| Motion stability | timeout `5 s`, `0.1 s` 간격 5회, 선속도 `2 mm/s`, 각속도 `2 deg/s` 이하 | TCP 속도가 연속 기준을 만족한 경우에만 저장합니다. timeout이면 움직이는 sample을 저장하지 않고 건너뜁니다. |
+| Summary grace / trial interval | summary 후 `3 s`, trial 간 `3 s` | AIC engine의 scoring/reset 완료를 기다린 뒤 종료하고, 종료 검증 후 다음 trial을 시작합니다. |
+| Simulator teardown | SIGINT `5 s` → SIGTERM `2 s` → SIGKILL `1 s` | 외부 Distrobox wrapper PGID와 config marker로 찾은 내부 ROS 2/Gazebo PGID를 각각 등록합니다. 내부 simulator를 먼저 종료한 뒤 wrapper를 종료하며, 어느 그룹이든 잔존하면 다음 trial을 시작하지 않습니다. |
 | Visibility filter | `--min-visible-cameras` 기본 `1`, `--visibility-margin-px` 기본 `8 px` | 포트가 충분히 보이는 sample만 저장하도록 카메라 visibility 기준을 정합니다. |
-| Lighting randomization | 기본 on, `--no-randomize-lighting`으로 off | trial마다 Gazebo world SDF를 생성해 조명/배경을 랜덤화합니다. |
-| Light intensity scale | `0.65 ~ 1.35` | `enclosure_light`, `ceiling_01`, `ceiling_02` intensity에 곱할 scale 범위입니다. |
-| Light color jitter | 기본 `±0.12` | 각 light diffuse RGB를 channel별로 흔듭니다. |
-| Light pose jitter | XY 기본 `±0.25 m`, Z 기본 `±0.20 m` | 각 light 위치를 약간 이동시켜 highlight/shadow 위치를 바꿉니다. |
-| Ambient / background | ambient `0.0 ~ 0.08`, background `0.08 ~ 0.20` | scene ambient와 background 밝기를 랜덤화합니다. |
+| Lighting randomization | 기본 on, `--no-randomize-lighting`으로 off | trial마다 Gazebo world SDF를 생성해 조명/배경을 truncated Gaussian 분포로 랜덤화합니다. |
+| Light intensity scale | `N(μ=1.0, σ=0.1167)`, `[0.65, 1.35]` | `enclosure_light`, `ceiling_01`, `ceiling_02` intensity에 곱할 scale입니다. |
+| Light color jitter | `N(μ=0, σ=0.04)`, `[-0.12, 0.12]` | 각 light diffuse RGB를 channel별로 변화시킵니다. |
+| Light pose jitter | XY `N(0, 0.0833) m`, `[-0.25, 0.25] m`; Z `N(0, 0.0667) m`, `[-0.20, 0.20] m` | 각 light 위치를 변화시켜 highlight/shadow 위치를 바꿉니다. |
+| Ambient / background | ambient `N(0.04, 0.0133)`, `[0, 0.08]`; background `N(0.14, 0.02)`, `[0.08, 0.20]` | scene ambient와 background 밝기를 변화시킵니다. |
 | Gazebo mode | `--headless` on/off | Gazebo GUI/RViz 실행 여부를 결정합니다. |
 | Color log | 기본 on, `--no-color-log` 또는 `NO_COLOR`로 off | trial별 랜덤화 로그를 색상/볼드로 구분해 출력합니다. |
 | Trial timeout | 기본 `time-limit-s + 180 s` | `episode_summary.json` 생성 대기 제한 시간입니다. |

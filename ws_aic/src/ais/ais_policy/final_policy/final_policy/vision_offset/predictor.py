@@ -15,8 +15,39 @@ from final_policy.model_store import format_model_log
 from final_policy.vision_offset.model import build_vision_offset_model
 
 
+LABEL_ORDER_5D = ("x_m", "y_m", "roll_rad", "pitch_rad", "yaw_rad")
+LABEL_ORDER_6D = ("x_m", "y_m", "z_m", "roll_rad", "pitch_rad", "yaw_rad")
+REQUIRED_LABELS = frozenset(LABEL_ORDER_5D)
+SUPPORTED_LABELS = frozenset(LABEL_ORDER_6D)
+
+
+def canonicalize_correction(
+    output: np.ndarray,
+    label_order: tuple[str, ...],
+) -> np.ndarray:
+    """5D/6D 모델 출력을 canonical [x,y,z,roll,pitch,yaw] 순서로 변환한다."""
+    values = np.asarray(output, dtype=np.float64).reshape(-1)
+    if values.size != len(label_order):
+        raise ValueError(
+            f"Vision-offset output size mismatch: output={values.size}, "
+            f"label_order={len(label_order)}"
+        )
+    by_label = dict(zip(label_order, values))
+    return np.array(
+        [
+            by_label["x_m"],
+            by_label["y_m"],
+            by_label.get("z_m", 0.0),
+            by_label["roll_rad"],
+            by_label["pitch_rad"],
+            by_label["yaw_rad"],
+        ],
+        dtype=np.float64,
+    )
+
+
 class VisionOffsetPredictor:
-    """Predict 6D base_link correction from left/center/right camera images."""
+    """카메라 이미지에서 5D/6D 보정값을 읽고 canonical 6D로 반환한다."""
 
     def __init__(
         self,
@@ -33,6 +64,8 @@ class VisionOffsetPredictor:
             self.device = torch.device(device)
         self.cameras = FinalPolicyConfig.CAMERAS
         self.image_size: int | tuple[int, int] | None = 224
+        self.label_order: tuple[str, ...] = LABEL_ORDER_6D
+        self.output_dim = len(self.label_order)
         self.model = None
         self._load()
 
@@ -46,6 +79,57 @@ class VisionOffsetPredictor:
             if name:
                 return name
         return "cross_attention_bilinear"
+
+    @staticmethod
+    def _infer_output_dim(state_dict: dict[str, torch.Tensor]) -> int:
+        """체크포인트의 마지막 regression head 가중치에서 출력 차원을 찾는다."""
+        candidates = [
+            int(value.shape[0])
+            for key, value in state_dict.items()
+            if key.endswith("head.5.weight") and value.ndim == 2
+        ]
+        if len(candidates) != 1:
+            raise ValueError(
+                "Cannot infer vision-offset output dimension from checkpoint head"
+            )
+        return candidates[0]
+
+    @staticmethod
+    def _resolve_label_order(
+        payload: dict,
+        config: dict,
+        state_dict: dict[str, torch.Tensor],
+    ) -> tuple[str, ...]:
+        """메타데이터와 head 크기를 대조해 모델 출력 필드 순서를 확정한다."""
+        raw_order = payload.get("label_order") or config.get("label_order")
+        inferred_dim = VisionOffsetPredictor._infer_output_dim(state_dict)
+        if raw_order is None:
+            if inferred_dim == len(LABEL_ORDER_5D):
+                label_order = LABEL_ORDER_5D
+            elif inferred_dim == len(LABEL_ORDER_6D):
+                label_order = LABEL_ORDER_6D
+            else:
+                raise ValueError(
+                    f"Unsupported vision-offset output dimension: {inferred_dim}"
+                )
+        else:
+            label_order = tuple(str(label) for label in raw_order)
+
+        if len(label_order) != inferred_dim:
+            raise ValueError(
+                "Vision-offset checkpoint label_order/head mismatch: "
+                f"labels={len(label_order)}, head={inferred_dim}"
+            )
+        labels = set(label_order)
+        missing = REQUIRED_LABELS - labels
+        unsupported = labels - SUPPORTED_LABELS
+        if missing or unsupported or len(labels) != len(label_order):
+            raise ValueError(
+                "Unsupported vision-offset label_order: "
+                f"{label_order}; missing={sorted(missing)}, "
+                f"unsupported={sorted(unsupported)}"
+            )
+        return label_order
 
     def _load(self) -> None:
         if not self.checkpoint_path.is_file():
@@ -94,10 +178,13 @@ class VisionOffsetPredictor:
             raise KeyError(
                 f"Vision-offset checkpoint missing model state_dict: {self.checkpoint_path}"
             )
+        self.label_order = self._resolve_label_order(payload, config, state_dict)
+        self.output_dim = len(self.label_order)
 
         self.model = build_vision_offset_model(
             model_name,
             feature_dim=feature_dim,
+            output_dim=self.output_dim,
             backbone_name=backbone_name,
             num_views=len(self.cameras),
             share_backbone_weights=share_backbone_weights,
@@ -115,7 +202,8 @@ class VisionOffsetPredictor:
                 "Vision-offset model loaded: "
                 f"path={self.checkpoint_path}, model={model_name}, "
                 f"backbone={backbone_name}, feature_dim={feature_dim}, "
-                f"image_size={self.image_size}, cameras={self.cameras}"
+                f"image_size={self.image_size}, cameras={self.cameras}, "
+                f"label_order={self.label_order}"
             ),
         )
 
@@ -172,8 +260,8 @@ class VisionOffsetPredictor:
                 return None
             images.append(self._image_msg_to_tensor(image_msg))
         batch = torch.stack(images, dim=0).unsqueeze(0).to(self.device)
-        output = self.model(batch)[0].detach().cpu().numpy().astype(np.float64)
-        if not np.isfinite(output).all():
+        raw_output = self.model(batch)[0].detach().cpu().numpy().astype(np.float64)
+        if not np.isfinite(raw_output).all():
             self._log("warn", "Non-finite vision-offset prediction")
             return None
-        return output
+        return canonicalize_correction(raw_output, self.label_order)

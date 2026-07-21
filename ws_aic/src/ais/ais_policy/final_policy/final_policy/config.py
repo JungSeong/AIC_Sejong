@@ -100,8 +100,8 @@ class FinalPolicyConfig:
     TCP_OFFSET_Z: float = _env_float("AIC_APPROACH_TCP_OFFSET_Z_M", 0.045)
 
     APPROACH_VISION_RETRIES: int = _env_int("AIC_APPROACH_VISION_RETRIES", 20)
-    APPROACH_RETRY_DT: float = _env_float("AIC_APPROACH_RETRY_DT", 0.1)
-    APPROACH_NEAR_Z_OFFSET_M: float = _env_float("AIC_APPROACH_NEAR_Z_OFFSET_M", 0.020)
+    APPROACH_RETRY_DT: float = _env_float("AIC_APPROACH_RETRY_DT", 0.2)
+    APPROACH_NEAR_Z_OFFSET_M: float = _env_float("AIC_APPROACH_NEAR_Z_OFFSET_M", 0.030)
     APPROACH_SFP_MANUAL_ROTATION_DEG: float = _env_float(
         "AIC_APPROACH_SFP_MANUAL_ROTATION_DEG",
         -21.21,
@@ -142,11 +142,11 @@ class FinalPolicyConfig:
     ALIGN_DAMPING: tuple = (45.0, 45.0, 45.0, 18.0, 18.0, 18.0)
     VISION_OFFSET_XY_TOL_M: float = _env_float(
         "AIC_VISION_OFFSET_XY_TOL_M",
-        _env_float("AIC_VISION_OFFSET_XYZ_TOL_M", 0.003),
+        _env_float("AIC_VISION_OFFSET_XYZ_TOL_M", 0.010),
     )
     VISION_OFFSET_RPY_TOL_RAD: float = _env_float(
         "AIC_VISION_OFFSET_RPY_TOL_RAD",
-        0.01,
+        0.05236,
     )
     VISION_OFFSET_MAX_ABS_POSITION_M: float = _env_float(
         "AIC_VISION_OFFSET_MAX_ABS_POSITION_M",
@@ -156,9 +156,99 @@ class FinalPolicyConfig:
         "AIC_VISION_OFFSET_MAX_ABS_RPY_RAD",
         0.6,
     )
+    VISION_OFFSET_XY_MOVE_GAIN: float = _env_float(
+        "AIC_VISION_OFFSET_XY_MOVE_GAIN",
+        0.5,
+    )
+    VISION_OFFSET_MAX_XY_STEP_M: float = _env_float(
+        "AIC_VISION_OFFSET_MAX_XY_STEP_M",
+        0.003,
+    )
+    VISION_OFFSET_RPY_MOVE_GAIN: float = _env_float(
+        "AIC_VISION_OFFSET_RPY_MOVE_GAIN",
+        0.5,
+    )
+    VISION_OFFSET_MAX_RPY_STEP_RAD: float = _env_float(
+        "AIC_VISION_OFFSET_MAX_RPY_STEP_RAD",
+        0.008726646,
+    )
+    VISION_OFFSET_VALIDATION_STEPS: int = _env_int(
+        "AIC_VISION_OFFSET_VALIDATION_STEPS",
+        4,
+    )
+    VISION_OFFSET_XY_SPREAD_TOL_M: float = _env_float(
+        "AIC_VISION_OFFSET_XY_SPREAD_TOL_M",
+        0.004,
+    )
+    VISION_OFFSET_RPY_SPREAD_TOL_RAD: float = _env_float(
+        "AIC_VISION_OFFSET_RPY_SPREAD_TOL_RAD",
+        0.01745,
+    )
+    VISION_OFFSET_VALIDATION_DT: float = _env_float(
+        "AIC_VISION_OFFSET_VALIDATION_DT",
+        0.15,
+    )
+    ALIGN_TRIANGULATION_ENABLED: bool = _env_bool(
+        "AIC_ALIGN_TRIANGULATION_ENABLED",
+        True,
+    )
+    ALIGN_TRIANGULATION_REQUIRED: bool = _env_bool(
+        "AIC_ALIGN_TRIANGULATION_REQUIRED",
+        False,
+    )
+    ALIGN_TRIANGULATION_XY_TOL_M: float = _env_float(
+        "AIC_ALIGN_TRIANGULATION_XY_TOL_M",
+        0.006,
+    )
+    ALIGN_TRIANGULATION_MAX_STEP_M: float = _env_float(
+        "AIC_ALIGN_TRIANGULATION_MAX_STEP_M",
+        0.003,
+    )
+    ALIGN_TRIANGULATION_MOVE_GAIN: float = _env_float(
+        "AIC_ALIGN_TRIANGULATION_MOVE_GAIN",
+        0.5,
+    )
+    ALIGN_TRIANGULATION_RETRIES: int = _env_int(
+        "AIC_ALIGN_TRIANGULATION_RETRIES",
+        2,
+    )
+    ALIGN_TRIANGULATION_RETRY_DT: float = _env_float(
+        "AIC_ALIGN_TRIANGULATION_RETRY_DT",
+        0.1,
+    )
+    ALIGN_TRIANGULATION_ALLOW_TCP_TIP_FALLBACK: bool = _env_bool(
+        "AIC_ALIGN_TRIANGULATION_ALLOW_TCP_TIP_FALLBACK",
+        True,
+    )
+    ALIGN_TCP_FROM_TIP_X_M: float = _env_float(
+        "AIC_ALIGN_TCP_FROM_TIP_X_M",
+        TCP_OFFSET_X,
+    )
+    ALIGN_TCP_FROM_TIP_Y_M: float = _env_float(
+        "AIC_ALIGN_TCP_FROM_TIP_Y_M",
+        TCP_OFFSET_Y,
+    )
+    SFP_TIP_TARGET_CLASS_ID: int = _env_int("AIC_SFP_TIP_TARGET_CLASS_ID", 2)
+    SC_TIP_TARGET_CLASS_ID: int = _env_int("AIC_SC_TIP_TARGET_CLASS_ID", 3)
+    SFP_TRIANGULATION_TARGET_DX_M: float = _env_float(
+        "AIC_SFP_TRIANGULATION_TARGET_DX_M",
+        0.0,
+    )
+    SFP_TRIANGULATION_TARGET_DY_M: float = _env_float(
+        "AIC_SFP_TRIANGULATION_TARGET_DY_M",
+        0.0,
+    )
+    SC_TRIANGULATION_TARGET_DX_M: float = _env_float(
+        "AIC_SC_TRIANGULATION_TARGET_DX_M",
+        0.0,
+    )
+    SC_TRIANGULATION_TARGET_DY_M: float = _env_float(
+        "AIC_SC_TRIANGULATION_TARGET_DY_M",
+        0.0,
+    )
 
     STABLE_STEPS: int = _env_int("AIC_POSE_STABLE_STEPS", 4)
-    ALIGN_MAX_STEPS: int = _env_int("AIC_POSE_ALIGN_MAX_STEPS", 100)
+    ALIGN_MAX_STEPS: int = _env_int("AIC_POSE_ALIGN_MAX_STEPS", 50)
     COMMAND_SETTLE_S: float = _env_float("AIC_POSE_COMMAND_SETTLE_S", 1.0)
 
     INSERT_STEP_M: float = _env_float("AIC_POSE_INSERT_STEP_M", 0.0006)
@@ -167,7 +257,7 @@ class FinalPolicyConfig:
     MAX_INSERT_DEPTH_M: float = _env_float("AIC_DISTANCE_MAX_INSERT_DEPTH_M", 0.045)
     INSERT_MAX_STEPS: int = _env_int("AIC_DISTANCE_INSERT_MAX_STEPS", 120)
     SETTLE_AFTER_INSERT_S: float = _env_float("AIC_DISTANCE_SETTLE_S", 3.0)
-    SFP_INSERTION_STIFFNESS: tuple = (20.0, 20.0, 250.0, 10.0, 10.0, 40.0)
-    SFP_INSERTION_DAMPING: tuple = (10.0, 10.0, 60.0, 5.0, 5.0, 15.0)
-    SC_INSERTION_STIFFNESS: tuple = (51.0, 50.0, 300.0, 15.0, 15.0, 40.0)
-    SC_INSERTION_DAMPING: tuple = (31.0, 30.0, 87.0, 8.0, 8.0, 15.0)
+    SFP_INSERTION_STIFFNESS: tuple = (80.0, 80.0, 250.0, 45.0, 45.0, 45.0)
+    SFP_INSERTION_DAMPING: tuple = (45.0, 45.0, 60.0, 18.0, 18.0, 18.0)
+    SC_INSERTION_STIFFNESS: tuple = (80.0, 80.0, 300.0, 45.0, 45.0, 45.0)
+    SC_INSERTION_DAMPING: tuple = (45.0, 45.0, 87.0, 18.0, 18.0, 18.0)

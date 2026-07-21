@@ -20,18 +20,15 @@ from data_gen_node.port_offset_helpers import (
 )
 
 class PortOffsetCollect(Policy):
-    """Collect images and port-local XYZ/RPY offsets around the target port."""
+    """Ground Truth TF로 포트 주변 XYZ/RPY offset image를 수집한다."""
 
     # Methods implemented in port_offset_base.py
-    _yolo_model_path_for_port = runtime._yolo_model_path_for_port
-    _init_yolo = runtime._init_yolo
     _watch_stop_file = runtime._watch_stop_file
     _on_sigterm = runtime._on_sigterm
     _wait_for_tf = runtime._wait_for_tf
     _lookup_transform = runtime._lookup_transform
     _select_port_frame = runtime._select_port_frame
     _select_cable_tip_frame = runtime._select_cable_tip_frame
-    _wait_for_yolo_model = runtime._wait_for_yolo_model
     set_pose_target = runtime.set_pose_target
     _transform_translation_array = runtime._transform_translation_array
     _transform_rotation_matrix = runtime._transform_rotation_matrix
@@ -45,30 +42,14 @@ class PortOffsetCollect(Policy):
     _camera_info_for_camera = runtime._camera_info_for_camera
     _camera_intrinsic_matrix = runtime._camera_intrinsic_matrix
     _base_to_camera_optical_matrix = runtime._base_to_camera_optical_matrix
-    _triangulate_yolo_port = runtime._triangulate_yolo_port
-    _measure_triangulated_tip_to_port_offsets = runtime._measure_triangulated_tip_to_port_offsets
     _port_local_xy_axes = runtime._port_local_xy_axes
-    _target_class_id_for_port = runtime._target_class_id_for_port
-    _target_port_index = runtime._target_port_index
-    _detect_port_from_bgr = runtime._detect_port_from_bgr
-    _detect_ports_from_obs = runtime._detect_ports_from_obs
-    _select_yolo_view = runtime._select_yolo_view
-    _build_multiview_yolo_extras = runtime._build_multiview_yolo_extras
-    _yolo_detection_worker = runtime._yolo_detection_worker
-    _submit_yolo_detection = runtime._submit_yolo_detection
-    _get_cached_yolo_detection = runtime._get_cached_yolo_detection
-    _log_yolo_detection = runtime._log_yolo_detection
-    _save_yolo_debug_frame = runtime._save_yolo_debug_frame
-    _build_yolo_correction = runtime._build_yolo_correction
-    _apply_yolo_correction = runtime._apply_yolo_correction
     _upload_vision_offset_dataset_to_hub = runtime._upload_vision_offset_dataset_to_hub
     _finish_data_collection_episode = runtime._finish_data_collection_episode
     _write_episode_summary = runtime._write_episode_summary
 
     # Methods implemented in port_offset_stages.py
     _configure_port_collect_control = stages._configure_port_collect_control
-    _check_and_start_recording = stages._check_and_start_recording
-    _detect_and_update_tracking = stages._detect_and_update_tracking
+    _wait_for_robot_stable = stages._wait_for_robot_stable
     _stage_lift_up = stages._stage_lift_up
     _stage_approach = stages._stage_approach
     _stage_collect = stages._stage_collect
@@ -89,8 +70,8 @@ class PortOffsetCollect(Policy):
     _apply_collect_offset = sampling._apply_collect_offset
 
     def __init__(self, parent_node):
+        """PortOffset 데이터 수집 정책의 환경과 sampling 범위를 초기화한다."""
         os.environ.setdefault("AIC_COLLECT_STEPS", "1000")
-        os.environ.setdefault("AIC_YOLO_DEVICE", "cpu")
         dataset_dir = Path(
             os.environ.setdefault(
                 "AIC_VISION_OFFSET_DATASET_DIR", str(_default_dataset_dir())

@@ -123,7 +123,7 @@ class CrossAttentionBlock(nn.Module):
 
 
 class MultiViewBilinearCNNRegressor(nn.Module):
-    """View-aware bilinear CNN for 6D base_link correction regression."""
+    """View-aware bilinear CNN for base_link correction regression."""
 
     def __init__(
         self,
@@ -182,7 +182,7 @@ class MultiViewBilinearCNNRegressor(nn.Module):
 
 
 class MultiViewBidirectionalCrossAttentionBilinearRegressor(nn.Module):
-    """Cross-attended multiview tokens followed by per-view bilinear pooling."""
+    """Cross-attended multiview 5D/6D correction regressor."""
 
     def __init__(
         self,
@@ -286,6 +286,7 @@ def build_vision_offset_model(
     name: str,
     *,
     feature_dim: int = 128,
+    output_dim: int = 6,
     backbone_name: str = "efficientnetv2_rw_s",
     num_views: int = 3,
     share_backbone_weights: bool = True,
@@ -294,7 +295,7 @@ def build_vision_offset_model(
     attention_dropout: float = 0.1,
     attention_pos_grid: int = 7,
 ) -> nn.Module:
-    """Build a 6D vision-offset model from checkpoint metadata."""
+    """체크포인트 메타데이터에 맞는 5D/6D vision-offset 모델을 생성한다."""
     normalized = str(name or "").strip().lower()
     if normalized in {
         "cross_attention_bilinear",
@@ -304,6 +305,7 @@ def build_vision_offset_model(
     }:
         return MultiViewBidirectionalCrossAttentionBilinearRegressor(
             feature_dim=feature_dim,
+            output_dim=output_dim,
             backbone_name=backbone_name,
             num_views=num_views,
             num_heads=attention_heads,
@@ -314,6 +316,7 @@ def build_vision_offset_model(
     if normalized in {"multiview_bilinear", "mv_bilinear", "bilinear"}:
         return MultiViewBilinearCNNRegressor(
             feature_dim=feature_dim,
+            output_dim=output_dim,
             backbone_name=backbone_name,
             num_views=num_views,
             share_backbone_weights=share_backbone_weights,

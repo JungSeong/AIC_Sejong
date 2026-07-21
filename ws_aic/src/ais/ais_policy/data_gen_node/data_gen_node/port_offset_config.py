@@ -7,6 +7,7 @@ import os
 
 
 def _env_float(name: str, default: float) -> float:
+    """환경변수를 float로 읽고 누락되거나 잘못되면 기본값을 반환한다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -17,6 +18,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_int(name: str, default: int) -> int:
+    """환경변수를 int로 읽고 누락되거나 잘못되면 기본값을 반환한다."""
     value = os.environ.get(name)
     if value is None:
         return default
@@ -29,7 +31,7 @@ def _env_int(name: str, default: int) -> int:
 STIFFNESS_DEFAULT = [100.0, 100.0, 100.0, 50.0, 50.0, 50.0]
 DAMPING_DEFAULT = [40.0, 40.0, 40.0, 20.0, 20.0, 20.0]
 
-TRIANGULATION_STOP_Z_OFFSET_DEFAULT: float = 0.020
+COLLECT_BASE_Z_OFFSET_DEFAULT: float = 0.020
 TOOL0_TO_TCP_Z: float = 0.1965
 SFP_PLUG_REFERENCE_OFFSET_IN_CABLE_TIP_FRAME = np.array(
     [0.0, 0.0021125, 0.0],
