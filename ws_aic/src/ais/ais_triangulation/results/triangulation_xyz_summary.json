@@ -1,0 +1,56 @@
+{
+  "cases": {
+    "case_01_sfp_rail0_port0_left": {
+      "count": 1,
+      "max_error_3d_mm": 0.5246055205614338,
+      "mean_error_3d_mm": 0.5246055205614338
+    },
+    "case_02_sfp_rail1_port1_center": {
+      "count": 1,
+      "max_error_3d_mm": 1.5267865609184228,
+      "mean_error_3d_mm": 1.5267865609184228
+    },
+    "case_03_sfp_rail2_port0_far_yaw": {
+      "count": 1,
+      "max_error_3d_mm": 1.3679868177526227,
+      "mean_error_3d_mm": 1.3679868177526227
+    },
+    "case_04_sfp_rail3_port1_near": {
+      "count": 1,
+      "max_error_3d_mm": 1.0921176286138394,
+      "mean_error_3d_mm": 1.0921176286138394
+    },
+    "case_05_sfp_rail4_port0_offset": {
+      "count": 1,
+      "max_error_3d_mm": 2.2509430280859726,
+      "mean_error_3d_mm": 2.2509430280859726
+    },
+    "case_06_sfp_rail2_port1_wide_yaw": {
+      "count": 1,
+      "max_error_3d_mm": 171.88528296814985,
+      "mean_error_3d_mm": 171.88528296814985
+    },
+    "case_07_sc_rail0_left": {
+      "count": 2,
+      "max_error_3d_mm": 66.91959638374733,
+      "mean_error_3d_mm": 34.54307415771147
+    },
+    "case_08_sc_rail1_right": {
+      "count": 1,
+      "max_error_3d_mm": 66.24177716154287,
+      "mean_error_3d_mm": 66.24177716154287
+    },
+    "case_09_sc_rail0_center": {
+      "count": 1,
+      "max_error_3d_mm": 50.19990278181953,
+      "mean_error_3d_mm": 50.19990278181953
+    }
+  },
+  "count": 10,
+  "max_error_3d_mm": 171.88528296814985,
+  "mean_abs_dx_mm": 12.277793668599418,
+  "mean_abs_dy_mm": 20.791394782540852,
+  "mean_abs_dz_mm": 16.644732474755784,
+  "mean_error_3d_mm": 36.41755507828675,
+  "median_error_3d_mm": 2.208747479880791
+}
