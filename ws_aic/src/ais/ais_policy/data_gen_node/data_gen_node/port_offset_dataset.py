@@ -35,7 +35,7 @@ def _split_for_sample(self, sample_index: int) -> str:
     return "val" if sample_index % period == 0 else "train"
 
 def _write_rpy_data_yaml(self) -> None:
-    """XYZ/RPY 데이터셋의 경로·범위·안정화 조건을 data.yaml에 기록한다."""
+    """XYZ/RPY 데이터셋의 경로·범위·timestamp 조건을 data.yaml에 기록한다."""
     self._rpy_dataset_dir.mkdir(parents=True, exist_ok=True)
     (self._rpy_dataset_dir / "data.yaml").write_text(
         "\n".join(
@@ -53,12 +53,10 @@ def _write_rpy_data_yaml(self) -> None:
                 f"  dy: [{self.port_collect_y_min_m * 1000.0:.6f}, {self.port_collect_y_max_m * 1000.0:.6f}]",
                 f"  dz: [{self.port_collect_z_min_m * 1000.0:.6f}, {self.port_collect_z_max_m * 1000.0:.6f}]",
                 f"base_z_offset_mm: {self.collect_base_z_offset_m * 1000.0:.6f}",
-                f"capture_settle_s: {getattr(self, 'collect_capture_settle_sec', 0.0):.6f}",
-                f"stability_timeout_s: {getattr(self, 'collect_stability_timeout_sec', 0.0):.6f}",
-                f"stable_samples: {getattr(self, 'collect_stable_samples', 1)}",
-                f"stability_poll_s: {getattr(self, 'collect_stability_poll_sec', 0.0):.6f}",
-                f"linear_speed_tol_mps: {getattr(self, 'collect_linear_speed_tol_mps', 0.0):.9f}",
-                f"angular_speed_tol_radps: {getattr(self, 'collect_angular_speed_tol_radps', 0.0):.9f}",
+                "timestamp_clock: ros",
+                "timestamp_unit: nanoseconds",
+                f"sync_tolerance_ms: {self.collect_sync_tolerance_ns / 1_000_000.0:.6f}",
+                f"sync_wait_timeout_s: {self.collect_sync_wait_timeout_sec:.6f}",
                 "collect_rpy_range_deg:",
                 f"  roll: [{np.rad2deg(self.port_collect_roll_min_rad):.6f}, {np.rad2deg(self.port_collect_roll_max_rad):.6f}]",
                 f"  pitch: [{np.rad2deg(self.port_collect_pitch_min_rad):.6f}, {np.rad2deg(self.port_collect_pitch_max_rad):.6f}]",
@@ -66,10 +64,11 @@ def _write_rpy_data_yaml(self) -> None:
                 f"  norm_max_rad: {self.port_collect_rpy_norm_max_rad:.9f}",
                 "fields:",
                 "  command: base_link target pose xyz + quaternion xyzw",
-                "  location: measured plug reference offset from port entrance in base_link after settle",
+                "  location: measured plug reference offset from port entrance in base_link",
                 "  label: base_link correction from plug reference to port entrance alignment",
                 "  collect: commanded port-local dx/dy/dz + roll/pitch/yaw sample",
-                "  image: camera image captured after command settle",
+                "  timestamps: source ROS timestamp와 source 간 skew 및 허용 오차",
+                "  image: timestamp gating을 통과한 camera image",
                 "",
             ]
         ),
@@ -134,6 +133,165 @@ def _scenario_metadata(self, task) -> dict[str, Any]:
     except Exception:
         return {}
 
+def _stamp_ns(stamp) -> int | None:
+    """ROS builtin time message를 nanosecond 정수로 변환한다."""
+    if stamp is None:
+        return None
+    try:
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+def _observation_sync_metadata(self, obs) -> tuple[bool, dict[str, Any]]:
+    """camera와 controller source timestamp를 검사하고 공통 기록을 만든다."""
+    tolerance_ns = int(self.collect_sync_tolerance_ns)
+    timestamps: dict[str, Any] = {
+        "clock": "ros",
+        "unit": "nanoseconds",
+        "sync_tolerance_ns": tolerance_ns,
+        "sync_valid": False,
+    }
+    if obs is None:
+        timestamps["rejection_reason"] = "missing_observation"
+        return False, timestamps
+
+    image_stamps = {
+        camera_name: _stamp_ns(
+            getattr(
+                getattr(self._image_msg_for_camera(obs, camera_name), "header", None),
+                "stamp",
+                None,
+            )
+        )
+        for camera_name in ("left", "center", "right")
+    }
+    controller_stamp = _stamp_ns(
+        getattr(
+            getattr(getattr(obs, "controller_state", None), "header", None),
+            "stamp",
+            None,
+        )
+    )
+    timestamps["images"] = image_stamps
+    timestamps["controller_stamp_ns"] = controller_stamp
+
+    missing_sources = [
+        f"image:{name}" for name, stamp in image_stamps.items() if not stamp
+    ]
+    if not controller_stamp:
+        missing_sources.append("controller")
+    if missing_sources:
+        timestamps["rejection_reason"] = "missing_or_zero_timestamp"
+        timestamps["missing_sources"] = missing_sources
+        return False, timestamps
+
+    valid_image_stamps = {
+        name: int(stamp) for name, stamp in image_stamps.items() if stamp is not None
+    }
+    capture_stamp = valid_image_stamps["center"]
+    camera_skew = max(valid_image_stamps.values()) - min(valid_image_stamps.values())
+    controller_skew = abs(int(controller_stamp or 0) - capture_stamp)
+    timestamps["capture_stamp_ns"] = capture_stamp
+    timestamps["skew_ns"] = {
+        "camera": int(camera_skew),
+        "controller": int(controller_skew),
+    }
+    if camera_skew > tolerance_ns:
+        timestamps["rejection_reason"] = "camera_timestamp_skew"
+        return False, timestamps
+    if controller_skew > tolerance_ns:
+        timestamps["rejection_reason"] = "controller_timestamp_skew"
+        return False, timestamps
+
+    timestamps["sync_valid"] = True
+    return True, timestamps
+
+def _wait_for_synchronized_observation(
+    self,
+    get_observation,
+) -> tuple[Any | None, dict[str, Any]]:
+    """허용 오차를 만족하는 새 Observation을 제한 시간 동안 순차 대기한다."""
+    start_ns = time.monotonic_ns()
+    timeout_ns = int(self.collect_sync_wait_timeout_sec * 1_000_000_000)
+    deadline_ns = start_ns + timeout_ns
+    waiting_logged = False
+    timestamps: dict[str, Any] = {
+        "sync_valid": False,
+        "rejection_reason": "missing_observation",
+    }
+
+    while True:
+        obs = get_observation()
+        sync_valid, timestamps = self._observation_sync_metadata(obs)
+        now_ns = time.monotonic_ns()
+        timestamps.setdefault("wait_ns", {})["observation"] = now_ns - start_ns
+        if sync_valid:
+            return obs, timestamps
+        if now_ns >= deadline_ns:
+            timestamps["rejection_reason"] = (
+                "observation_sync_timeout:"
+                f"{timestamps.get('rejection_reason', 'unknown')}"
+            )
+            return None, timestamps
+        if not waiting_logged:
+            self.get_logger().info(
+                self._collect_log_text(
+                    "[PortOffsetCollect] Waiting for synchronized Observation: "
+                    f"timeout={self.collect_sync_wait_timeout_sec:.3f}s",
+                    "cyan",
+                )
+            )
+            waiting_logged = True
+        remaining_sec = (deadline_ns - now_ns) / 1_000_000_000.0
+        self.sleep_for(min(self.collect_sync_poll_sec, remaining_sec))
+
+def _tf_sync_metadata(
+    self,
+    timestamps: dict[str, Any],
+    transforms: dict[str, Any],
+    static_sources: set[str] | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    """capture 시각으로 조회한 TF timestamp를 검사해 동기화 기록을 완성한다."""
+    capture_stamp = int(timestamps.get("capture_stamp_ns", 0))
+    tolerance_ns = int(self.collect_sync_tolerance_ns)
+    static_sources = static_sources or set()
+    tf_records: dict[str, Any] = {}
+    tf_skews = []
+
+    for name, stamped in transforms.items():
+        header = getattr(stamped, "header", None)
+        if header is None:
+            timestamps["sync_valid"] = False
+            timestamps["rejection_reason"] = f"missing_tf_timestamp:{name}"
+            return False, timestamps
+        stamp_ns = _stamp_ns(getattr(header, "stamp", None))
+        if stamp_ns is None:
+            timestamps["sync_valid"] = False
+            timestamps["rejection_reason"] = f"missing_tf_timestamp:{name}"
+            return False, timestamps
+        is_static_snapshot = name in static_sources
+        is_static = stamp_ns == 0 or is_static_snapshot
+        skew_ns = 0 if is_static else abs(int(stamp_ns) - capture_stamp)
+        tf_records[name] = {
+            "stamp_ns": stamp_ns,
+            "is_static": is_static,
+            "is_static_snapshot": is_static_snapshot,
+            "skew_ns": int(skew_ns),
+        }
+        tf_skews.append(int(skew_ns))
+
+    max_tf_skew = max(tf_skews, default=0)
+    timestamps["tf"] = tf_records
+    timestamps.setdefault("skew_ns", {})["tf"] = max_tf_skew
+    if max_tf_skew > tolerance_ns:
+        timestamps["sync_valid"] = False
+        timestamps["rejection_reason"] = "tf_timestamp_skew"
+        return False, timestamps
+
+    timestamps["sync_valid"] = True
+    timestamps.pop("rejection_reason", None)
+    return True, timestamps
+
 def _save_xyz_rpy_sample(
     self,
     episode_name: str,
@@ -146,10 +304,18 @@ def _save_xyz_rpy_sample(
     pose: Pose,
     extras: dict[str, Any],
     detections_by_camera: Optional[dict[str, Optional[dict[str, Any]]]],
-) -> None:
-    """안정화된 다중 camera 영상과 실제 XYZ/RPY label을 저장한다."""
+) -> bool:
+    """동기화 gating을 통과한 camera 영상과 실제 XYZ/RPY label을 저장한다."""
     if obs is None:
-        return
+        return False
+
+    timestamps = dict(extras.get("timestamps", {}))
+    if not timestamps.get("sync_valid", False):
+        self.get_logger().warn(
+            "[PortOffsetCollect] Skipping sample: timestamp gating was not passed"
+        )
+        return False
+    timestamps["dataset_write_stamp_ns"] = int(self.get_clock().now().nanoseconds)
 
     projections = {
         camera_name: self._port_projection_for_camera(obs, camera_name, port_tf)
@@ -165,10 +331,9 @@ def _save_xyz_rpy_sample(
             "[PortOffsetCollect] Skipping sample: port not visible enough "
             f"visible={visible_cameras}, min={self._rpy_min_visible_cameras}"
         )
-        return
+        return False
 
     sample_index = self._rpy_sample_count
-    self._rpy_sample_count += 1
     split = self._split_for_sample(sample_index)
     connector_dir = _connector_dir_for_task(task)
     sample_id = f"{episode_name}_{phase}_{step_idx:06d}"
@@ -180,7 +345,6 @@ def _save_xyz_rpy_sample(
             camera_name,
         )
         if bgr is None:
-            image_records[camera_name] = ""
             continue
 
         stem = f"{sample_id}_{camera_name}"
@@ -203,7 +367,11 @@ def _save_xyz_rpy_sample(
         image_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cv2.imwrite(str(image_path), bgr)
+        if not cv2.imwrite(str(image_path), bgr):
+            self.get_logger().warn(
+                f"[PortOffsetCollect] Failed to write image: {image_path}"
+            )
+            continue
 
         label_record = {
             "sample_id": sample_id,
@@ -267,6 +435,7 @@ def _save_xyz_rpy_sample(
                 "camera": projections[camera_name],
                 "visible_cameras": visible_cameras,
             },
+            "timestamps": timestamps,
         }
         metadata_path.write_text(
             json.dumps(self._json_safe(label_record), ensure_ascii=False, indent=2),
@@ -274,11 +443,12 @@ def _save_xyz_rpy_sample(
         )
         image_records[camera_name] = str(image_path.relative_to(self._rpy_dataset_dir))
 
-    if not image_records:
+    if len(image_records) < self._rpy_min_visible_cameras:
         self.get_logger().warn(
-            "[PortOffsetCollect] Skipping sample: no visible camera images"
+            "[PortOffsetCollect] Skipping sample: not enough writable camera images "
+            f"written={list(image_records)}, min={self._rpy_min_visible_cameras}"
         )
-        return
+        return False
 
     metadata = {
             "sample_id": sample_id,
@@ -292,9 +462,12 @@ def _save_xyz_rpy_sample(
             "image_layout": "images/<split>/<connector>/<camera>",
             "metadata_layout": "metadata/<split>/<connector>/<camera>",
             "visible_cameras": visible_cameras,
+            "timestamps": timestamps,
         }
     with self._rpy_metadata_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(self._json_safe(metadata), ensure_ascii=False) + "\n")
+    self._rpy_sample_count += 1
+    return True
 
 def _save_vision_offset_sample(
     self,
@@ -308,9 +481,9 @@ def _save_vision_offset_sample(
     pose: Pose,
     extras: dict[str, Any],
     detections_by_camera: Optional[dict[str, Optional[dict[str, Any]]]] = None,
-) -> None:
+) -> bool:
     """기존 vision-offset 저장 API를 XYZ/RPY sample 저장기로 연결한다."""
-    self._save_xyz_rpy_sample(
+    return self._save_xyz_rpy_sample(
         episode_name,
         task,
         phase,

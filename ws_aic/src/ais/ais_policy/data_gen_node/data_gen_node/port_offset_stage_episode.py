@@ -85,6 +85,28 @@ def insert_cable(
     self.get_logger().info(
         f"[PortOffsetCollect] SELECTED FRAMES: port_frame={port_frame}, cable_tip_frame={cable_tip_frame}"
     )
+    try:
+        port_tf_snapshot = self._lookup_latest_transform_stamped(
+            "base_link",
+            port_frame,
+        )
+    except TransformException as exc:
+        return self._finish_data_collection_episode(
+            episode_dir=episode_dir,
+            task=task,
+            phase_step_counts=phase_step_counts,
+            status="port_tf_snapshot_failed",
+            detail=str(exc),
+        )
+    self.get_logger().info(
+        self._collect_log_text(
+            "[PortOffsetCollect] Port TF snapshot ready: "
+            f"frame={port_frame}, stamp="
+            f"{port_tf_snapshot.header.stamp.sec}."
+            f"{port_tf_snapshot.header.stamp.nanosec:09d}",
+            "green",
+        )
+    )
 
     plug_reference_offset_local = self._plug_reference_offset_local(
         task,
@@ -108,6 +130,7 @@ def insert_cable(
         "episode_dir": episode_dir,
         "phase_step_counts": phase_step_counts,
         "port_frame": port_frame,
+        "port_tf_snapshot": port_tf_snapshot,
         "cable_tip_frame": cable_tip_frame,
         "plug_reference_offset_local": plug_reference_offset_local,
         "plug_reference_metadata": plug_reference_metadata,

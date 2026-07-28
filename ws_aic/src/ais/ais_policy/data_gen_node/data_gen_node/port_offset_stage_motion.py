@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """PortOffsetCollect의 lift-up, approach, collect motion stage."""
 
+import time
 from typing import Any
 
 from aic_model.policy import (
@@ -88,7 +89,7 @@ def _stage_approach(
         return False
 
     try:
-        port_tf = self._lookup_transform("base_link", ctx["port_frame"])
+        port_tf = ctx["port_tf_snapshot"].transform
         raw_plug_tf = self._lookup_transform("base_link", ctx["cable_tip_frame"])
         plug_tf = self._shift_transform_origin(
             raw_plug_tf,
@@ -153,7 +154,7 @@ def _stage_collect(
     collect_steps = max(1, self.collect_steps)
     for collect_idx in range(collect_steps):
         try:
-            current_port_tf = self._lookup_transform("base_link", ctx["port_frame"])
+            current_port_tf = ctx["port_tf_snapshot"].transform
             raw_plug_tf = self._lookup_transform("base_link", ctx["cable_tip_frame"])
             plug_tf = self._shift_transform_origin(
                 raw_plug_tf,
@@ -192,18 +193,61 @@ def _stage_collect(
                 stiffness=ctx["collect_stiffness"],
                 damping=ctx["collect_damping"],
             )
-            save_obs = self._wait_for_robot_stable(get_observation)
+            save_obs, timestamps = self._wait_for_synchronized_observation(
+                get_observation
+            )
             if save_obs is None:
+                self.get_logger().warn(
+                    self._collect_log_text(
+                        "[PortOffsetCollect] Skipping sample: "
+                        f"{timestamps.get('rejection_reason', 'timestamp_gating_failed')}, "
+                        f"skew_ns={timestamps.get('skew_ns', {})}, "
+                        f"tolerance_ns={self.collect_sync_tolerance_ns}",
+                        "yellow",
+                    )
+                )
+                self.sleep_for(self.step_sleep_sec)
                 continue
-            save_port_tf = self._lookup_transform("base_link", ctx["port_frame"])
-            save_raw_plug_tf = self._lookup_transform(
+
+            capture_stamp = save_obs.center_image.header.stamp
+            tf_wait_start_ns = time.monotonic_ns()
+            save_port_stamped = ctx["port_tf_snapshot"]
+            save_raw_plug_stamped = self._lookup_transform_at(
                 "base_link",
                 ctx["cable_tip_frame"],
+                capture_stamp,
             )
+            timestamps.setdefault("wait_ns", {})["tf"] = (
+                time.monotonic_ns() - tf_wait_start_ns
+            )
+            sync_valid, timestamps = self._tf_sync_metadata(
+                timestamps,
+                {
+                    "port": save_port_stamped,
+                    "plug": save_raw_plug_stamped,
+                },
+                static_sources={"port"},
+            )
+            if not sync_valid:
+                self.get_logger().warn(
+                    self._collect_log_text(
+                        "[PortOffsetCollect] Skipping sample: "
+                        f"{timestamps.get('rejection_reason', 'tf_timestamp_gating_failed')}, "
+                        f"skew_ns={timestamps.get('skew_ns', {})}, "
+                        f"tolerance_ns={self.collect_sync_tolerance_ns}",
+                        "yellow",
+                    )
+                )
+                self.sleep_for(self.step_sleep_sec)
+                continue
+
+            save_port_tf = save_port_stamped.transform
+            save_raw_plug_tf = save_raw_plug_stamped.transform
             save_plug_tf = self._shift_transform_origin(
                 save_raw_plug_tf,
                 ctx["plug_reference_offset_local"],
             )
+            extras["timestamps"] = timestamps
             extras.update(
                 self._plug_location_label_in_base_frame(
                     save_port_tf,
@@ -211,7 +255,7 @@ def _stage_collect(
                 )
             )
             if ctx["recording_started"]:
-                self._save_vision_offset_sample(
+                saved = self._save_vision_offset_sample(
                     episode_name=ctx["episode_name"],
                     task=ctx["task"],
                     phase="collect",
@@ -223,8 +267,25 @@ def _stage_collect(
                     extras=extras,
                     detections_by_camera={},
                 )
-                ctx["phase_step_counts"]["collect"] += 1
-        except TransformException:
-            pass
+                if saved:
+                    ctx["phase_step_counts"]["collect"] += 1
+                    self.get_logger().info(
+                        self._collect_log_text(
+                            "[PortOffsetCollect] Saved synchronized sample: "
+                            f"capture_stamp_ns={timestamps['capture_stamp_ns']}, "
+                            f"skew_ns={timestamps['skew_ns']}, "
+                            f"wait_ns={timestamps['wait_ns']}",
+                            "green",
+                        )
+                    )
+        except TransformException as exc:
+            self.get_logger().warn(
+                self._collect_log_text(
+                    "[PortOffsetCollect] Skipping sample: "
+                    f"TF unavailable at capture timestamp after "
+                    f"{self.collect_sync_wait_timeout_sec:.3f}s ({exc})",
+                    "yellow",
+                )
+            )
         self.sleep_for(self.step_sleep_sec)
     return True

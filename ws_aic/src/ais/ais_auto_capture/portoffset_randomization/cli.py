@@ -3,139 +3,164 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+from typing import Any
 
-from .constants import ENGINE_SETUP, POLICY_MODULE
+from .constants import (
+    BOOLEAN_METAVAR,
+    CLI_DEFAULTS,
+    ENGINE_SETUP,
+    POLICY_MODULE,
+    PORT_ORDER_CHOICES,
+    TRIAL_TIMEOUT_GRACE_S,
+    UPLOAD_PORT_TYPE_CHOICES,
+)
+
+
+def _parse_bool(value: str) -> bool:
+    """CLI의 true/false 문자열을 boolean으로 변환한다."""
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
+def _add_argument(
+    parser: argparse.ArgumentParser,
+    name: str,
+    **kwargs: Any,
+) -> None:
+    """상수로 관리되는 기본값을 적용해 CLI 인자를 추가한다."""
+    option = f"--{name.replace('_', '-')}"
+    parser.add_argument(option, default=CLI_DEFAULTS[name], **kwargs)
 
 
 def _add_trial_args(parser: argparse.ArgumentParser) -> None:
     """trial 개수, 순서, simulator 시작과 관련된 기본 인자를 추가한다."""
-    parser.add_argument("--trials", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=30)
-    parser.add_argument("--port-types", default="sfp,sc")
-    parser.add_argument(
-        "--port-order",
-        choices=("round_robin", "random"),
-        default="random",
-    )
-    parser.add_argument("--color-log", dest="color_log", action="store_true", default=True)
-    parser.add_argument("--no-color-log", dest="color_log", action="store_false")
-    parser.add_argument("--samples-per-trial", type=int, default=24)
-    parser.add_argument("--time-limit-s", type=int, default=600)
-    parser.add_argument(
-        "--trial-timeout-s",
+    _add_argument(parser, "trials", type=int)
+    _add_argument(parser, "seed", type=int)
+    _add_argument(parser, "port_types")
+    _add_argument(parser, "port_order", choices=PORT_ORDER_CHOICES)
+    _add_argument(parser, "color_log", type=_parse_bool, metavar=BOOLEAN_METAVAR)
+    _add_argument(parser, "samples_per_trial", type=int)
+    _add_argument(parser, "time_limit_s", type=int)
+    _add_argument(
+        parser,
+        "trial_timeout_s",
         type=float,
-        default=None,
-        help="Defaults to time-limit-s + 180s.",
+        help=f"Defaults to time-limit-s + {TRIAL_TIMEOUT_GRACE_S:g}s.",
     )
-    parser.add_argument("--distrobox", default="aic_eval")
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--rootless-distrobox", action="store_true")
+    _add_argument(parser, "distrobox")
+    _add_argument(parser, "headless", action="store_true")
+    _add_argument(parser, "launch_rviz", type=_parse_bool, metavar=BOOLEAN_METAVAR)
     parser.add_argument("--engine-setup", default=ENGINE_SETUP)
     parser.add_argument("--policy", default=POLICY_MODULE)
-    parser.add_argument("--policy-start-wait-s", type=float, default=5.0)
-    parser.add_argument("--robot-joint-noise-deg", type=float, default=4.0)
-    parser.add_argument("--cable-rpy-noise-deg", type=float, default=20.0)
+    _add_argument(parser, "policy_start_wait_s", type=float)
+    _add_argument(parser, "robot_joint_noise_deg", type=float)
+    _add_argument(parser, "cable_rpy_noise_deg", type=float)
 
 
 def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
     """dataset 경로와 Hugging Face 업로드 관련 인자를 추가한다."""
-    parser.add_argument("--dataset-version", default="")
-    parser.add_argument(
-        "--push-to-hub",
-        dest="push_to_hub",
-        action="store_true",
-        default=False,
+    _add_argument(parser, "dataset_version")
+    _add_argument(parser, "push_to_hub", type=_parse_bool, metavar=BOOLEAN_METAVAR)
+    _add_argument(parser, "vision_offset_repo_id")
+    _add_argument(parser, "vision_offset_hf_revision")
+    _add_argument(parser, "vision_offset_hf_path_in_repo")
+    _add_argument(
+        parser,
+        "upload_on_port_type",
+        choices=UPLOAD_PORT_TYPE_CHOICES,
     )
-    parser.add_argument(
-        "--no-push-to-hub",
-        dest="push_to_hub",
-        action="store_false",
+    _add_argument(parser, "hf_private", action="store_true")
+
+
+def _add_rosbag_args(parser: argparse.ArgumentParser) -> None:
+    """trial별 MCAP rosbag 기록 옵션을 추가한다."""
+    _add_argument(
+        parser,
+        "record_rosbag",
+        type=_parse_bool,
+        metavar=BOOLEAN_METAVAR,
     )
-    parser.add_argument(
-        "--vision-offset-repo-id",
-        default="aic-sejong-team/aic-vision-offset-dataset",
-    )
-    parser.add_argument("--vision-offset-hf-revision", default="main")
-    parser.add_argument("--vision-offset-hf-path-in-repo", default="")
-    parser.add_argument(
-        "--upload-on-port-type",
-        choices=("", "sfp", "sc"),
-        default="",
-    )
-    parser.add_argument("--hf-private", action="store_true", default=False)
+    _add_argument(parser, "rosbag_output_dir", type=Path)
+    _add_argument(parser, "rosbag_topics", nargs="+")
+    _add_argument(parser, "rosbag_start_timeout_s", type=float)
+    _add_argument(parser, "rosbag_stop_grace_s", type=float)
 
 
 def _add_pose_args(parser: argparse.ArgumentParser) -> None:
     """port-local XYZ/RPY sampling 범위 인자를 추가한다."""
-    parser.add_argument("--port-xy-limit-mm", type=float, default=50.0)
-    parser.add_argument("--port-z-limit-mm", type=float, default=100.0)
-    parser.add_argument("--dx-min-mm", type=float, default=-50.0)
-    parser.add_argument("--dx-max-mm", type=float, default=50.0)
-    parser.add_argument("--dy-min-mm", type=float, default=-50.0)
-    parser.add_argument("--dy-max-mm", type=float, default=50.0)
-    parser.add_argument("--dz-min-mm", type=float, default=0.0)
-    parser.add_argument("--dz-max-mm", type=float, default=100.0)
-    parser.add_argument("--port-roll-limit-deg", type=float, default=25.0)
-    parser.add_argument("--port-pitch-limit-deg", type=float, default=25.0)
-    parser.add_argument("--port-yaw-limit-deg", type=float, default=35.0)
-    parser.add_argument("--roll-min-deg", type=float, default=None)
-    parser.add_argument("--roll-max-deg", type=float, default=None)
-    parser.add_argument("--pitch-min-deg", type=float, default=None)
-    parser.add_argument("--pitch-max-deg", type=float, default=None)
-    parser.add_argument("--yaw-min-deg", type=float, default=None)
-    parser.add_argument("--yaw-max-deg", type=float, default=None)
-    parser.add_argument("--rpy-norm-max-rad", type=float, default=None)
-    parser.add_argument("--actual-rpy-norm-max-rad", type=float, default=None)
-    parser.add_argument("--base-z-offset-mm", type=float, default=0.0)
-    parser.add_argument("--min-visible-cameras", type=int, default=1)
-    parser.add_argument("--visibility-margin-px", type=float, default=8.0)
+    for name in (
+        "port_xy_limit_mm",
+        "port_z_limit_mm",
+        "dx_min_mm",
+        "dx_max_mm",
+        "dy_min_mm",
+        "dy_max_mm",
+        "dz_min_mm",
+        "dz_max_mm",
+        "port_roll_limit_deg",
+        "port_pitch_limit_deg",
+        "port_yaw_limit_deg",
+        "roll_min_deg",
+        "roll_max_deg",
+        "pitch_min_deg",
+        "pitch_max_deg",
+        "yaw_min_deg",
+        "yaw_max_deg",
+        "rpy_norm_max_rad",
+        "actual_rpy_norm_max_rad",
+        "base_z_offset_mm",
+        "visibility_margin_px",
+    ):
+        _add_argument(parser, name, type=float)
+    _add_argument(parser, "min_visible_cameras", type=int)
 
 
-def _add_stability_args(parser: argparse.ArgumentParser) -> None:
-    """로봇 정지 판정과 촬영 안정화 인자를 추가한다."""
-    parser.add_argument("--capture-settle-s", type=float, default=1.0)
-    parser.add_argument("--stability-timeout-s", type=float, default=5.0)
-    parser.add_argument("--stable-samples", type=int, default=5)
-    parser.add_argument("--stability-poll-s", type=float, default=0.1)
-    parser.add_argument("--linear-speed-tol-mm-s", type=float, default=2.0)
-    parser.add_argument("--angular-speed-tol-deg-s", type=float, default=2.0)
+def _add_sync_args(parser: argparse.ArgumentParser) -> None:
+    """sample timestamp 허용 오차와 늦은 source 대기시간을 추가한다."""
+    _add_argument(parser, "sync_tolerance_ms", type=float)
+    _add_argument(parser, "sync_wait_timeout_s", type=float)
 
 
 def _add_world_args(parser: argparse.ArgumentParser) -> None:
     """Gazebo 조명과 배경 Gaussian randomization 인자를 추가한다."""
-    parser.add_argument(
-        "--randomize-lighting",
-        dest="randomize_lighting",
-        action="store_true",
-        default=True,
+    _add_argument(
+        parser,
+        "randomize_lighting",
+        type=_parse_bool,
+        metavar=BOOLEAN_METAVAR,
     )
-    parser.add_argument(
-        "--no-randomize-lighting",
-        dest="randomize_lighting",
-        action="store_false",
-    )
-    parser.add_argument("--light-intensity-scale-min", type=float, default=0.65)
-    parser.add_argument("--light-intensity-scale-max", type=float, default=1.35)
-    parser.add_argument("--light-color-jitter", type=float, default=0.12)
-    parser.add_argument("--light-pose-xy-jitter-m", type=float, default=0.25)
-    parser.add_argument("--light-pose-z-jitter-m", type=float, default=0.20)
-    parser.add_argument("--ambient-min", type=float, default=0.0)
-    parser.add_argument("--ambient-max", type=float, default=0.08)
-    parser.add_argument("--background-min", type=float, default=0.08)
-    parser.add_argument("--background-max", type=float, default=0.20)
+    for name in (
+        "light_intensity_scale_min",
+        "light_intensity_scale_max",
+        "light_color_jitter",
+        "light_pose_xy_jitter_m",
+        "light_pose_z_jitter_m",
+        "ambient_min",
+        "ambient_max",
+        "background_min",
+        "background_max",
+    ):
+        _add_argument(parser, name, type=float)
 
 
 def _add_lifecycle_args(parser: argparse.ArgumentParser) -> None:
     """policy와 simulator PGID 종료 단계 및 cleanup 인자를 추가한다."""
-    parser.add_argument("--policy-stop-grace-s", type=float, default=10.0)
-    parser.add_argument("--post-summary-wait-s", type=float, default=3.0)
-    parser.add_argument("--sim-sigint-grace-s", type=float, default=5.0)
-    parser.add_argument("--sim-cleanup-grace-s", type=float, default=2.0)
-    parser.add_argument("--sim-sigkill-grace-s", type=float, default=1.0)
-    parser.add_argument("--between-trial-wait-s", type=float, default=3.0)
-    parser.add_argument("--cleanup", action="store_true")
-    parser.add_argument("--cleanup-only", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
+    for name in (
+        "policy_stop_grace_s",
+        "post_summary_wait_s",
+        "sim_sigint_grace_s",
+        "sim_cleanup_grace_s",
+        "sim_sigkill_grace_s",
+        "between_trial_wait_s",
+    ):
+        _add_argument(parser, name, type=float)
+    for name in ("cleanup", "cleanup_only", "dry_run"):
+        _add_argument(parser, name, action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,8 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_trial_args(parser)
     _add_dataset_args(parser)
+    _add_rosbag_args(parser)
     _add_pose_args(parser)
-    _add_stability_args(parser)
+    _add_sync_args(parser)
     _add_world_args(parser)
     _add_lifecycle_args(parser)
     return parser

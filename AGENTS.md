@@ -60,6 +60,23 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Report Logic Changes by Function
+
+When implementation changes program logic, the final user-facing response must:
+- Name each changed function that materially affects behavior.
+- State exactly what changed in that function and why, in one concise sentence.
+- In that final response, mark removed functions explicitly as removed and name the replacement decision path.
+- Show only the core lifecycle, data flow, or decision points needed for review.
+- Omit mechanical edits, unchanged context, and long code dumps unless requested.
+
+## 6. Keep README Behavior Consistent
+
+When a logic change conflicts with an existing README:
+- Delete or replace the conflicting description; do not leave old and new behavior side by side.
+- Update affected CLI options, environment variables, lifecycle order, metadata fields, and debugging instructions in the same change.
+- Search the README for stale terminology and commands before completion.
+- Keep historical behavior only when the user explicitly requests a migration or history section.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

@@ -6,7 +6,6 @@ from data_gen_node.port_offset_stage_common import (
     _copy_quaternion,
     _follow_pose,
     _tcp_pose,
-    _wait_for_robot_stable,
 )
 from data_gen_node.port_offset_stage_episode import insert_cable
 from data_gen_node.port_offset_stage_motion import (

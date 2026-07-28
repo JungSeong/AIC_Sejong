@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-"""PortOffsetCollect stage가 공유하는 pose 제어와 안정화 처리."""
+"""PortOffsetCollect stage가 공유하는 pose 제어 처리."""
 
 import os
-import time
 from typing import Any
 
 import numpy as np
 from aic_model.policy import (
-    GetObservationCallback,
     MoveRobotCallback,
     SendFeedbackCallback,
 )
@@ -65,62 +63,6 @@ def _tcp_pose(observation) -> Pose | None:
     if observation is None:
         return None
     return _copy_pose(observation.controller_state.tcp_pose)
-
-
-def _wait_for_robot_stable(self, get_observation: GetObservationCallback):
-    """최소 settle 후 TCP 속도가 연속 기준을 만족할 때의 observation을 반환한다."""
-    minimum_settle_s = max(self.step_sleep_sec, self.collect_capture_settle_sec)
-    if minimum_settle_s > 0.0:
-        self.sleep_for(minimum_settle_s)
-
-    timeout_s = max(0.0, self.collect_stability_timeout_sec)
-    if timeout_s <= 0.0:
-        return get_observation()
-
-    required_samples = max(1, self.collect_stable_samples)
-    poll_s = max(0.01, self.collect_stability_poll_sec)
-    deadline = time.monotonic() + timeout_s
-    stable_count = 0
-    linear_speed = float("inf")
-    angular_speed = float("inf")
-
-    while time.monotonic() < deadline:
-        obs = get_observation()
-        state = getattr(obs, "controller_state", None) if obs is not None else None
-        velocity = getattr(state, "tcp_velocity", None)
-        if velocity is None:
-            stable_count = 0
-        else:
-            linear_speed = float(
-                np.linalg.norm([velocity.linear.x, velocity.linear.y, velocity.linear.z])
-            )
-            angular_speed = float(
-                np.linalg.norm([velocity.angular.x, velocity.angular.y, velocity.angular.z])
-            )
-            if (
-                linear_speed <= self.collect_linear_speed_tol_mps
-                and angular_speed <= self.collect_angular_speed_tol_radps
-            ):
-                stable_count += 1
-                if stable_count >= required_samples:
-                    self.get_logger().info(
-                        "COLLECT robot stable: "
-                        f"linear={linear_speed * 1000.0:.2f}mm/s, "
-                        f"angular={np.rad2deg(angular_speed):.2f}deg/s, "
-                        f"samples={stable_count}/{required_samples}"
-                    )
-                    return obs
-            else:
-                stable_count = 0
-        self.sleep_for(poll_s)
-
-    self.get_logger().warn(
-        "COLLECT stability timeout; skipping sample: "
-        f"linear={linear_speed * 1000.0:.2f}mm/s, "
-        f"angular={np.rad2deg(angular_speed):.2f}deg/s, "
-        f"stable={stable_count}/{required_samples}, timeout={timeout_s:.2f}s"
-    )
-    return None
 
 
 def _follow_pose(
@@ -195,4 +137,3 @@ def _configure_port_collect_control(self, task: Task) -> dict[str, Any]:
         "collect_stiffness": approach_stiffness,
         "collect_damping": approach_damping,
     }
-

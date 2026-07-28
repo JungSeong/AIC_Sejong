@@ -27,6 +27,9 @@ class PortOffsetCollect(Policy):
     _on_sigterm = runtime._on_sigterm
     _wait_for_tf = runtime._wait_for_tf
     _lookup_transform = runtime._lookup_transform
+    _lookup_latest_transform_stamped = runtime._lookup_latest_transform_stamped
+    _lookup_transform_at = runtime._lookup_transform_at
+    _collect_log_text = runtime._collect_log_text
     _select_port_frame = runtime._select_port_frame
     _select_cable_tip_frame = runtime._select_cable_tip_frame
     set_pose_target = runtime.set_pose_target
@@ -49,7 +52,6 @@ class PortOffsetCollect(Policy):
 
     # Methods implemented in port_offset_stages.py
     _configure_port_collect_control = stages._configure_port_collect_control
-    _wait_for_robot_stable = stages._wait_for_robot_stable
     _stage_lift_up = stages._stage_lift_up
     _stage_approach = stages._stage_approach
     _stage_collect = stages._stage_collect
@@ -60,6 +62,9 @@ class PortOffsetCollect(Policy):
     _write_rpy_data_yaml = dataset._write_rpy_data_yaml
     _port_projection_for_camera = dataset._port_projection_for_camera
     _scenario_metadata = dataset._scenario_metadata
+    _observation_sync_metadata = dataset._observation_sync_metadata
+    _wait_for_synchronized_observation = dataset._wait_for_synchronized_observation
+    _tf_sync_metadata = dataset._tf_sync_metadata
     _save_xyz_rpy_sample = dataset._save_xyz_rpy_sample
     _save_vision_offset_sample = dataset._save_vision_offset_sample
 

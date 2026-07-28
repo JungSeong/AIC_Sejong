@@ -204,10 +204,17 @@ def terminate_owned_group(
     """등록된 그룹을 종료하고 Popen 리더까지 회수한다."""
     if group is None:
         return True
+    sigint_grace_s = 0.0
+    if graceful_ros_shutdown:
+        sigint_grace_s = (
+            args.rosbag_stop_grace_s
+            if group.kind == "rosbag"
+            else args.sim_sigint_grace_s
+        )
     ok = terminate_pgid(
         group.pgid,
         label=f"{group.kind} teardown",
-        sigint_grace_s=(args.sim_sigint_grace_s if graceful_ros_shutdown else 0.0),
+        sigint_grace_s=sigint_grace_s,
         sigterm_grace_s=args.sim_cleanup_grace_s,
         sigkill_grace_s=args.sim_sigkill_grace_s,
     )
@@ -332,10 +339,16 @@ def cleanup_stale_processes(args: argparse.Namespace) -> bool:
                 )
                 continue
             handled_pgids.add(pgid)
+            if kind == "simulator":
+                sigint_grace_s = args.sim_sigint_grace_s
+            elif kind == "rosbag":
+                sigint_grace_s = args.rosbag_stop_grace_s
+            else:
+                sigint_grace_s = 0.0
             success &= terminate_pgid(
                 pgid,
                 label=f"stale {kind}",
-                sigint_grace_s=(args.sim_sigint_grace_s if kind == "simulator" else 0.0),
+                sigint_grace_s=sigint_grace_s,
                 sigterm_grace_s=args.sim_cleanup_grace_s,
                 sigkill_grace_s=args.sim_sigkill_grace_s,
             )

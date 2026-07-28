@@ -14,10 +14,13 @@ from data_gen_node.PortOffsetCollect import PortOffsetCollect  # noqa: E402
 
 EXPECTED_METHOD_MODULES = {
     "_lookup_transform": "data_gen_node.port_offset_runtime",
+    "_lookup_latest_transform_stamped": "data_gen_node.port_offset_runtime",
+    "_lookup_transform_at": "data_gen_node.port_offset_runtime",
     "_plug_location_label_in_base_frame": "data_gen_node.port_offset_labels",
     "_camera_intrinsic_matrix": "data_gen_node.port_offset_frames",
     "_finish_data_collection_episode": "data_gen_node.port_offset_episode",
-    "_wait_for_robot_stable": "data_gen_node.port_offset_stage_common",
+    "_observation_sync_metadata": "data_gen_node.port_offset_dataset",
+    "_wait_for_synchronized_observation": "data_gen_node.port_offset_dataset",
     "_stage_collect": "data_gen_node.port_offset_stage_motion",
     "insert_cable": "data_gen_node.port_offset_stage_episode",
 }

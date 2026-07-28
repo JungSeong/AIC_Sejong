@@ -20,7 +20,7 @@ def _color(
     bold: bool = True,
 ) -> str:
     """CLI 설정과 NO_COLOR 환경변수를 존중해 로그 색상을 적용한다."""
-    if not getattr(args, "color_log", True) or os.environ.get("NO_COLOR"):
+    if not args.color_log or os.environ.get("NO_COLOR"):
         return text
     prefix = ANSI_COLORS.get(color, "")
     if bold:

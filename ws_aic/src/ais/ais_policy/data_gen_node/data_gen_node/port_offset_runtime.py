@@ -18,7 +18,7 @@ from rclpy.time import Time
 from std_msgs.msg import Header
 from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
 from aic_task_interfaces.msg import Task
-from geometry_msgs.msg import Pose, Transform, Vector3, Wrench
+from geometry_msgs.msg import Pose, Transform, TransformStamped, Vector3, Wrench
 from data_gen_node.lib.cheatcode import CheatCodePlanner
 from data_gen_node.port_offset_config import (
     DAMPING_DEFAULT,
@@ -35,6 +35,14 @@ from data_gen_node.port_offset_geometry import (
     _quat_to_matrix_xyzw,
 )
 from tf2_ros import TransformException
+
+_LOG_COLORS = {
+    "cyan": "\033[36m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "reset": "\033[0m",
+    "bold": "\033[1m",
+}
 
 def init_runtime(self, parent_node):
     """GT 기반 수집에 필요한 planner, camera 좌표계, 데이터셋, 종료 처리를 초기화한다."""
@@ -68,16 +76,23 @@ def init_runtime(self, parent_node):
         self.collect_pattern = "spiral"
     self.collect_gaussian_sigma = float(os.environ.get("AIC_COLLECT_GAUSSIAN_SIGMA", "0.006"))
     self.collect_gaussian_max_radius = float(os.environ.get("AIC_COLLECT_GAUSSIAN_MAX_RADIUS", str(self.collect_start_radius)))
-    self.collect_capture_settle_sec = float(
-        os.environ.get("AIC_COLLECT_CAPTURE_SETTLE_SEC", "1.0")
+    self.collect_sync_tolerance_ns = int(
+        max(0.0, float(os.environ.get("AIC_COLLECT_SYNC_TOLERANCE_MS", "30.0")))
+        * 1_000_000
     )
-    self.collect_stability_timeout_sec = float(
-        os.environ.get("AIC_COLLECT_STABILITY_TIMEOUT_SEC", "5.0")
+    self.collect_sync_wait_timeout_sec = max(
+        0.0,
+        float(os.environ.get("AIC_COLLECT_SYNC_WAIT_TIMEOUT_SEC", "1.0")),
     )
-    self.collect_stable_samples = max(1, int(os.environ.get("AIC_COLLECT_STABLE_SAMPLES", "5")))
-    self.collect_stability_poll_sec = max(0.01, float(os.environ.get("AIC_COLLECT_STABILITY_POLL_SEC", "0.1")))
-    self.collect_linear_speed_tol_mps = max(0.0, float(os.environ.get("AIC_COLLECT_LINEAR_SPEED_TOL_MPS", "0.002")))
-    self.collect_angular_speed_tol_radps = max(0.0, float(os.environ.get("AIC_COLLECT_ANGULAR_SPEED_TOL_RADPS", "0.034906585")))
+    self.collect_sync_poll_sec = max(
+        0.001,
+        float(os.environ.get("AIC_COLLECT_SYNC_POLL_SEC", "0.01")),
+    )
+    self.collect_color_log = (
+        os.environ.get("AIC_COLLECT_COLOR_LOG", "true").lower()
+        not in {"0", "false", "no"}
+        and not os.environ.get("NO_COLOR")
+    )
     seed_text = os.environ.get("AIC_COLLECT_RANDOM_SEED", "").strip()
     seed = int(seed_text) if seed_text else None
     self._collect_rng = np.random.default_rng(seed)
@@ -148,6 +163,45 @@ def _wait_for_tf(self, target_frame: str, source_frame: str, timeout_sec: float 
 def _lookup_transform(self, target_frame: str, source_frame: str) -> Transform:
     """현재 시점의 target_frame 기준 source_frame transform을 조회한다."""
     return self._parent_node._tf_buffer.lookup_transform(target_frame, source_frame, Time()).transform
+
+def _lookup_latest_transform_stamped(
+    self,
+    target_frame: str,
+    source_frame: str,
+) -> TransformStamped:
+    """trial에서 고정된 frame을 snapshot하기 위해 최신 stamped TF를 조회한다."""
+    return self._parent_node._tf_buffer.lookup_transform(
+        target_frame,
+        source_frame,
+        Time(),
+    )
+
+def _lookup_transform_at(self, target_frame: str, source_frame: str, stamp) -> TransformStamped:
+    """지정한 ROS timestamp의 TF가 도착할 때까지 제한 시간 동안 기다려 조회한다."""
+    query_time = Time.from_msg(stamp)
+    buffer = self._parent_node._tf_buffer
+    if not buffer.can_transform(target_frame, source_frame, query_time):
+        self.get_logger().info(
+            self._collect_log_text(
+                "[PortOffsetCollect] Waiting for TF at capture timestamp: "
+                f"target={target_frame}, source={source_frame}, "
+                f"timeout={self.collect_sync_wait_timeout_sec:.3f}s",
+                "cyan",
+            )
+        )
+    return buffer.lookup_transform(
+        target_frame,
+        source_frame,
+        query_time,
+        timeout=Duration(seconds=self.collect_sync_wait_timeout_sec),
+    )
+
+def _collect_log_text(self, message: str, color: str, *, bold: bool = True) -> str:
+    """PortOffset 상태 메시지에 설정된 ANSI 색상과 굵기를 적용한다."""
+    if not self.collect_color_log:
+        return message
+    prefix = (_LOG_COLORS["bold"] if bold else "") + _LOG_COLORS.get(color, "")
+    return f"{prefix}{message}{_LOG_COLORS['reset']}"
 
 def _select_port_frame(self, task: Task) -> str:
     """포트 입구 frame이 있으면 사용하고, 없으면 기본 port link frame으로 fallback한다."""

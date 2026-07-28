@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
+import re
 import shlex
 import subprocess
+import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from .constants import (
+    ANSI_COLORS,
     DATASET_ROOT,
     EPISODE_TRACKING_DIR,
     RUN_MARKER_ENV,
@@ -22,8 +26,240 @@ from .constants import (
 from .lifecycle import (
     OwnedProcessGroup,
     terminate_owned_group,
+    terminate_pgid,
     wait_group_exit,
 )
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+@dataclass
+class RosbagSession:
+    """실행 중인 trial rosbag과 시작 확인 상태를 묶는다."""
+
+    proc: subprocess.Popen[str]
+    output_dir: Path
+    ready: threading.Event
+
+
+def _forward_process_output(
+    proc: subprocess.Popen[str],
+    line_callback: Callable[[str], None] | None = None,
+) -> None:
+    """callback에는 정제한 줄을 전달하고 화면에는 상태 ANSI 색상을 보존한다."""
+    if proc.stdout is None:
+        return
+    for line in proc.stdout:
+        clean_line = ANSI_ESCAPE_RE.sub("", line).rstrip("\r\n")
+        if line_callback is not None:
+            line_callback(clean_line)
+        display_line = (
+            clean_line
+            if os.environ.get("NO_COLOR")
+            else line.rstrip("\r\n")
+        )
+        print(display_line, flush=True)
+
+
+def _start_logged_process(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    line_callback: Callable[[str], None] | None = None,
+) -> subprocess.Popen[str]:
+    """자식 출력을 pipe로 격리하고 단일 line-forwarding thread를 시작한다."""
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        start_new_session=True,
+    )
+    threading.Thread(
+        target=_forward_process_output,
+        args=(proc, line_callback),
+        name=f"output-{proc.pid}",
+        daemon=True,
+    ).start()
+    return proc
+
+
+def _rosbag_log(
+    args: argparse.Namespace,
+    text: str,
+    color: str,
+) -> None:
+    """rosbag lifecycle 상태를 색상과 볼드로 출력한다."""
+    if not args.color_log or os.environ.get("NO_COLOR"):
+        print(text, flush=True)
+        return
+    prefix = ANSI_COLORS["bold"] + ANSI_COLORS.get(color, "")
+    print(f"{prefix}{text}{ANSI_COLORS['reset']}", flush=True)
+
+
+def rosbag_output_dir(
+    args: argparse.Namespace,
+    *,
+    run_id: str,
+    index: int,
+    task_id: str,
+) -> Path:
+    """dataset version과 run/trial ID로 충돌 없는 rosbag 경로를 만든다."""
+    root = Path(args.rosbag_output_dir).expanduser()
+    if not root.is_absolute():
+        root = WS_SRC / root
+    version = args.dataset_version.strip() or "unversioned"
+    return root / version / run_id / f"trial_{index:04d}_{task_id}"
+
+
+def start_rosbag(
+    args: argparse.Namespace,
+    *,
+    output_dir: Path,
+    run_id: str,
+) -> RosbagSession:
+    """현재 trial 토픽을 MCAP으로 기록할 rosbag2 프로세스를 시작한다."""
+    if output_dir.exists():
+        raise RuntimeError(f"rosbag output already exists: {output_dir}")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    ready = threading.Event()
+
+    def mark_ready(line: str) -> None:
+        if "Recording..." in line or "Listening for topics" in line:
+            ready.set()
+
+    env = os.environ.copy()
+    env[RUN_MARKER_ENV] = run_id
+    env["RMW_IMPLEMENTATION"] = env.get("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
+    env["ZENOH_CONFIG_OVERRIDE"] = "transport/shared_memory/enabled=false"
+    env["RCUTILS_COLORIZED_OUTPUT"] = "0"
+    env["RCUTILS_LOGGING_BUFFERED_STREAM"] = "1"
+    env["PIXI_COLOR"] = "never"
+    env["PIXI_NO_PROGRESS"] = "true"
+    cmd = [
+        "pixi",
+        "run",
+        "ros2",
+        "bag",
+        "record",
+        "-s",
+        "mcap",
+        "-o",
+        str(output_dir),
+        "--topics",
+        *args.rosbag_topics,
+    ]
+    _rosbag_log(args, f"[rosbag] STARTING: {output_dir}", "cyan")
+    proc = _start_logged_process(
+        cmd,
+        cwd=WS_SRC,
+        env=env,
+        line_callback=mark_ready,
+    )
+    return RosbagSession(proc=proc, output_dir=output_dir, ready=ready)
+
+
+def wait_for_rosbag_start(
+    session: RosbagSession,
+    args: argparse.Namespace,
+) -> bool:
+    """rosbag2의 Recording 로그 또는 조기 종료를 제한 시간 동안 감시한다."""
+    deadline = time.monotonic() + max(0.0, args.rosbag_start_timeout_s)
+    while time.monotonic() < deadline:
+        ready = session.ready.wait(timeout=0.1)
+        storage_open = any(session.output_dir.glob("*.mcap"))
+        if ready or storage_open:
+            _rosbag_log(
+                args,
+                f"[rosbag] RECORDING STARTED: {session.output_dir}",
+                "green",
+            )
+            return True
+        if session.proc.poll() is not None:
+            _rosbag_log(
+                args,
+                f"[rosbag] START FAILED: exit={session.proc.returncode}",
+                "yellow",
+            )
+            return False
+    _rosbag_log(args, "[rosbag] START TIMEOUT", "yellow")
+    return False
+
+
+def validate_rosbag(output_dir: Path) -> tuple[bool, str]:
+    """metadata, message 수, MCAP 양끝 magic을 검사해 정상 finalize를 판정한다."""
+    metadata_path = output_dir / "metadata.yaml"
+    if not metadata_path.is_file():
+        return False, "metadata.yaml missing"
+    try:
+        metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+        info = metadata["rosbag2_bagfile_information"]
+        message_count = int(info["message_count"])
+    except (OSError, TypeError, ValueError, KeyError, yaml.YAMLError) as exc:
+        return False, f"invalid metadata.yaml: {exc}"
+    if message_count <= 0:
+        return False, "message_count is zero"
+
+    mcap_files = sorted(output_dir.glob("*.mcap"))
+    if not mcap_files:
+        return False, "MCAP file missing"
+    magic = b"\x89MCAP0\r\n"
+    total_bytes = 0
+    for path in mcap_files:
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as stream:
+                start_magic = stream.read(len(magic))
+                stream.seek(-len(magic), os.SEEK_END)
+                end_magic = stream.read(len(magic))
+        except (OSError, ValueError) as exc:
+            return False, f"cannot inspect {path.name}: {exc}"
+        if start_magic != magic or end_magic != magic:
+            return False, f"{path.name} was not finalized"
+        total_bytes += size
+    return True, f"messages={message_count}, size={total_bytes / (1024 * 1024):.1f} MiB"
+
+
+def stop_rosbag(
+    session: RosbagSession | None,
+    group: OwnedProcessGroup | None,
+    args: argparse.Namespace,
+) -> bool:
+    """rosbag에 SIGINT를 보내고 MCAP finalize 결과까지 검증한다."""
+    if session is None or group is None:
+        return True
+    _rosbag_log(args, "[rosbag] FINALIZING...", "cyan")
+    stopped = terminate_pgid(
+        group.pgid,
+        label="rosbag teardown",
+        sigint_grace_s=args.rosbag_stop_grace_s,
+        sigterm_grace_s=args.sim_cleanup_grace_s,
+        sigkill_grace_s=args.sim_sigkill_grace_s,
+    )
+    if session.proc.poll() is None:
+        try:
+            session.proc.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            pass
+    if not stopped:
+        _rosbag_log(args, "[rosbag] FINALIZE FAILED: process remains", "yellow")
+        return False
+    valid, detail = validate_rosbag(session.output_dir)
+    if not valid:
+        _rosbag_log(args, f"[rosbag] FINALIZE FAILED: {detail}", "yellow")
+        return False
+    _rosbag_log(
+        args,
+        f"[rosbag] RECORDING COMPLETED: {session.output_dir} ({detail})",
+        "green",
+    )
+    return True
 
 
 def dataset_dir(args: argparse.Namespace) -> Path:
@@ -114,19 +350,16 @@ def _policy_environment(
     env["AIC_RPY_MIN_VISIBLE_CAMERAS"] = str(args.min_visible_cameras)
     env["AIC_RPY_VISIBILITY_MARGIN_PX"] = str(args.visibility_margin_px)
     env["AIC_PORT_COLLECT_BASE_Z_OFFSET_M"] = str(args.base_z_offset_mm / 1000.0)
-    env["AIC_COLLECT_CAPTURE_SETTLE_SEC"] = str(args.capture_settle_s)
-    env["AIC_COLLECT_STABILITY_TIMEOUT_SEC"] = str(args.stability_timeout_s)
-    env["AIC_COLLECT_STABLE_SAMPLES"] = str(args.stable_samples)
-    env["AIC_COLLECT_STABILITY_POLL_SEC"] = str(args.stability_poll_s)
-    env["AIC_COLLECT_LINEAR_SPEED_TOL_MPS"] = str(
-        args.linear_speed_tol_mm_s / 1000.0
-    )
-    env["AIC_COLLECT_ANGULAR_SPEED_TOL_RADPS"] = str(
-        math.radians(args.angular_speed_tol_deg_s)
-    )
+    env["AIC_COLLECT_SYNC_TOLERANCE_MS"] = str(args.sync_tolerance_ms)
+    env["AIC_COLLECT_SYNC_WAIT_TIMEOUT_SEC"] = str(args.sync_wait_timeout_s)
+    env["AIC_COLLECT_COLOR_LOG"] = "true" if args.color_log else "false"
     env["AIC_LEROBOT_REPO_ID"] = ""
     env["RMW_IMPLEMENTATION"] = env.get("RMW_IMPLEMENTATION", "rmw_zenoh_cpp")
     env["ZENOH_CONFIG_OVERRIDE"] = "transport/shared_memory/enabled=false"
+    env["RCUTILS_COLORIZED_OUTPUT"] = "0"
+    env["RCUTILS_LOGGING_BUFFERED_STREAM"] = "1"
+    env["PIXI_COLOR"] = "never"
+    env["PIXI_NO_PROGRESS"] = "true"
     return env
 
 
@@ -162,7 +395,7 @@ def start_policy(
         f"policy:={args.policy}",
     ]
     print("[policy] " + shlex.join(cmd))
-    return subprocess.Popen(cmd, cwd=WS_SRC, env=env, start_new_session=True)
+    return _start_logged_process(cmd, cwd=WS_SRC, env=env)
 
 
 def stop_policy(
@@ -207,21 +440,22 @@ def start_gazebo(
     if world_path is not None:
         launch_args.append(f"world_file:={world_path}")
     if args.headless:
-        launch_args += ["gazebo_gui:=false", "launch_rviz:=false"]
+        launch_args.append("gazebo_gui:=false")
+    if args.headless or not args.launch_rviz:
+        launch_args.append("launch_rviz:=false")
 
     args_str = " ".join(shlex.quote(value) for value in launch_args)
     exports = [
         'export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}"',
         'export ZENOH_CONFIG_OVERRIDE="transport/shared_memory/enabled=false"',
+        'export RCUTILS_COLORIZED_OUTPUT="0"',
+        'export RCUTILS_LOGGING_BUFFERED_STREAM="1"',
         f"export {RUN_MARKER_ENV}={shlex.quote(run_id)}",
     ]
     inner = " && ".join([*exports, f"/entrypoint.sh {args_str}"])
-    cmd = ["distrobox", "enter"]
-    if not args.rootless_distrobox:
-        cmd.append("-r")
-    cmd += [args.distrobox, "--", "bash", "-lc", inner]
+    cmd = ["distrobox", "enter", args.distrobox, "--", "bash", "-lc", inner]
     print("[gazebo] " + shlex.join(cmd))
-    return subprocess.Popen(cmd, stderr=subprocess.STDOUT, start_new_session=True)
+    return _start_logged_process(cmd)
 
 
 def known_episode_summaries() -> set[Path]:

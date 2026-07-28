@@ -7,7 +7,9 @@ import argparse
 import json
 import os
 import random
+import signal
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from portoffset_randomization.cli import parse_args
 from portoffset_randomization.constants import (
     CONFIG_DIR,
     REGISTRY_FILENAME,
+    TRIAL_TIMEOUT_GRACE_S,
 )
 from portoffset_randomization.lifecycle import (
     OwnedProcessGroup,
@@ -26,10 +29,15 @@ from portoffset_randomization.lifecycle import (
     write_group_registry,
 )
 from portoffset_randomization.runtime import (
+    RosbagSession,
     known_episode_summaries,
+    rosbag_output_dir,
     start_gazebo,
     start_policy,
+    start_rosbag,
     stop_policy,
+    stop_rosbag,
+    wait_for_rosbag_start,
     wait_for_trial_summary,
     write_inputs,
 )
@@ -50,6 +58,16 @@ class RunContext:
     stop_file: Path
     registry_path: Path
     active_groups: list[OwnedProcessGroup] = field(default_factory=list)
+
+
+@contextmanager
+def _uninterruptible_cleanup():
+    """cleanup 완료 전까지 추가 SIGINT가 teardown을 중단하지 못하게 한다."""
+    previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
 
 
 def _create_run_context(args: argparse.Namespace) -> RunContext:
@@ -166,7 +184,7 @@ def _print_dry_run(
 
 
 def _run_trial(ctx: RunContext, index: int, rng: random.Random) -> None:
-    """하나의 trial을 실행하고 두 소유 PGID를 종료·검증한다."""
+    """하나의 trial을 실행하고 소유한 policy, rosbag, simulator를 검증한다."""
     (
         task_id,
         _,
@@ -181,11 +199,19 @@ def _run_trial(ctx: RunContext, index: int, rng: random.Random) -> None:
 
     simulator_wrapper_group: OwnedProcessGroup | None = None
     policy_group: OwnedProcessGroup | None = None
+    rosbag_group: OwnedProcessGroup | None = None
+    rosbag_session: RosbagSession | None = None
     trial_completed = False
     policy_ok = True
+    rosbag_ok = True
     simulator_ok = True
+    interrupted = False
     previous_summaries = known_episode_summaries()
-    timeout_s = ctx.args.trial_timeout_s or (float(ctx.args.time_limit_s) + 180.0)
+    timeout_s = (
+        ctx.args.trial_timeout_s
+        if ctx.args.trial_timeout_s is not None
+        else float(ctx.args.time_limit_s) + TRIAL_TIMEOUT_GRACE_S
+    )
     try:
         simulator_proc = start_gazebo(
             ctx.args,
@@ -211,6 +237,28 @@ def _run_trial(ctx: RunContext, index: int, rng: random.Random) -> None:
                 "Distrobox inner simulator PGID discovery failed; "
                 "refusing to start policy"
             )
+        if ctx.args.record_rosbag:
+            output_dir = rosbag_output_dir(
+                ctx.args,
+                run_id=ctx.run_id,
+                index=index,
+                task_id=task_id,
+            )
+            rosbag_session = start_rosbag(
+                ctx.args,
+                output_dir=output_dir,
+                run_id=ctx.run_id,
+            )
+            rosbag_group = register_owned_group(
+                rosbag_session.proc,
+                kind="rosbag",
+                run_id=ctx.run_id,
+                marker=str(output_dir),
+            )
+            ctx.active_groups.append(rosbag_group)
+            _persist_groups(ctx)
+            if not wait_for_rosbag_start(rosbag_session, ctx.args):
+                raise RuntimeError("rosbag recorder failed to start")
         policy_proc = start_policy(
             ctx.args,
             scenario_params_path=scenario_path,
@@ -241,27 +289,38 @@ def _run_trial(ctx: RunContext, index: int, rng: random.Random) -> None:
                 f"{post_summary_wait_s:.1f}s"
             )
             time.sleep(post_summary_wait_s)
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
     finally:
-        policy_ok = stop_policy(policy_group, ctx.stop_file, ctx.args)
-        _remove_group_if_stopped(ctx, policy_group, policy_ok)
-        _register_inner_simulator_groups(ctx, config_path)
-        simulator_groups = [
-            group
-            for group in ctx.active_groups
-            if group.marker == str(config_path)
-            and group.kind in {"simulator", "simulator_wrapper"}
-        ]
-        for group in reversed(simulator_groups):
-            group_ok = terminate_owned_group(
-                group,
-                ctx.args,
-                graceful_ros_shutdown=(group.kind == "simulator"),
-            )
-            simulator_ok &= group_ok
-            _remove_group_if_stopped(ctx, group, group_ok)
-        _persist_groups(ctx)
+        with _uninterruptible_cleanup():
+            if interrupted:
+                print("[interrupt] fast teardown: additional Ctrl+C ignored")
+            policy_ok = stop_policy(policy_group, ctx.stop_file, ctx.args)
+            _remove_group_if_stopped(ctx, policy_group, policy_ok)
+            rosbag_ok = stop_rosbag(rosbag_session, rosbag_group, ctx.args)
+            _remove_group_if_stopped(ctx, rosbag_group, rosbag_ok)
+            _persist_groups(ctx)
+            _register_inner_simulator_groups(ctx, config_path)
+            simulator_groups = [
+                group
+                for group in ctx.active_groups
+                if group.marker == str(config_path)
+                and group.kind in {"simulator", "simulator_wrapper"}
+            ]
+            for group in reversed(simulator_groups):
+                group_ok = terminate_owned_group(
+                    group,
+                    ctx.args,
+                    graceful_ros_shutdown=(
+                        group.kind == "simulator" and not interrupted
+                    ),
+                )
+                simulator_ok &= group_ok
+                _remove_group_if_stopped(ctx, group, group_ok)
+            _persist_groups(ctx)
 
-    if not policy_ok or not simulator_ok:
+    if not policy_ok or not rosbag_ok or not simulator_ok:
         raise RuntimeError("collector-owned PGID teardown verification failed")
     if not trial_completed:
         raise RuntimeError(f"trial did not complete: task_id={task_id}")
@@ -270,18 +329,19 @@ def _run_trial(ctx: RunContext, index: int, rng: random.Random) -> None:
 
 def _cleanup_interrupted_run(ctx: RunContext) -> None:
     """사용자 중단 시 현재 run이 소유한 PGID만 역순으로 종료한다."""
-    policy_groups = [group for group in ctx.active_groups if group.kind == "policy"]
-    for group in policy_groups:
-        stopped = stop_policy(group, ctx.stop_file, ctx.args)
-        _remove_group_if_stopped(ctx, group, stopped)
-    for group in reversed(ctx.active_groups.copy()):
-        stopped = terminate_owned_group(
-            group,
-            ctx.args,
-            graceful_ros_shutdown=(group.kind == "simulator"),
-        )
-        _remove_group_if_stopped(ctx, group, stopped)
-    _persist_groups(ctx)
+    with _uninterruptible_cleanup():
+        policy_groups = [group for group in ctx.active_groups if group.kind == "policy"]
+        for group in policy_groups:
+            stopped = stop_policy(group, ctx.stop_file, ctx.args)
+            _remove_group_if_stopped(ctx, group, stopped)
+        for group in reversed(ctx.active_groups.copy()):
+            stopped = terminate_owned_group(
+                group,
+                ctx.args,
+                graceful_ros_shutdown=False,
+            )
+            _remove_group_if_stopped(ctx, group, stopped)
+        _persist_groups(ctx)
 
 
 def main() -> int:
