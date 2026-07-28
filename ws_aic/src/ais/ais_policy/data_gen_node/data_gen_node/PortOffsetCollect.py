@@ -29,6 +29,7 @@ class PortOffsetCollect(Policy):
     _lookup_transform = runtime._lookup_transform
     _lookup_latest_transform_stamped = runtime._lookup_latest_transform_stamped
     _lookup_transform_at = runtime._lookup_transform_at
+    _capture_tf_quality_metadata = runtime._capture_tf_quality_metadata
     _collect_log_text = runtime._collect_log_text
     _select_port_frame = runtime._select_port_frame
     _select_cable_tip_frame = runtime._select_cable_tip_frame
@@ -87,6 +88,11 @@ class PortOffsetCollect(Policy):
         self._rpy_dataset_dir = dataset_dir
         self._rpy_dataset_version = os.environ.get("AIC_RPY_DATASET_VERSION", "").strip()
         self._rpy_metadata_path = self._rpy_dataset_dir / "metadata.jsonl"
+        self._collection_metadata = {
+            "run_id": os.environ.get("AIC_PORTOFFSET_RUN_ID", "").strip(),
+            "trial_index": os.environ.get("AIC_PORTOFFSET_TRIAL_INDEX", "").strip(),
+            "rosbag_path": os.environ.get("AIC_PORTOFFSET_ROSBAG_PATH", "").strip(),
+        }
         self._rpy_push_to_hub = _env_bool("AIC_VISION_OFFSET_PUSH_TO_HUB", True)
         self._rpy_hf_repo_id = os.environ.get("AIC_VISION_OFFSET_REPO_ID", "").strip()
         self._rpy_hf_revision = (

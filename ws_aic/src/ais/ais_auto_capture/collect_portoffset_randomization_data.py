@@ -264,6 +264,10 @@ def _run_trial(ctx: RunContext, index: int, rng: random.Random) -> None:
             scenario_params_path=scenario_path,
             stop_file=ctx.stop_file,
             run_id=ctx.run_id,
+            trial_index=index,
+            rosbag_path=(
+                rosbag_session.output_dir if rosbag_session is not None else None
+            ),
         )
         policy_group = register_owned_group(
             policy_proc,
