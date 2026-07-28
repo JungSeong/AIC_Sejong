@@ -43,7 +43,7 @@ CLI_DEFAULTS = {
     "trials": 20,
     "seed": 30,
     "port_types": "sfp,sc",
-    "port_order": "random",
+    "port_order": "round_robin",
     "color_log": True,
     "samples_per_trial": 24,
     "time_limit_s": 600,

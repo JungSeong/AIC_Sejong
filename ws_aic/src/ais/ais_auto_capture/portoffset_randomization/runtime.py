@@ -303,6 +303,8 @@ def _policy_environment(
     scenario_params_path: Path,
     stop_file: Path,
     run_id: str,
+    trial_index: int | None = None,
+    rosbag_path: Path | None = None,
 ) -> dict[str, str]:
     """PortOffsetCollect가 사용할 ROS 2 및 데이터 수집 환경변수를 구성한다."""
     env = os.environ.copy()
@@ -310,6 +312,10 @@ def _policy_environment(
     env["AIC_CAPTURE_DIR"] = str(EPISODE_TRACKING_DIR)
     env["AIC_STOP_FILE"] = str(stop_file)
     env[RUN_MARKER_ENV] = run_id
+    if trial_index is not None:
+        env["AIC_PORTOFFSET_TRIAL_INDEX"] = str(trial_index)
+    if rosbag_path is not None:
+        env["AIC_PORTOFFSET_ROSBAG_PATH"] = str(rosbag_path.resolve())
     env["AIC_COLLECT_STEPS"] = str(args.samples_per_trial)
     env["AIC_RPY_DATASET_VERSION"] = args.dataset_version.strip()
     env["AIC_VISION_OFFSET_DATASET_DIR"] = str(dataset_dir(args))
@@ -369,6 +375,8 @@ def start_policy(
     scenario_params_path: Path,
     stop_file: Path,
     run_id: str,
+    trial_index: int | None = None,
+    rosbag_path: Path | None = None,
 ) -> subprocess.Popen:
     """PortOffsetCollect ROS 2 node를 독립 session/PGID로 실행한다."""
     env = _policy_environment(
@@ -376,6 +384,8 @@ def start_policy(
         scenario_params_path=scenario_params_path,
         stop_file=stop_file,
         run_id=run_id,
+        trial_index=trial_index,
+        rosbag_path=rosbag_path,
     )
     try:
         stop_file.unlink()

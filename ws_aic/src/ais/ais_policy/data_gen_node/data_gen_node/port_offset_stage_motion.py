@@ -32,6 +32,45 @@ from data_gen_node.port_offset_stage_common import (
 )
 
 
+def _time_difference_text(timestamps: dict[str, Any]) -> str:
+    """metadata의 ns 단위 시각 차이를 사람이 읽기 쉬운 ms 문자열로 변환한다."""
+    differences = timestamps.get("skew_ns", {})
+    if not isinstance(differences, dict) or not differences:
+        return "unavailable"
+    return ", ".join(
+        f"{source}={float(value) / 1_000_000.0:.3f} ms"
+        for source, value in sorted(differences.items())
+    )
+
+
+def _capture_failure_reason(reason: str) -> str:
+    """내부 실패 분류를 사용자에게 설명 가능한 문장으로 변환한다."""
+    timed_out = reason.startswith("observation_sync_timeout:")
+    base_reason = reason.split(":", 1)[1] if timed_out else reason
+    descriptions = {
+        "missing_observation": "camera/controller Observation을 받지 못함",
+        "missing_or_zero_timestamp": "camera 또는 controller source 시각이 없거나 0임",
+        "camera_time_difference_exceeded": "세 camera 촬영 시각 차이가 허용 범위를 초과함",
+        "controller_time_difference_exceeded": (
+            "ControllerState와 center camera의 시각 차이가 허용 범위를 초과함"
+        ),
+        "tf_time_difference_exceeded": (
+            "plug TF와 center camera의 시각 차이가 허용 범위를 초과함"
+        ),
+        "raw_tf_reconstruction_unavailable": (
+            "독립 raw TF buffer에서 capture 시각의 plug 자세를 재구성하지 못함"
+        ),
+        "raw_tf_bracketing_unavailable": (
+            "TF 경로의 동적 edge에 capture 시각을 감싸는 앞뒤 raw TF가 없음"
+        ),
+        "tf_reconstruction_difference_exceeded": (
+            "실시간 plug TF와 raw TF 재구성 결과의 위치 또는 회전 차이가 허용 범위를 초과함"
+        ),
+    }
+    detail = descriptions.get(base_reason, base_reason.replace("_", " "))
+    return f"대기시간 내 일치하는 Observation을 찾지 못함: {detail}" if timed_out else detail
+
+
 def _stage_lift_up(
     self,
     ctx: dict[str, Any],
@@ -197,13 +236,14 @@ def _stage_collect(
                 get_observation
             )
             if save_obs is None:
-                self.get_logger().warn(
+                self.get_logger().error(
                     self._collect_log_text(
-                        "[PortOffsetCollect] Skipping sample: "
-                        f"{timestamps.get('rejection_reason', 'timestamp_gating_failed')}, "
-                        f"skew_ns={timestamps.get('skew_ns', {})}, "
-                        f"tolerance_ns={self.collect_sync_tolerance_ns}",
-                        "yellow",
+                        "[PortOffsetCollect] CAPTURE FAILED: "
+                        f"reason={_capture_failure_reason(str(timestamps.get('rejection_reason', 'missing_observation')))}; "
+                        f"time_differences={_time_difference_text(timestamps)}; "
+                        f"tolerance={self.collect_sync_tolerance_ns / 1_000_000.0:.3f} ms",
+                        "red",
+                        bold=True,
                     )
                 )
                 self.sleep_for(self.step_sleep_sec)
@@ -229,13 +269,54 @@ def _stage_collect(
                 static_sources={"port"},
             )
             if not sync_valid:
-                self.get_logger().warn(
+                self.get_logger().error(
                     self._collect_log_text(
-                        "[PortOffsetCollect] Skipping sample: "
-                        f"{timestamps.get('rejection_reason', 'tf_timestamp_gating_failed')}, "
-                        f"skew_ns={timestamps.get('skew_ns', {})}, "
-                        f"tolerance_ns={self.collect_sync_tolerance_ns}",
-                        "yellow",
+                        "[PortOffsetCollect] CAPTURE FAILED: "
+                        f"reason={_capture_failure_reason(str(timestamps.get('rejection_reason', 'TF 확인 실패')))}; "
+                        f"time_differences={_time_difference_text(timestamps)}; "
+                        f"tolerance={self.collect_sync_tolerance_ns / 1_000_000.0:.3f} ms",
+                        "red",
+                        bold=True,
+                    )
+                )
+                self.sleep_for(self.step_sleep_sec)
+                continue
+
+            tf_quality_valid, tf_quality = self._capture_tf_quality_metadata(
+                save_raw_plug_stamped,
+                "base_link",
+                ctx["cable_tip_frame"],
+                int(timestamps["capture_stamp_ns"]),
+            )
+            timestamps["tf"]["plug"]["quality"] = tf_quality
+            if not tf_quality_valid:
+                timestamps["sync_valid"] = False
+                rejection_reason = str(tf_quality.get(
+                    "rejection_reason",
+                    "tf_reconstruction_difference_exceeded",
+                ))
+                timestamps["rejection_reason"] = rejection_reason
+                position_difference_mm = (
+                    float(tf_quality.get("position_difference_m", float("nan")))
+                    * 1000.0
+                )
+                position_limit_mm = (
+                    float(tf_quality["position_tolerance_m"]) * 1000.0
+                )
+                angle_difference_rad = float(
+                    tf_quality.get("angle_difference_rad", float("nan"))
+                )
+                angle_limit_rad = float(tf_quality["angle_tolerance_rad"])
+                self.get_logger().error(
+                    self._collect_log_text(
+                        "[PortOffsetCollect] CAPTURE FAILED: "
+                        f"reason={_capture_failure_reason(rejection_reason)}; "
+                        f"position_difference={position_difference_mm:.4f} mm "
+                        f"(limit={position_limit_mm:.4f} mm); "
+                        f"angle_difference={angle_difference_rad:.6f} rad "
+                        f"(limit={angle_limit_rad:.6f} rad)",
+                        "red",
+                        bold=True,
                     )
                 )
                 self.sleep_for(self.step_sleep_sec)
@@ -255,7 +336,7 @@ def _stage_collect(
                 )
             )
             if ctx["recording_started"]:
-                saved = self._save_vision_offset_sample(
+                saved, save_detail = self._save_vision_offset_sample(
                     episode_name=ctx["episode_name"],
                     task=ctx["task"],
                     phase="collect",
@@ -271,20 +352,33 @@ def _stage_collect(
                     ctx["phase_step_counts"]["collect"] += 1
                     self.get_logger().info(
                         self._collect_log_text(
-                            "[PortOffsetCollect] Saved synchronized sample: "
+                            "[PortOffsetCollect] CAPTURE SAVED: "
+                            f"{save_detail}; "
                             f"capture_stamp_ns={timestamps['capture_stamp_ns']}, "
-                            f"skew_ns={timestamps['skew_ns']}, "
-                            f"wait_ns={timestamps['wait_ns']}",
+                            f"time_differences={_time_difference_text(timestamps)}",
                             "green",
+                            bold=True,
+                        )
+                    )
+                else:
+                    self.get_logger().error(
+                        self._collect_log_text(
+                            "[PortOffsetCollect] CAPTURE FAILED: "
+                            f"reason={save_detail}; "
+                            f"capture_stamp_ns={timestamps['capture_stamp_ns']}",
+                            "red",
+                            bold=True,
                         )
                     )
         except TransformException as exc:
-            self.get_logger().warn(
+            self.get_logger().error(
                 self._collect_log_text(
-                    "[PortOffsetCollect] Skipping sample: "
-                    f"TF unavailable at capture timestamp after "
-                    f"{self.collect_sync_wait_timeout_sec:.3f}s ({exc})",
-                    "yellow",
+                    "[PortOffsetCollect] CAPTURE FAILED: "
+                    "reason=center camera 촬영 시각의 plug TF를 조회하지 못함; "
+                    f"wait_limit={self.collect_sync_wait_timeout_sec:.3f} s; "
+                    f"detail={exc}",
+                    "red",
+                    bold=True,
                 )
             )
         self.sleep_for(self.step_sleep_sec)

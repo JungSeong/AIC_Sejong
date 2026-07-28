@@ -5,8 +5,11 @@
 | 파일 | 환경 | 역할 |
 |---|---|---|
 | `collect_portoffset_randomization_data.py` | distrobox/eval engine | Align Phase에서 사용될 vision-offset 정렬 데이터 자동 수집 |
+| `validate_portoffset_trial.py` | host Pixi | 저장 sample과 동일 trial MCAP의 영상·시각·TF·label 일치 검사 |
 | `collect_lerobot_data.py` | distrobox (x86) | LeRobot 에피소드 자동 수집 |
 | `collect_lerobot_data_aarch.py` | 소스 빌드 (aarch64) | LeRobot 에피소드 자동 수집 |
+| `collect_yolo_data_aarch.py` | 소스 빌드 (aarch64) | TF 기반 YOLO 데이터셋 자동 수집 |
+| `plot_scenario_randomization.py` | host Pixi | 시나리오 랜덤화 분포 plot 생성 |
 
 ## 1. collect_portoffset_randomization_data.py — PortOffsetCollect 정렬 데이터 수집
 
@@ -14,70 +17,94 @@
 
 ```bash
 pixi run python ais/ais_auto_capture/collect_portoffset_randomization_data.py \
-  --trials 20 \
-  --samples-per-trial 24 \
+  --trials 2 \
+  --samples-per-trial 100 \
   --port-types sfp,sc \
   --dataset-version 0726-001 \
-  --push-to-hub true \
+  --push-to-hub false \
   --vision-offset-repo-id aic-sejong-team/aic-vision-offset-dataset \
   --vision-offset-hf-revision 0726-001 \
   --upload-on-port-type sc \
   --record-rosbag true \
-  --launch-rviz false \
-  --cleanup
+  --headless \
+  --cleanup \
+  --seed 2
 ```
 
-### 파라미터 옵션 정리
+### 1-1. 파라미터
 
-| 파라미터 종류 | 범위 | 역할 |
-|---|---|---|
-| Target port type | `--port-types sfp`, `sc`, `sfp,sc` 기본 `sfp,sc` | 수집할 포트 계열을 선택합니다. 기본은 SFP와 SC를 모두 수집합니다. |
-| Target port order | `--port-order random` 또는 `round_robin`, 기본 `random` | SFP/SC trial 배치 순서를 결정합니다. |
-| Trial count | `--trials`, 기본 `20` | 생성 및 수집할 Gazebo trial 개수입니다. |
-| Samples per trial | `--samples-per-trial`, 기본 `24` | 한 trial의 수집 시도 수입니다. timestamp/visibility gating에서 거부되면 실제 저장 수는 더 적을 수 있습니다. |
-| SFP task board X | `0.13 ~ 0.17 m` | SFP/NIC trial에서 task board의 world X 위치를 랜덤화합니다. |
-| SFP task board Y | `-0.25 ~ -0.20 m` | SFP/NIC trial에서 task board의 world Y 위치를 랜덤화합니다. |
-| SFP task board yaw | `3.10 ~ 3.1415 rad` | SFP/NIC trial에서 task board 회전각을 랜덤화합니다. |
-| SC task board X | `0.15 ~ 0.19 m` | SC trial에서 task board의 world X 위치를 랜덤화합니다. |
-| SC task board Y | `-0.05 ~ 0.05 m` | SC trial에서 task board의 world Y 위치를 랜덤화합니다. |
-| SC task board yaw | `3.10 ~ 3.1415 rad` | SC trial에서 task board 회전각을 랜덤화합니다. |
-| Task board Z / roll / pitch | `z=1.14 m`, `roll=0`, `pitch=0` | 보드 높이와 기울기는 고정해 xy/yaw 중심의 scene variation만 적용합니다. |
-| SFP NIC rail | `0 ~ 4` 중 1개 | SFP target이 들어갈 NIC rail을 선택합니다. |
-| SFP port index | `sfp_port_0` 또는 `sfp_port_1` | SFP target port를 선택합니다. |
-| SFP NIC translation | `-0.0215 ~ 0.0234 m` | 선택된 NIC card mount의 rail 방향 위치를 랜덤화합니다. |
-| SFP NIC yaw | `-10 ~ +10 deg` | 선택된 NIC card mount의 yaw를 랜덤화합니다. |
-| SC rail | `0 ~ 1` 중 1개 | SC target이 들어갈 SC rail을 선택합니다. |
-| SC translation | `-0.06 ~ 0.055 m` | 선택된 SC mount의 rail 방향 위치를 랜덤화합니다. |
-| Gripper offset noise | 각 축 `-0.002 ~ +0.002 m` | cable gripper offset 기준값에 미세 오차를 더합니다. SFP 기준값은 `[0, 0.015385, 0.04245] m`, SC 기준값은 `[0, 0.015385, 0.04045] m`입니다. |
-| Cable RPY noise | `--cable-rpy-noise-deg`, 기본 `±20 deg` | cable 초기 roll/pitch/yaw 기준값에 회전 오차를 더합니다. |
-| Robot home joint noise | `--robot-joint-noise-deg`, 기본 `±4 deg` | robot home joint 초기값에 관절별 오차를 더합니다. |
-| Collect XYZ range | X/Y 기본 `-50 ~ +50 mm`, Z 기본 `0 ~ 100 mm` | PortOffsetCollect가 포트 기준 위치 offset sample을 생성하는 범위입니다. `--dx-*`, `--dy-*`, `--dz-*`로 축별 override할 수 있습니다. |
-| Collect RPY range | roll/pitch 기본 `±25 deg`, yaw 기본 `±35 deg` | PortOffsetCollect가 포트 기준 자세 offset sample을 생성하는 범위입니다. `--roll-*`, `--pitch-*`, `--yaw-*`로 축별 override할 수 있습니다. |
-| RPY norm cap | `--rpy-norm-max-rad`, 기본 미사용 | sampling된 RPY vector magnitude를 제한합니다. |
-| Actual RPY norm filter | `--actual-rpy-norm-max-rad`, 기본 `--rpy-norm-max-rad` 정책값 사용 | 저장 직전 실제 plug-port quaternion angle이 큰 sample을 제외합니다. |
-| Timestamp sync tolerance | `--sync-tolerance-ms`, 기본 `30 ms` | 좌·중·우 Image, ControllerState, 동적 TF의 ROS source timestamp skew가 이 값을 넘으면 sample을 저장하지 않습니다. |
-| Summary grace / trial interval | summary 후 `3 s`, trial 간 `3 s` | AIC engine의 scoring/reset 완료를 기다린 뒤 종료하고, 종료 검증 후 다음 trial을 시작합니다. |
-| Simulator teardown | 정상 종료: SIGINT `5 s` → SIGTERM `2 s` → SIGKILL `1 s`; Ctrl+C: SIGTERM `2 s` → SIGKILL `1 s` | 외부 Distrobox wrapper PGID와 config marker로 찾은 내부 ROS 2/Gazebo PGID를 각각 등록합니다. Ctrl+C 시 추가 SIGINT는 cleanup이 끝날 때까지 무시하며, 내부 simulator와 wrapper 종료 및 registry 갱신을 완료합니다. |
-| Pre-run cleanup | `--cleanup`, 기본 off | run marker와 registry로 소유권이 확인된 이전 policy/Gazebo PGID를 정리한 후 새 수집을 시작합니다. |
-| Cleanup only | `--cleanup-only`, 기본 off | 이전 수집의 잔존 PGID만 정리하고 trial을 시작하지 않은 채 종료합니다. |
-| Visibility filter | `--min-visible-cameras` 기본 `1`, `--visibility-margin-px` 기본 `8 px` | 포트가 충분히 보이는 sample만 저장하도록 카메라 visibility 기준을 정합니다. |
-| Lighting randomization | 기본 `true`, `--randomize-lighting false`로 비활성화 | trial마다 Gazebo world SDF를 생성해 조명/배경을 truncated Gaussian 분포로 랜덤화합니다. |
-| Light intensity scale | `N(μ=1.0, σ=0.1167)`, `[0.65, 1.35]` | `enclosure_light`, `ceiling_01`, `ceiling_02` intensity에 곱할 scale입니다. |
-| Light color jitter | `N(μ=0, σ=0.04)`, `[-0.12, 0.12]` | 각 light diffuse RGB를 channel별로 변화시킵니다. |
-| Light pose jitter | XY `N(0, 0.0833) m`, `[-0.25, 0.25] m`; Z `N(0, 0.0667) m`, `[-0.20, 0.20] m` | 각 light 위치를 변화시켜 highlight/shadow 위치를 바꿉니다. |
-| Ambient / background | ambient `N(0.04, 0.0133)`, `[0, 0.08]`; background `N(0.14, 0.02)`, `[0.08, 0.20]` | scene ambient와 background 밝기를 변화시킵니다. |
-| Gazebo mode | `--headless` on/off | 활성화하면 Gazebo GUI와 RViz를 모두 비활성화합니다. |
-| RViz | `--launch-rviz true\|false`, 기본 `true` | `false`이면 Gazebo GUI 상태와 관계없이 RViz만 비활성화합니다. `--headless` 사용 시에는 항상 비활성화됩니다. |
-| Color log | 기본 `true`, `--color-log false` 또는 `NO_COLOR`로 비활성화 | trial별 랜덤화 로그를 색상/볼드로 구분해 출력합니다. |
-| Trial timeout | 기본 `time-limit-s + 180 s` | `episode_summary.json` 생성 대기 제한 시간입니다. |
-| Dataset version | `--dataset-version`, 기본 빈 문자열 | `data/ais_portoffset_randomization/{version}` 하위에 저장할 버전을 지정합니다. |
-| Hugging Face upload | 기본 `false`, `--push-to-hub true`로 활성화 | PortOffsetCollect policy에 `AIC_VISION_OFFSET_PUSH_TO_HUB`를 명시 전달합니다. 실험 중 의도치 않은 업로드를 막기 위해 runner 기본값은 `false`입니다. |
-| Hugging Face target | `--vision-offset-repo-id`, `--vision-offset-hf-revision`, `--vision-offset-hf-path-in-repo`, `--hf-private` | 업로드할 HF dataset repo, revision, repo 내부 경로, private repo 생성 여부를 지정합니다. |
-| Upload port filter | `--upload-on-port-type` 값 `sfp`, `sc`, 또는 빈 문자열 기본 빈 문자열 | 특정 포트 타입 trial에서만 업로드하도록 제한합니다. 빈 문자열이면 PortOffsetCollect가 포트 타입 제한 없이 판단합니다. |
+#### 수집 규모 및 trial 구성
 
-### rosbag 자동 녹화
+| CLI 옵션 | 기본값 | 조정 목적 |
+|---|---:|---|
+| `--trials` | `20 trials` | 생성할 독립 Gazebo 시나리오 수 |
+| `--seed` | `30` | randomization 재현 또는 다른 표본 생성 |
+| `--port-types` | `sfp,sc` | `sfp`, `sc` 또는 두 포트 계열 선택 |
+| `--port-order` | `round_robin` | `--port-types`에 적힌 순서대로 포트 타입을 번갈아 배치; 복원 랜덤 선택은 `random` 사용 |
+| `--samples-per-trial` | `24 samples/trial` | trial별 offset sample 시도 수 |
+| `--time-limit-s` | `600 s` | 생성되는 AIC task 제한 시간 |
+| `--trial-timeout-s` | 미지정(`s`) | collector 완료 대기시간 override; 미지정 시 `time-limit-s + 180 s` |
 
-`--record-rosbag true`는 각 trial을 독립 MCAP으로 기록합니다. 이후 FoxGlove 환경에서 디버깅 할 때 용이합니다.
+#### 로봇 초기 자세 randomization
+
+| CLI 옵션 | 기본값 | 조정 목적 |
+|---|---:|---|
+| `--robot-joint-noise-deg` | `4 deg` | robot home joint별 uniform noise `±4 deg` |
+| `--cable-rpy-noise-deg` | `20 deg` | cable 초기 roll/pitch/yaw uniform noise `±20 deg` |
+
+#### Port-local XYZ/RPY sample 분포
+
+| CLI 옵션 | 기본값 | 조정 목적 |
+|---|---:|---|
+| `--dx-min-mm`, `--dx-max-mm` | `-50 mm`, `50 mm` | port-local X translation 범위 |
+| `--dy-min-mm`, `--dy-max-mm` | `-50 mm`, `50 mm` | port-local Y translation 범위 |
+| `--dz-min-mm`, `--dz-max-mm` | `0 mm`, `100 mm` | port 바깥쪽 접근축 translation 범위 |
+| `--port-roll-limit-deg` | `25 deg` | 대칭 roll 범위 `[-25, +25] deg` |
+| `--port-pitch-limit-deg` | `25 deg` | 대칭 pitch 범위 `[-25, +25] deg` |
+| `--port-yaw-limit-deg` | `35 deg` | 대칭 yaw 범위 `[-35, +35] deg` |
+| `--roll-min-deg`, `--roll-max-deg` | 미지정(`deg`) | 비대칭 roll 범위 override |
+| `--pitch-min-deg`, `--pitch-max-deg` | 미지정(`deg`) | 비대칭 pitch 범위 override |
+| `--yaw-min-deg`, `--yaw-max-deg` | 미지정(`deg`) | 비대칭 yaw 범위 override |
+| `--rpy-norm-max-rad` | 미지정(`rad`) | 생성된 RPY vector norm 상한 |
+| `--base-z-offset-mm` | `0 mm` | 모든 collect target에 더할 공통 접근축 거리 |
+
+#### Sample 승인 조건
+
+| CLI 옵션 | 기본값 | 조정 목적 |
+|---|---:|---|
+| `--min-visible-cameras` | `1 camera` | 포트가 보여야 하는 최소 camera 수 |
+| `--visibility-margin-px` | `8 px` | image 경계에서 제외할 pixel margin |
+| `--sync-tolerance-ms` | `30 ms` | center image 기준 camera·ControllerState·동적 plug TF의 최대 시각 차이 |
+| `--sync-wait-timeout-s` | `1 s` | 유효 Observation과 capture 시각 plug TF의 최대 대기시간 |
+
+#### 조명과 배경 randomization
+
+연속값은 min/max를 `μ ± 3σ`로 해석한 truncated Gaussian에서 sampling합니다.
+
+| CLI 옵션 | 기본값 | 조정 목적 |
+|---|---:|---|
+| `--randomize-lighting` | `true` | randomized world 생성 여부 |
+| `--light-intensity-scale-min`, `--light-intensity-scale-max` | `0.65×`, `1.35×` | light intensity 배율 범위 |
+| `--light-color-jitter` | `0.12` (RGB, `0~1`) | 흰색 기준 RGB 채널별 최대 변화량 |
+| `--light-pose-xy-jitter-m` | `0.25 m` | light X/Y 위치 최대 변화량 |
+| `--light-pose-z-jitter-m` | `0.20 m` | light Z 위치 최대 변화량 |
+| `--ambient-min`, `--ambient-max` | `0`, `0.08` (RGB, `0~1`) | scene ambient RGB 밝기 범위 |
+| `--background-min`, `--background-max` | `0.08`, `0.20` (RGB, `0~1`) | scene background RGB 밝기 범위 |
+
+#### HuggingFace 업로드
+
+| CLI 옵션 | 기본값 | 조정 목적 |
+|---|---:|---|
+| `--dataset-version` | 빈 문자열 | 결과 version 디렉터리와 metadata version |
+| `--push-to-hub` | `false` | 수집 완료 후 dataset 업로드 여부 |
+| `--vision-offset-repo-id` | `aic-sejong-team/aic-vision-offset-dataset` | 업로드할 dataset repository |
+| `--vision-offset-hf-revision` | `main` | 업로드할 branch/revision |
+| `--upload-on-port-type` | 빈 문자열 | `sfp` 또는 `sc` trial에서만 누적 dataset 업로드; 빈 값은 매 성공 trial |
+| `--hf-private` | `false` | 새 repository의 private 생성 여부 |
+
+### 1-2. rosbag 자동 녹화
+
+`--record-rosbag true`는 각 trial을 독립 MCAP으로 기록하며, offline sample 일치 검사의 원본 데이터로 사용합니다.
 
 ```text
 Gazebo + Zenoh 시작
@@ -93,8 +120,8 @@ Gazebo + Zenoh 시작
 | `--record-rosbag` | `false` | `true`이면 자동 녹화를 활성화합니다. |
 | `--rosbag-output-dir` | `AIC_Sejong/rosbags/portoffset` | 최상위 출력 경로입니다. |
 | `--rosbag-topics` | `/clock`, TF, controller, 카메라 토픽 | 녹화할 토픽 목록입니다. |
-| `--rosbag-start-timeout-s` | `20` | recorder 시작 대기시간입니다. |
-| `--rosbag-stop-grace-s` | `30` | SIGINT finalize 대기시간입니다. |
+| `--rosbag-start-timeout-s` | `20 s` | recorder 시작 대기시간입니다. |
+| `--rosbag-stop-grace-s` | `30 s` | SIGINT finalize 대기시간입니다. |
 
 기본 출력은 `AIC_Sejong/rosbags/portoffset/{dataset-version}/{run-id}/{trial}`입니다. `metadata.yaml`, 0보다 큰 message count, 모든 MCAP의 시작·종료 magic이 유효해야 green bold `RECORDING COMPLETED` 로그가 출력되고 다음 trial로 진행합니다. 실패 시 해당 run을 중단합니다.
 
@@ -105,45 +132,124 @@ Gazebo + Zenoh 시작
 | `stop_rosbag()` / `validate_rosbag()` | SIGINT 종료와 MCAP 완결성 검증을 수행합니다. |
 | `cleanup_stale_processes()` | 비정상 종료 후 남은 recorder를 SIGINT 우선으로 정리합니다. |
 
-```bash
-# 잔존 프로세스 정리 후 수집
-pixi run python ais/ais_auto_capture/collect_portoffset_randomization_data.py \
-  --cleanup \
-  --trials 20
+### 1-3. 수집 시각 일치 검사
 
-# 잔존 프로세스 정리 후 즉시 종료
-pixi run python ais/ais_auto_capture/collect_portoffset_randomization_data.py \
-  --cleanup-only
+center image `header.stamp`가 sample 기준 시각입니다. collector는 최대 `--sync-wait-timeout-s` 동안 새 Observation을 순차 확인하고, 세 Image와 ControllerState가 `--sync-tolerance-ms` 안에 들어온 첫 Observation을 선택합니다.
+
+포트는 trial 중 움직이지 않는다는 시나리오 조건을 사용해 trial 시작 시 최신 TF를 한 번 `port_tf_snapshot`으로 저장합니다. 이 snapshot은 `is_static_snapshot=true`로 기록하고 시각 차이 계산에서 제외하므로, 1 Hz port TF 발행 주기를 각 capture 시각에 맞추기 위해 기다리지 않습니다. 한편 플러그는 위치가 계속 변화하므로 선택된 center image 시각의 TF를 최대 동일 timeout 동안 기다려 조회합니다.
+
+collector는 별도 raw TF cache에 `/tf`, `/scoring/tf`, `/tf_static`을 보존합니다. `base_link`에서 plug까지 경로의 동적 edge마다 exact raw stamp 또는 앞뒤 stamp, 보간 구간·비율을 기록하고, raw cache의 독립 재구성 결과가 실시간 TF와 위치 `0.1 mm`, 회전 `0.001 rad` 이내에서 일치할 때만 sample을 저장합니다.
+
+```text
+동작 방식:
+  새 Observation 수신
+  → center image의 새로운 timestamp 선택
+  → 해당 timestamp의 plug TF 조회
+  → 조건을 통과하면 실제 plug-port 관계 저장
+  → 다음 sample은 새로운 timestamp로 다시 시작
+
+trial 시작:
+  port_tf_snapshot = latest(base_link <- port entrance)
+
+저장 조건:
+  camera_time_difference <= sync_tolerance
+  controller_time_difference <= sync_tolerance
+  dynamic plug TF time_difference <= sync_tolerance
+  raw TF reconstruction position_difference <= 0.1 mm
+  raw TF reconstruction angle_difference <= 0.001 rad
 ```
 
-```bash
-cd ~/AIC_Sejong/ws_aic/src
-pixi run python ais/ais_auto_capture/plot_scenario_randomization.py
-```
+timeout이나 허용 오차를 넘긴 sample은 JPEG, 카메라별 sample metadata JSON 및 `metadata.jsonl`을 쓰지 않고 저장 count도 증가시키지 않습니다.
 
-### Timestamp gating
+카메라별 sample metadata JSON과 `metadata.jsonl`의 `timestamps`에는 `capture_stamp_ns`, camera별 stamp, `controller_stamp_ns`, port/plug TF stamp, `is_static_snapshot`, `skew_ns`, `wait_ns`, `sync_tolerance_ns`, `sync_valid`, `dataset_write_stamp_ns`가 기록됩니다. `timestamps.tf.plug.quality.provenance`에는 TF 경로별 `previous_stamp_ns`, `next_stamp_ns`, `interpolation_span_ns`, `interpolation_ratio`, `exact_sample`, `interpolated`가 기록되며 모든 시각 값의 단위는 `ns`입니다. 호환성을 위해 유지하는 `skew_ns`는 source 사이의 최대 시각 차이를 `ns` 단위로 저장하는 필드입니다.
 
-center image `header.stamp`가 sample 기준 시각입니다. 세 Image와 ControllerState를 먼저 검사하고, port/plug TF를 그 시각으로 조회한 뒤 모든 동적 source가 `--sync-tolerance-ms` 안에 있을 때만 저장합니다. static TF의 `0` stamp는 허용하며, settle 대기와 TCP 속도 기반 정지 판정은 사용하지 않습니다.
-
-sidecar JSON과 `metadata.jsonl`의 `timestamps`에는 `capture_stamp_ns`, camera별 stamp, `controller_stamp_ns`, port/plug TF stamp, `skew_ns`, `sync_tolerance_ns`, `sync_valid`, `dataset_write_stamp_ns`가 기록됩니다.
-
-| 함수 | 변경 내용 |
+| 함수 | 현재 역할 |
 |---|---|
-| `init_runtime()` | sync tolerance를 초기화하고 settle/속도 설정을 제거합니다. |
-| `_observation_sync_metadata()` | camera/controller stamp 기록과 1차 gating을 수행합니다. |
-| `_lookup_transform_at()` / `_tf_sync_metadata()` | center image 시각 TF 조회와 2차 gating을 수행합니다. |
-| `_stage_collect()` | 정지 대기 없이 observation을 한 번 읽고 gating을 통과한 sample만 저장기로 전달합니다. |
-| `_save_xyz_rpy_sample()` | 통과한 sample의 timestamp와 skew를 실제 dataset metadata에 기록합니다. |
+| `_add_sync_args()` / `_policy_environment()` | 허용 오차·대기 timeout·색상 설정을 policy 환경변수로 전달합니다. |
+| `init_runtime()` | 허용 오차와 최대 대기시간을 초기화합니다. |
+| `insert_cable()` / `_lookup_latest_transform_stamped()` | trial 시작 시 고정 포트 TF를 한 번 snapshot합니다. |
+| `_wait_for_synchronized_observation()` | timeout 동안 Image/ControllerState 조건을 만족하는 Observation을 선택합니다. |
+| `_lookup_transform_at()` / `_tf_sync_metadata()` | center image 시각의 동적 plug TF를 기다리고 port snapshot과 함께 metadata를 검증합니다. |
+| `_record_tf_quality_message()` / `_tf_interpolation_provenance()` | raw TF를 독립 cache에 보존하고 TF 경로별 exact/보간 stamp를 `ns` 단위로 계산합니다. |
+| `_capture_tf_quality_metadata()` | 실시간 TF와 raw TF 재구성값이 위치 `0.1 mm`, 회전 `0.001 rad` 이내일 때만 승인합니다. |
+| `_stage_collect()` | 정지 속도 판정 없이 수집 시각 일치 조건을 통과한 sample만 저장기로 전달합니다. |
+| `_save_xyz_rpy_sample()` | 이미지·label·timestamp metadata가 모두 기록된 뒤에만 count를 증가시키고 성공 여부와 이유를 반환합니다. |
 
-기본 실행에서 허용 오차를 명시하려면 다음 옵션을 추가합니다.
+저장 시도 결과는 색상과 이유를 함께 출력합니다.
+
+| 로그 | 색상 | 의미 |
+|---|---|---|
+| `CAPTURE SAVED` | 초록색 bold | JPEG와 metadata가 실제로 기록되고 저장 count가 증가함 |
+| `CAPTURE FAILED` | 빨간색 bold | 시각 차이 초과, TF 조회 실패, visibility 부족 또는 파일 저장 실패로 sample이 저장되지 않음 |
+
+시각 관련 실패 로그에는 camera/controller/plug TF의 실제 시각 차이와 허용 범위를 `ms` 단위로 표시합니다. TF 재구성 실패 로그에는 실제 위치 차이와 한계는 `mm`, 회전 차이와 한계는 `rad`로 표시합니다. 파일 저장 도중 실패하면 해당 시도에서 생성한 부분 JPEG와 metadata JSON을 삭제합니다.
+
+### 1-4. Offline sample 일치 검사
+
+`validate_portoffset_trial.py`는 같은 trial의 dataset과 MCAP을 직접 읽어 모든 저장 sample을 자동 검사합니다.
 
 ```bash
---sync-tolerance-ms 30
+pixi run python ais/ais_auto_capture/validate_portoffset_trial.py \
+  --dataset-dir /home/swlinux/Desktop/workspace/AIC_Sejong/ws_aic/data/ais_portoffset_randomization/0726-001 \
+  --rosbag /home/swlinux/Desktop/workspace/AIC_Sejong/rosbags/portoffset/0726-001/<run-id>/<trial-dir>
 ```
+
+| 검사 항목 | 합격 조건 | 단위 |
+|---|---|---|
+| 저장 JPEG | 동일 camera와 `header.stamp`의 MCAP Image를 수집기와 같은 방식으로 JPEG encoding한 결과와 일치 | `byte` |
+| 세 camera 시각 | `max(left, center, right) - min(left, center, right) <= sync_tolerance` | `ns`, 보고서에 `ms` 병기 |
+| ControllerState 시각 | `abs(controller - center_image) <= sync_tolerance` | `ns`, 보고서에 `ms` 병기 |
+| port entrance | trial 시작 snapshot과 capture 시각의 위치 차이 `0.1 mm`, 회전 차이 `0.001 rad` 이하 | `mm`, `rad` |
+| plug reference | capture 시각의 TF가 존재하고 기록된 transform과 위치 차이 `0.1 mm`, 회전 차이 `0.001 rad` 이하 | `mm`, `rad` |
+| `location`, `label` | MCAP port/plug TF와 plug local offset으로 재계산한 값의 위치 차이 `0.1 mm`, 회전 차이 `0.001 rad` 이하 | `mm`, `rad` |
+
+결과는 기본적으로 trial rosbag 디렉터리의 `portoffset_validation.json`에 기록되며, 전체 sample이 합격하면 exit code `0`, 불합격 sample이 있으면 `1`, 입력 또는 실행 오류는 `2`를 반환합니다. 보고서에는 sample별 `PASS/FAIL`, camera/controller/plug TF 시각 차이, TF와 label 오차 및 실패 원인이 포함됩니다.
+
+새로 수집한 metadata는 `collection.run_id`, `collection.trial_index`, `collection.rosbag_path`로 MCAP을 정확히 연결합니다. 기존 metadata에는 이 값이 없으므로 `--sample-id <id>`를 명시해 검사합니다.
+
+MCAP topic 자체가 없으면 `pixi run ros2 bag info <trial-dir>`로 message count를 확인하고 collector와 recorder가 동일한 `rmw_zenoh_cpp`/Zenoh router를 사용하는지 확인합니다.
+
+### 1-5. Hugging Face에 업로드되는 데이터 포맷
+
+`_upload_vision_offset_dataset_to_hub()`는 현재 dataset version 디렉터리 전체를 dataset repository의 지정 revision에 업로드합니다. rosbag은 별도 `rosbags/` 경로이므로 이 업로드에 포함되지 않습니다.
+
+```text
+<dataset-version>/
+├── data.yaml
+├── metadata.jsonl
+├── images/<train|val>/<SFP|SC>/<left|center|right>/*.jpg
+└── metadata/<train|val>/<SFP|SC>/<left|center|right>/*.json
+```
+
+포트가 보이는 카메라마다 JPEG 한 장과 같은 이름의 sample metadata JSON 한 개를 저장합니다. 예를 들어 `..._center.jpg`의 label·timestamp 정보는 `..._center.json`에 있습니다. 기본 `--min-visible-cameras 1`에서는 반드시 세 카메라가 모두 저장되는 것은 아닙니다.
+
+각 카메라별 sample metadata JSON의 핵심 필드는 다음과 같습니다.
+
+| 필드 | 의미 | 좌표 기준 | 값 단위 |
+|---|---|---|---|
+| `image`, `camera`, `connector` | JPEG 상대 경로와 camera/connector 구분 | dataset 경로 | 문자열 |
+| `collection` | 정확한 trial의 `run_id`, `trial_index`, `rosbag_path` | 수집 실행 | 문자열, index |
+| `task`, `scenario` | task ID와 board/cable/lighting randomization | world/scenario 설정 | 각 하위 필드에 명시 |
+| `command` | 해당 step에서 명령한 TCP pose | `base_link` | 위치 `m`, 회전 quaternion |
+| `plug_reference` | cable TF 원점에서 실제 plug 기준점까지의 local offset | 선택된 plug frame | `m` |
+| `collect.local_*` | 의도적으로 가한 XYZ/RPY sample | port-local 축 | 위치 `m`, 회전 `rad`/`deg` |
+| `location` | 실제 `plug_reference - port_entrance` 위치와 `R_plug R_port^T` 회전 | `base_link` | 위치 `m`, 회전 `rad` |
+| `label` | 정렬 correction인 `port_entrance - plug_reference` 위치와 `R_port R_plug^T` 회전 | `base_link` | 위치 `m`, 회전 `rad` |
+| `visibility` | port projection, depth, image 크기와 visible camera 목록 | camera별 | pixel `px`, depth `m` |
+| `timestamps` | source 시각, 최대 시각 차이, 대기시간과 저장 승인 결과 | ROS time | `ns` |
+| `timestamps.tf.*.transform` | 저장에 사용한 port/plug transform | `base_link` | 위치 `m`, 회전 quaternion |
+
+`location`과 `label`은 독립적인 두 offset이 아니라 동일한 plug-port 관계의 정방향 상태와 역방향 correction입니다. raw port/plug TF message 전체는 dataset에 넣지 않지만 저장 계산에 사용한 frame과 transform은 metadata에 기록하고, 원본 message는 trial MCAP에 보관합니다.
 
 ---
 
-## 2. collect_lerobot_data_aarch.py — LeRobot 에피소드 수집 (aarch64)
+## 2. collect_lerobot_data.py — LeRobot 에피소드 수집 (distrobox / x86)
+
+`collect_lerobot_data_aarch.py`와 동일한 역할이지만 distrobox 컨테이너 환경에서 동작한다. aarch64 환경에서는 `collect_lerobot_data_aarch.py`를 사용한다.
+
+---
+
+## 3. collect_lerobot_data_aarch.py — LeRobot 에피소드 수집 (aarch64)
 
 세트당 7개 trial(NIC×5 + SC×2)을 Gazebo에서 자동 실행하며 LeRobot 포맷으로 저장한다.
 
@@ -173,9 +279,27 @@ python3 collect_lerobot_data_aarch.py \
   --lerobot-repo-id aic-sejong-team/aic-dataset
 ```
 
+### LeRobot 공통 랜덤화 파라미터
+
+LeRobot episode 자동 수집 스크립트는 세트당 SFP/NIC trial 5개와 SC trial 2개를 생성한다.
+
+| 파라미터 종류 | 범위 | 역할 |
+|---|---|---|
+| NIC/SFP card translation | `-0.0215 ~ 0.0234 m` | SFP/NIC target card의 rail 방향 위치를 랜덤화합니다. |
+| NIC/SFP card yaw | `-10 ~ +10 deg` | SFP/NIC target card의 yaw를 랜덤화합니다. |
+| SC port translation | `-0.06 ~ 0.055 m` | SC target port의 rail 방향 위치를 랜덤화합니다. |
+| SFP task board X | `0.13 ~ 0.17 m` | `--diversify` 사용 시 SFP/NIC trial의 task board X 위치를 랜덤화합니다. |
+| SFP task board Y | `-0.25 ~ -0.15 m` | `--diversify` 사용 시 SFP/NIC trial의 task board Y 위치를 랜덤화합니다. |
+| SC task board X | `0.15 ~ 0.19 m` | `--diversify` 사용 시 SC trial의 task board X 위치를 랜덤화합니다. |
+| SC task board Y | `-0.05 ~ 0.05 m` | `--diversify` 사용 시 SC trial의 task board Y 위치를 랜덤화합니다. |
+| Task board yaw | `0.0 ~ 3.1415 rad` | 모든 trial에서 task board yaw를 랜덤화합니다. |
+| Gripper offset noise | 각 축 `-0.002 ~ +0.002 m` | cable gripper offset 기준값에 미세 오차를 추가합니다. |
+| SFP gripper offset base | `[0, 0.015385, 0.04245] m` | SFP cable grasp offset 기준값입니다. |
+| SC gripper offset base | `[0, 0.015385, 0.04045] m` | SC cable grasp offset 기준값입니다. |
+
 ---
 
-## 3. collect_yolo_data_aarch.py — YOLO 데이터셋 수집 (aarch64)
+## 4. collect_yolo_data_aarch.py — YOLO 데이터셋 수집 (aarch64)
 
 시나리오별로 Gazebo를 별도 세션으로 실행하며 3대 카메라 스냅샷 + TF 기반 bbox 라벨을 자동 생성한다.
 
@@ -223,38 +347,36 @@ python3 collect_yolo_data_aarch.py --sets 10 --output ~/data/yolo
 
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
-| `--sets` | 10 | 수집 세트 수 |
-| `--snapshots` | 20 | 시나리오당 스냅샷 수 |
+| `--sets` | `10 sets` | 수집 세트 수 |
+| `--snapshots` | `20 images/scenario` | 시나리오당 스냅샷 수 |
 | `--diversify` | off | 보드 x/y 위치 랜덤화 |
 | `--headless` | off | Gazebo GUI·RViz 비활성 |
-| `--gazebo-wait` | 60 | Gazebo 초기화 대기(초) |
-| `--val-ratio` | 0.3 | 검증 세트 비율 |
+| `--gazebo-wait` | `60 s` | Gazebo 초기화 대기시간 |
+| `--val-ratio` | `0.3` (비율, `0~1`) | 검증 세트 비율 |
 | `--output` | `src/data/yolo` | YOLO 데이터셋 출력 경로 |
 | `--dry-run` | off | 명령어만 출력 |
 
 ---
 
-## 5. 랜덤화 파라미터 범위 (`collect_lerobot_data*.py`)
+## 5. plot_scenario_randomization.py — 시나리오 랜덤화 plot 생성
 
-LeRobot episode 자동 수집 스크립트는 세트당 SFP/NIC trial 5개와 SC trial 2개를 생성한다.
+plot은 `portoffset_randomization.constants.LIMITS`와 수집 CLI의 현재 기본값을 직접 읽어 Task Board, target port 및 조명 분포를 그립니다.
 
-| 파라미터 종류 | 범위 | 역할 |
-|---|---|---|
-| NIC/SFP card translation | `-0.0215 ~ 0.0234 m` | SFP/NIC target card의 rail 방향 위치를 랜덤화합니다. |
-| NIC/SFP card yaw | `-10 ~ +10 deg` | SFP/NIC target card의 yaw를 랜덤화합니다. |
-| SC port translation | `-0.06 ~ 0.055 m` | SC target port의 rail 방향 위치를 랜덤화합니다. |
-| SFP task board X | `0.13 ~ 0.17 m` | `--diversify` 사용 시 SFP/NIC trial의 task board X 위치를 랜덤화합니다. |
-| SFP task board Y | `-0.25 ~ -0.15 m` | `--diversify` 사용 시 SFP/NIC trial의 task board Y 위치를 랜덤화합니다. |
-| SC task board X | `0.15 ~ 0.19 m` | `--diversify` 사용 시 SC trial의 task board X 위치를 랜덤화합니다. |
-| SC task board Y | `-0.05 ~ 0.05 m` | `--diversify` 사용 시 SC trial의 task board Y 위치를 랜덤화합니다. |
-| Task board yaw | `0.0 ~ 3.1415 rad` | 모든 trial에서 task board yaw를 랜덤화합니다. |
-| Gripper offset noise | 각 축 `-0.002 ~ +0.002 m` | cable gripper offset 기준값에 미세 오차를 추가합니다. |
-| SFP gripper offset base | `[0, 0.015385, 0.04245] m` | SFP cable grasp offset 기준값입니다. |
-| SC gripper offset base | `[0, 0.015385, 0.04045] m` | SC cable grasp offset 기준값입니다. |
+```bash
+cd /home/swlinux/Desktop/workspace/AIC_Sejong/ws_aic/src
+pixi run python ais/ais_auto_capture/plot_scenario_randomization.py
+```
 
----
+기본 출력은 [scenario_randomization_distributions.png](../../../../readme/photo/scenario_randomization_distributions.png)입니다.
 
-## 6. collect_lerobot_data.py — LeRobot 에피소드 수집 (distrobox / x86)
+```bash
+pixi run python ais/ais_auto_capture/plot_scenario_randomization.py \
+  --output /tmp/scenario_randomization.png \
+  --dpi 200 \
+  --port-types sfp,sc \
+  --port-order random
 
-`collect_lerobot_data_aarch.py`와 동일한 역할이지만 distrobox 컨테이너 환경에서 동작한다.
-aarch64 환경에서는 `collect_lerobot_data_aarch.py`를 사용할 것.
+pixi run python ais/ais_auto_capture/plot_scenario_randomization.py --help
+```
+
+조명 범위는 `--light-intensity-scale-min/max`, `--light-color-jitter`, `--light-pose-xy-jitter-m`, `--light-pose-z-jitter-m`, `--ambient-min/max`, `--background-min/max`로 덮어쓸 수 있습니다.
