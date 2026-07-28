@@ -1,0 +1,10 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+
+public/models/*.onnx
+public/models/*.metadata.json
+
+public/ort/*
+!public/ort/.gitkeep

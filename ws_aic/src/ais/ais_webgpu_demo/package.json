@@ -1,0 +1,18 @@
+{
+  "name": "aic-webgpu-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "prepare:ort": "node scripts/copy-ort-wasm.mjs",
+    "dev": "npm run prepare:ort && vite --host 0.0.0.0",
+    "build": "npm run prepare:ort && vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.22.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  }
+}
