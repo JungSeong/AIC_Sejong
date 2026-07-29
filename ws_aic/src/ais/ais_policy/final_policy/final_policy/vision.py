@@ -12,7 +12,7 @@ from final_policy.config import FinalPolicyConfig
 from final_policy.geometry import project_3d_to_pixel
 from final_policy.model_store import format_model_log
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 def _resolve_project_root() -> Path:
     """현재 파일 위치에서 AIC_Sejong 프로젝트 루트를 역추적한다."""
@@ -22,6 +22,29 @@ def _resolve_project_root() -> Path:
     return Path(__file__).resolve().parents[6]
 
 DEFAULT_DEBUG_ROOT_DIR = _resolve_project_root() / "debug"
+
+
+def image_stamp_ns(image_msg) -> int:
+    """ROS Image header timestamp를 nanosecond 정수로 반환한다."""
+    stamp = image_msg.header.stamp
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def observation_camera_timing(obs) -> tuple[int, dict[str, int], float] | None:
+    """center 기준 camera timestamp와 최대 편차(ms)를 반환한다."""
+    stamps_ns = {}
+    for camera in ("left", "center", "right"):
+        image_msg = getattr(obs, f"{camera}_image", None)
+        if image_msg is None:
+            return None
+        stamp_ns = image_stamp_ns(image_msg)
+        if stamp_ns <= 0:
+            return None
+        stamps_ns[camera] = stamp_ns
+    reference_ns = stamps_ns["center"]
+    sync_span_ms = (max(stamps_ns.values()) - min(stamps_ns.values())) / 1_000_000.0
+    return reference_ns, stamps_ns, sync_span_ms
+
 
 class VisionPortEstimator:
     """
@@ -59,6 +82,7 @@ class VisionPortEstimator:
         conf_thresh: float = 0.8,
         logger=None,
         debug_save_enabled: bool = True,
+        detection_debug_callback: Optional[Callable] = None,
         auto_start: bool = True,
     ):
         """모델 경로, 디버그 저장 경로, 카메라 외부 파라미터와 워커 상태를 초기화한다."""
@@ -69,6 +93,7 @@ class VisionPortEstimator:
         self._loaded = False
         self._load_lock = threading.Lock()
         self._debug_save_enabled = bool(debug_save_enabled)
+        self._detection_debug_callback = detection_debug_callback
         self._debug_call_count = 0
         self._debug_task_label = "task_unknown"
         self._debug_root_dir = Path(self.DEBUG_SAVE_DIR) if self.DEBUG_SAVE_DIR else None
@@ -90,6 +115,7 @@ class VisionPortEstimator:
         self._cache: dict[str, Any] = {
             "target_class_id": None,
             "candidates": [],
+            "observation": None,
             "updated_at": 0.0,
             "request_id": 0,
         }
@@ -256,6 +282,7 @@ class VisionPortEstimator:
             self._cache = {
                 "target_class_id": None,
                 "candidates": [],
+                "observation": None,
                 "updated_at": 0.0,
                 "request_id": 0,
             }
@@ -326,6 +353,7 @@ class VisionPortEstimator:
                 self._cache = {
                     "target_class_id": request["target_class_id"],
                     "candidates": candidates,
+                    "observation": request["obs"],
                     "updated_at": time.time(),
                     "request_id": request["request_id"],
                 }
@@ -365,12 +393,12 @@ class VisionPortEstimator:
             target_port_index=target_port_index,
         )
 
-    def _cached_candidates(
+    def _cached_payload(
         self,
         target_class_id: int,
         min_request_id: int = 0,
-    ) -> Optional[list]:
-        """target class와 request id, age 조건을 만족하는 캐시 후보를 반환한다."""
+    ) -> Optional[dict[str, Any]]:
+        """target class, request id, age 조건을 만족하는 cache snapshot을 반환한다."""
         with self._cache_lock:
             cache = dict(self._cache)
         if cache.get("target_class_id") != target_class_id:
@@ -379,7 +407,40 @@ class VisionPortEstimator:
             return None
         if (time.time() - float(cache.get("updated_at", 0.0))) > self._cache_max_age_sec:
             return None
-        return list(cache.get("candidates") or [])
+        cache["candidates"] = list(cache.get("candidates") or [])
+        return cache
+
+    def _cached_candidates(
+        self,
+        target_class_id: int,
+        min_request_id: int = 0,
+    ) -> Optional[list]:
+        """조건을 만족하는 cache snapshot에서 후보 목록만 반환한다."""
+        cache = self._cached_payload(target_class_id, min_request_id)
+        return None if cache is None else cache["candidates"]
+
+    def cached_estimate_with_observation(
+        self,
+        target_class_id: int,
+        port_hint: Optional[str] = None,
+        target_module_name: Optional[str] = None,
+        min_request_id: int = 0,
+    ) -> tuple[Optional[np.ndarray], Any]:
+        """같은 cache snapshot의 선택된 포트 좌표와 원본 Observation을 반환한다."""
+        cache = self._cached_payload(target_class_id, min_request_id)
+        if cache is None or not cache["candidates"]:
+            return None, None
+
+        candidates = cache["candidates"]
+        if port_hint is not None or target_module_name is not None:
+            position = self.select_by_task_hint(
+                candidates,
+                port_name=port_hint or "",
+                target_module_name=target_module_name or "",
+            )
+        else:
+            position = candidates[0]["pos"]
+        return position, cache.get("observation")
 
     def cached_estimate(
         self,
@@ -389,20 +450,13 @@ class VisionPortEstimator:
         min_request_id: int = 0,
     ) -> Optional[np.ndarray]:
         """현재 캐시에 있는 최신 후보 중 task hint와 맞는 포트 base 좌표를 즉시 반환한다."""
-        candidates = self._cached_candidates(
+        position, _observation = self.cached_estimate_with_observation(
             target_class_id,
+            port_hint=port_hint,
+            target_module_name=target_module_name,
             min_request_id=min_request_id,
         )
-        if not candidates:
-            return None
-
-        if port_hint is not None or target_module_name is not None:
-            return self.select_by_task_hint(
-                candidates,
-                port_name=port_hint or "",
-                target_module_name=target_module_name or "",
-            )
-        return candidates[0]["pos"]
+        return position
 
     @staticmethod
     def _image_from_msg(img_msg):
@@ -486,6 +540,8 @@ class VisionPortEstimator:
         cam_name: str = "",
         target_class_id: Optional[int] = None,
         target_port_index: Optional[int] = None,
+        source_image_msg=None,
+        sync_span_ms: Optional[float] = None,
     ) -> list:
         """단일 카메라 이미지에서 YOLO 검출을 수행하고 포트 후보 2D 점을 추출한다."""
         import cv2
@@ -580,7 +636,14 @@ class VisionPortEstimator:
                 self._logger.warn(f"  [{cam_name}] no detections")
 
         passed_dets = [det for det in raw_dets if det["conf"] >= self._conf_thresh]
-        if self._debug_save_enabled and self._debug_save_dir is not None and passed_dets:
+        should_save = (
+            self._debug_save_enabled
+            and self._debug_save_dir is not None
+            and bool(passed_dets)
+        )
+        debug_callback = getattr(self, "_detection_debug_callback", None)
+        should_publish = debug_callback is not None and source_image_msg is not None
+        if should_save or should_publish:
             debug_img = image.copy()
             colors = {0: (0, 255, 0), 1: (255, 100, 0), -1: (0, 0, 255)}
 
@@ -603,6 +666,17 @@ class VisionPortEstimator:
                 center = (int(round(det["u"])), int(round(det["v"])))
 
                 cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 3)
+                for keypoint in det.get("keypoints", []):
+                    keypoint_xy = np.asarray(keypoint, dtype=np.float64).reshape(-1)
+                    if keypoint_xy.size >= 2 and np.isfinite(keypoint_xy[:2]).all():
+                        cv2.circle(
+                            debug_img,
+                            tuple(np.round(keypoint_xy[:2]).astype(int)),
+                            4,
+                            color,
+                            -1,
+                            cv2.LINE_AA,
+                        )
                 cv2.circle(debug_img, center, 5, color, -1)
                 if is_target:
                     cross_size = 18
@@ -626,7 +700,10 @@ class VisionPortEstimator:
                         )
                     cv2.circle(debug_img, center, 10, (0, 0, 0), 4, cv2.LINE_AA)
                     cv2.circle(debug_img, center, 10, cross_color, 2, cv2.LINE_AA)
-                label = f"{det['class_name']} {det['conf']:.2f}"
+                label = (
+                    f"{det['class_name']} {det['conf']:.2f} "
+                    f"uv=({det['u']:.0f},{det['v']:.0f})"
+                )
                 if det.get("model_port_index") is not None:
                     label = f"{label} model={det.get('model_port_index')}"
                 if is_target:
@@ -641,28 +718,44 @@ class VisionPortEstimator:
                     2,
                 )
 
-            self._put_text_lines(
-                debug_img,
-                [
-                    f"task={self._debug_task_label}",
-                    f"thresh={self._conf_thresh:.2f} cam={cam_name} dets={len(passed_dets)}",
-                ],
-                10,
-                24,
-            )
+            text_lines = [
+                f"task={self._debug_task_label}",
+                f"thresh={self._conf_thresh:.2f} cam={cam_name} dets={len(passed_dets)}",
+            ]
+            if source_image_msg is not None:
+                stamp = source_image_msg.header.stamp
+                text_lines.append(
+                    f"stamp={stamp.sec}.{stamp.nanosec:09d} "
+                    + (
+                        "sync_span=unavailable"
+                        if sync_span_ms is None
+                        else f"sync_span={sync_span_ms:.3f}ms"
+                    )
+                )
+            self._put_text_lines(debug_img, text_lines, 10, 24)
 
-            fname = (
-                self._debug_save_dir
-                / self._sanitize_debug_token(cam_name or "camera")
-                / f"{self._debug_task_label}__detect_{self._debug_call_count:04d}.jpg"
-            )
-            os.makedirs(fname.parent, exist_ok=True)
-            saved = cv2.imwrite(str(fname), debug_img)
-            if self._logger:
-                if saved:
-                    self._logger.info(f"[Vision Debug] saved: {fname}")
-                else:
-                    self._logger.warn(f"[Vision Debug] save failed: {fname}")
+            if should_publish:
+                try:
+                    debug_callback(cam_name, debug_img, source_image_msg)
+                except Exception as exc:
+                    if self._logger:
+                        self._logger.warn(
+                            f"[Detection RViz] {cam_name} publish failed: {exc}"
+                        )
+
+            if should_save:
+                fname = (
+                    self._debug_save_dir
+                    / self._sanitize_debug_token(cam_name or "camera")
+                    / f"{self._debug_task_label}__detect_{self._debug_call_count:04d}.jpg"
+                )
+                os.makedirs(fname.parent, exist_ok=True)
+                saved = cv2.imwrite(str(fname), debug_img)
+                if self._logger:
+                    if saved:
+                        self._logger.info(f"[Vision Debug] saved: {fname}")
+                    else:
+                        self._logger.warn(f"[Vision Debug] save failed: {fname}")
             self._debug_call_count += 1
 
         return passed_dets
@@ -750,6 +843,24 @@ class VisionPortEstimator:
         target_port_index: Optional[int] = None,
     ) -> list:
         """세 카메라의 YOLO 결과를 동기적으로 모아 3D 포트 후보 리스트를 만든다."""
+        camera_timing = observation_camera_timing(obs)
+        if camera_timing is None:
+            if self._logger:
+                self._logger.warn(
+                    "Vision: triangulation rejected because a camera timestamp is missing"
+                )
+            return []
+        _reference_ns, camera_stamps_ns, sync_span_ms = camera_timing
+        threshold_ms = max(0.0, FinalPolicyConfig.TRIANGULATION_SYNC_THRESHOLD_MS)
+        if sync_span_ms > threshold_ms:
+            if self._logger:
+                self._logger.warn(
+                    "Vision: triangulation rejected because camera timestamps are "
+                    f"outside threshold: sync_span={sync_span_ms:.3f}ms, "
+                    f"threshold={threshold_ms:.3f}ms, stamps_ns={camera_stamps_ns}"
+                )
+            return []
+
         self._ensure_loaded()
         if not self._loaded:
             return []
@@ -758,6 +869,11 @@ class VisionPortEstimator:
             "left": self._image_from_msg(obs.left_image),
             "center": self._image_from_msg(obs.center_image),
             "right": self._image_from_msg(obs.right_image),
+        }
+        image_messages = {
+            "left": obs.left_image,
+            "center": obs.center_image,
+            "right": obs.right_image,
         }
         cam_infos = {
             "left": obs.left_camera_info,
@@ -780,6 +896,8 @@ class VisionPortEstimator:
                 cam_name=name,
                 target_class_id=target_class_id,
                 target_port_index=target_port_index,
+                source_image_msg=image_messages[name],
+                sync_span_ms=sync_span_ms,
             )
             detections[name] = [
                 det

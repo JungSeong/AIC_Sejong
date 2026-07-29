@@ -70,6 +70,15 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
         self._vision_offset_download_threads: dict[str, threading.Thread] = {}
         self._vision_offset_download_lock = threading.Lock()
         self._triangulated_port_xyz_pub = self._create_triangulated_port_xyz_publisher()
+        self._detection_debug_image_pubs = (
+            self._create_detection_debug_image_publishers()
+        )
+        self._triangulation_debug_image_pubs = (
+            self._create_triangulation_debug_image_publishers()
+        )
+        self._triangulation_debug_marker_pub = (
+            self._create_triangulation_debug_marker_publisher()
+        )
         self._send_feedback: Optional[SendFeedbackCallback] = None
         self.get_logger().info(
             "FinalPolicy ready: "
@@ -95,7 +104,13 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
         )
         return publisher
 
-    def _publish_triangulated_port_xyz(self, port: np.ndarray, label: str) -> None:
+    def _publish_triangulated_port_xyz(
+        self,
+        port: np.ndarray,
+        label: str,
+        *,
+        capture_stamp=None,
+    ) -> None:
         """캐시된 triangulation 결과를 PointStamped로 발행한다."""
         if self._triangulated_port_xyz_pub is None:
             return
@@ -106,17 +121,37 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
             )
             return
         msg = PointStamped()
-        msg.header.stamp = self.time_now().to_msg()
+        if capture_stamp is None:
+            msg.header.stamp = self.time_now().to_msg()
+            stamp_source = "publish_time"
+        else:
+            msg.header.stamp.sec = int(capture_stamp.sec)
+            msg.header.stamp.nanosec = int(capture_stamp.nanosec)
+            stamp_source = "camera_observation"
         msg.header.frame_id = str(FinalPolicyConfig.TRIANGULATED_PORT_XYZ_FRAME_ID)
         msg.point.x = float(port[0])
         msg.point.y = float(port[1])
         msg.point.z = float(port[2])
         self._triangulated_port_xyz_pub.publish(msg)
         self.get_logger().info(
-            "Triangulated port XYZ published: "
+            "\033[1;36m[Triangulation Result] "
             f"label={label}, topic={FinalPolicyConfig.TRIANGULATED_PORT_XYZ_TOPIC}, "
-            f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})"
+            f"stamp={msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}, "
+            f"stamp_source={stamp_source}, "
+            f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})\033[0m"
         )
+
+    @staticmethod
+    def _capture_stamp_from_obs(obs):
+        """center 우선으로 유효한 camera 관측 timestamp를 반환한다."""
+        if obs is None:
+            return None
+        for camera in ("center", "left", "right"):
+            image = getattr(obs, f"{camera}_image", None)
+            stamp = getattr(getattr(image, "header", None), "stamp", None)
+            if stamp is not None and (int(stamp.sec) != 0 or int(stamp.nanosec) != 0):
+                return stamp
+        return None
 
     @staticmethod
     def _copy_pose(pose: Pose) -> Pose:
@@ -428,6 +463,7 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
                 conf_thresh=conf_thresh,
                 logger=self.get_logger(),
                 debug_save_enabled=self._vision_debug_save_enabled,
+                detection_debug_callback=self._publish_detection_debug_image,
                 auto_start=False,
             )
             self._vision_by_port_type[port_type] = vision
@@ -598,7 +634,11 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
         """검출된 포트 base 좌표와 접근에 사용할 wrist orientation을 캐시에 저장한다."""
         self._cached_port_base = np.asarray(port, dtype=np.float64)
         self._target_orientation = self._target_wrist_orientation(tcp_pose)
-        self._publish_triangulated_port_xyz(self._cached_port_base, label)
+        self._publish_triangulated_port_xyz(
+            self._cached_port_base,
+            label,
+            capture_stamp=self._capture_stamp_from_obs(obs),
+        )
         if obs is not None and vision is not None:
             self._save_triangulation_debug_images(
                 obs=obs,
@@ -607,10 +647,10 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
                 label=label,
             )
         self.get_logger().info(
-            f"{label}: detection cached, "
+            f"\033[1;36m[Triangulation Cached] label={label}, "
             f"port_base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f}), "
             f"axis={FinalPolicyConfig.APPROACH_SFP_MANUAL_ROTATION_AXIS}, "
-            f"angle={self._manual_rotation_deg():+.2f}deg"
+            f"angle={self._manual_rotation_deg():+.2f}deg\033[0m"
         )
 
     def _settle_after_lift_detect(self) -> None:
@@ -627,16 +667,16 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
         self,
         vision: VisionPortEstimator,
         target_class_id: int,
-    ) -> Optional[np.ndarray]:
-        """비동기 YOLO 워커가 이미 만든 포트 추정값을 기다리지 않고 확인한다."""
-        return vision.cached_estimate(
+    ) -> tuple[Optional[np.ndarray], object]:
+        """비동기 포트 추정값과 그 계산에 사용된 Observation을 함께 반환한다."""
+        return vision.cached_estimate_with_observation(
             target_class_id,
             port_hint=str(getattr(self._task, "port_name", "") or ""),
             target_module_name=str(getattr(self._task, "target_module_name", "") or ""),
         )
 
-    def _estimate_port(self, get_observation) -> Optional[np.ndarray]:
-        """현재 task hint와 YOLO 비전 추정기로 목표 포트의 base 좌표를 반복 추정한다."""
+    def _estimate_port(self, get_observation) -> tuple[Optional[np.ndarray], object]:
+        """목표 포트 좌표와 그 계산에 사용된 Observation을 함께 반환한다."""
         port_hint = str(getattr(self._task, "port_name", "") or "")
         target_module_name = str(getattr(self._task, "target_module_name", "") or "")
         port_type = self._port_type()
@@ -660,9 +700,9 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
                     f"class_id={target_class_id}, "
                     f"base=({port[0]:+.4f}, {port[1]:+.4f}, {port[2]:+.4f})"
                 )
-                return port
+                return port, obs
             self.sleep_for(FinalPolicyConfig.APPROACH_RETRY_DT)
-        return None
+        return None, None
 
     def _stage_lift_up_detect(self, get_observation, move_robot) -> bool:
         """lift_up 및 YOLO Triangulation을 동시에 수행, 검출 즉시 approach로 넘긴다."""
@@ -693,7 +733,6 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
 
         try:
             obs = get_observation()
-            latest_obs = obs
             start_pose = self._tcp_pose(obs)
             if start_pose is None:
                 self.get_logger().error("lift_up_detect failed: missing TCP pose")
@@ -707,14 +746,14 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
                 )
 
             def finish_if_detected(current_pose: Pose, label: str) -> bool:
-                port = self._cached_port_estimate(vision, target_class_id)
+                port, result_obs = self._cached_port_estimate(vision, target_class_id)
                 if port is None:
                     return False
                 self._cache_detected_port(
                     port,
                     current_pose,
                     label,
-                    obs=latest_obs,
+                    obs=result_obs,
                     vision=vision,
                 )
                 self._settle_after_lift_detect()
@@ -767,7 +806,6 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
                 self.sleep_for(FinalPolicyConfig.INITIAL_LIFT_DT)
 
                 obs = get_observation()
-                latest_obs = obs
                 current_pose = self._tcp_pose(obs) or pose
                 if obs is not None:
                     vision.request_estimate(
@@ -784,7 +822,7 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
             if FinalPolicyConfig.INITIAL_LIFT_SETTLE_S > 0:
                 self.sleep_for(FinalPolicyConfig.INITIAL_LIFT_SETTLE_S)
 
-            port = self._estimate_port(get_observation)
+            port, result_obs = self._estimate_port(get_observation)
             obs = get_observation()
             current_pose = self._tcp_pose(obs) or target_pose
             if port is None:
@@ -796,7 +834,7 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
                 port,
                 current_pose,
                 "lift_up_detect fallback",
-                obs=obs,
+                obs=result_obs,
                 vision=vision,
             )
             self._settle_after_lift_detect()

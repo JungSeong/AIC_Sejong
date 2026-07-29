@@ -1,6 +1,6 @@
 # ais_auto_capture
 
-## 스크립트 구성
+## 스크립트 설명
 
 | 파일 | 환경 | 역할 |
 |---|---|---|
@@ -44,6 +44,17 @@ pixi run python ais/ais_auto_capture/collect_portoffset_randomization_data.py \
 | `--samples-per-trial` | `24 samples/trial` | trial별 offset sample 시도 수 |
 | `--time-limit-s` | `600 s` | 생성되는 AIC task 제한 시간 |
 | `--trial-timeout-s` | 미지정(`s`) | collector 완료 대기시간 override; 미지정 시 `time-limit-s + 180 s` |
+
+#### Task Board와 target module randomization
+
+PortOffset 수집기의 scene 범위는 `portoffset_randomization/constants.py`의 `LIMITS`가 기준입니다. Task Board translation은 world X/Y만 랜덤화하고 Z는 고정하며, rotation은 yaw만 랜덤화하고 roll/pitch는 고정합니다.
+
+| 대상 | Translation | Rotation | 선택 범위 |
+|---|---|---|---|
+| SFP Task Board | world X `0.13 ~ 0.17 m`, Y `-0.25 ~ -0.20 m`, Z `1.14 m` 고정 | roll/pitch `0 rad` 고정, yaw `3.10 ~ 3.1415 rad` | NIC rail `0~4`, SFP port `0~1` |
+| SC Task Board | world X `0.15 ~ 0.19 m`, Y `-0.05 ~ 0.05 m`, Z `1.14 m` 고정 | roll/pitch `0 rad` 고정, yaw `3.10 ~ 3.1415 rad` | SC rail `0~1` |
+| SFP NIC module | rail translation `-0.0215 ~ 0.0234 m` | local yaw `-10 ~ +10 deg` | 선택된 NIC rail 하나만 활성화 |
+| SC port module | rail translation `-0.06 ~ 0.055 m` | local yaw `0 rad` 고정 | 선택된 SC rail 하나만 활성화 |
 
 #### 로봇 초기 자세 randomization
 
