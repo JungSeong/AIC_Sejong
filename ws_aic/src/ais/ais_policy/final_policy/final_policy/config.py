@@ -86,6 +86,30 @@ class FinalPolicyConfig:
         "AIC_TRIANGULATION_DEBUG_FIXED_FRAME",
         "world",
     )
+    TRIANGULATION_DEBUG_RVIZ_ENABLED: bool = _env_bool(
+        "AIC_TRIANGULATION_DEBUG_RVIZ",
+        True,
+    )
+    TRIANGULATION_DEBUG_IMAGE_TOPIC_PREFIX: str = os.environ.get(
+        "AIC_TRIANGULATION_DEBUG_IMAGE_TOPIC_PREFIX",
+        "/final_policy/triangulation_debug",
+    )
+    TRIANGULATION_DEBUG_MARKER_TOPIC: str = os.environ.get(
+        "AIC_TRIANGULATION_DEBUG_MARKER_TOPIC",
+        "/final_policy/triangulation_debug/markers",
+    )
+    DETECTION_DEBUG_RVIZ_ENABLED: bool = _env_bool(
+        "AIC_DETECTION_DEBUG_RVIZ",
+        True,
+    )
+    DETECTION_DEBUG_IMAGE_TOPIC_PREFIX: str = os.environ.get(
+        "AIC_DETECTION_DEBUG_IMAGE_TOPIC_PREFIX",
+        "/final_policy/detection_debug",
+    )
+    TRIANGULATION_SYNC_THRESHOLD_MS: float = _env_float(
+        "AIC_TRIANGULATION_SYNC_THRESHOLD_MS",
+        30.0,
+    )
     SFP_YOLO_PORT_INDEX_FLIP: bool = _env_bool(
         "AIC_SFP_YOLO_PORT_INDEX_FLIP",
         True,

@@ -2,23 +2,18 @@ from __future__ import annotations
 """PortOffsetCollect의 ROS 2/TF와 실행 상태 초기화."""
 
 import json
-import math
 import os
 import signal
 import sys
 import threading
 import time
-from bisect import bisect_left
-from collections import deque
 import cv2
 import numpy as np
 
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
-from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.time import Time
 from std_msgs.msg import Header
 from aic_control_interfaces.msg import MotionUpdate, TrajectoryGenerationMode
@@ -29,8 +24,6 @@ from data_gen_node.port_offset_config import (
     DAMPING_DEFAULT,
     SFP_PLUG_REFERENCE_OFFSET_IN_CABLE_TIP_FRAME,
     STIFFNESS_DEFAULT,
-    TF_RECONSTRUCTION_ANGLE_TOLERANCE_RAD,
-    TF_RECONSTRUCTION_POSITION_TOLERANCE_M,
     TOOL0_TO_OPTICAL,
     TOOL0_TO_TCP_Z,
     COLLECT_BASE_Z_OFFSET_DEFAULT,
@@ -41,8 +34,7 @@ from data_gen_node.port_offset_geometry import (
     _matrix_from_translation_quat,
     _quat_to_matrix_xyzw,
 )
-from tf2_msgs.msg import TFMessage
-from tf2_ros import Buffer, TransformException
+from tf2_ros import TransformException
 
 _LOG_COLORS = {
     "cyan": "\033[36m",
@@ -101,48 +93,6 @@ def init_runtime(self, parent_node):
         os.environ.get("AIC_COLLECT_COLOR_LOG", "true").lower()
         not in {"0", "false", "no"}
         and not os.environ.get("NO_COLOR")
-    )
-    self._tf_quality_buffer = Buffer(
-        cache_time=Duration(seconds=10.0),
-        node=parent_node,
-    )
-    self._tf_quality_lock = threading.Lock()
-    self._tf_quality_dynamic_stamps = {}
-    self._tf_quality_static_edges = set()
-    self._tf_quality_last_prune_ns = 0
-    self._tf_quality_callback_group = ReentrantCallbackGroup()
-    dynamic_qos = QoSProfile(
-        depth=100,
-        durability=DurabilityPolicy.VOLATILE,
-        history=HistoryPolicy.KEEP_LAST,
-    )
-    static_qos = QoSProfile(
-        depth=100,
-        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        history=HistoryPolicy.KEEP_LAST,
-    )
-    self._tf_quality_subscriptions = [
-        parent_node.create_subscription(
-            TFMessage,
-            topic,
-            lambda message, source_topic=topic: _record_tf_quality_message(
-                self, message, source_topic, is_static=False
-            ),
-            dynamic_qos,
-            callback_group=self._tf_quality_callback_group,
-        )
-        for topic in ("/tf", "/scoring/tf")
-    ]
-    self._tf_quality_subscriptions.append(
-        parent_node.create_subscription(
-            TFMessage,
-            "/tf_static",
-            lambda message: _record_tf_quality_message(
-                self, message, "/tf_static", is_static=True
-            ),
-            static_qos,
-            callback_group=self._tf_quality_callback_group,
-        )
     )
     seed_text = os.environ.get("AIC_COLLECT_RANDOM_SEED", "").strip()
     seed = int(seed_text) if seed_text else None
@@ -246,259 +196,6 @@ def _lookup_transform_at(self, target_frame: str, source_frame: str, stamp) -> T
         query_time,
         timeout=Duration(seconds=self.collect_sync_wait_timeout_sec),
     )
-
-
-def _record_tf_quality_message(
-    self,
-    message: TFMessage,
-    source_topic: str,
-    *,
-    is_static: bool,
-) -> None:
-    """독립 TF 재구성과 보간 판정을 위해 raw TF와 ns stamp를 보존한다."""
-    latest_stamp_ns = 0
-    with self._tf_quality_lock:
-        for transform in message.transforms:
-            edge = (str(transform.header.frame_id), str(transform.child_frame_id))
-            if is_static:
-                self._tf_quality_static_edges.add(edge)
-                self._tf_quality_buffer.set_transform_static(transform, source_topic)
-                continue
-            stamp_ns = int(Time.from_msg(transform.header.stamp).nanoseconds)
-            latest_stamp_ns = max(latest_stamp_ns, stamp_ns)
-            records = self._tf_quality_dynamic_stamps.setdefault(edge, {})
-            records.setdefault(stamp_ns, set()).add(source_topic)
-            self._tf_quality_buffer.set_transform(transform, source_topic)
-
-        if latest_stamp_ns - self._tf_quality_last_prune_ns >= 1_000_000_000:
-            cutoff_ns = latest_stamp_ns - 10_000_000_000
-            for records in self._tf_quality_dynamic_stamps.values():
-                for stamp_ns in [value for value in records if value < cutoff_ns]:
-                    del records[stamp_ns]
-            self._tf_quality_last_prune_ns = latest_stamp_ns
-
-
-def _tf_path_edges(
-    dynamic_edges: set[tuple[str, str]],
-    static_edges: set[tuple[str, str]],
-    target_frame: str,
-    source_frame: str,
-) -> list[tuple[str, str]] | None:
-    """현재 raw TF graph에서 target과 source를 잇는 edge 경로를 찾는다."""
-    graph: dict[str, list[tuple[str, tuple[str, str]]]] = {}
-    for edge in dynamic_edges | static_edges:
-        parent, child = edge
-        graph.setdefault(parent, []).append((child, edge))
-        graph.setdefault(child, []).append((parent, edge))
-    queue = deque([(target_frame, [])])
-    visited = {target_frame}
-    while queue:
-        frame, path = queue.popleft()
-        if frame == source_frame:
-            return path
-        for neighbor, edge in graph.get(frame, []):
-            if neighbor not in visited:
-                visited.add(neighbor)
-                queue.append((neighbor, [*path, edge]))
-    return None
-
-
-def _tf_interpolation_provenance(
-    self,
-    target_frame: str,
-    source_frame: str,
-    capture_stamp_ns: int,
-) -> dict[str, Any]:
-    """경로별 exact raw TF 또는 앞뒤 보간 stamp를 ns 단위로 기록한다."""
-    with self._tf_quality_lock:
-        dynamic_edges = {
-            edge for edge, records in self._tf_quality_dynamic_stamps.items()
-            if records
-        }
-        static_edges = set(self._tf_quality_static_edges)
-        path = _tf_path_edges(
-            dynamic_edges, static_edges, target_frame, source_frame
-        )
-        dynamic = {
-            edge: {stamp: sorted(topics) for stamp, topics in
-                   self._tf_quality_dynamic_stamps.get(edge, {}).items()}
-            for edge in (path or [])
-            if edge in dynamic_edges
-        }
-    if path is None:
-        return {
-            "capture_stamp_ns": int(capture_stamp_ns),
-            "target_frame_id": target_frame,
-            "source_frame_id": source_frame,
-            "path_available": False,
-            "all_dynamic_edges_bracket_capture": False,
-            "exact_transform": False,
-            "interpolated": False,
-            "edges": [],
-        }
-
-    edge_records = []
-    all_bracketed = True
-    all_exact = True
-    maximum_span_ns = 0
-    any_interpolated = False
-    for parent, child in path:
-        edge = (parent, child)
-        if edge in static_edges:
-            edge_records.append({
-                "parent_frame_id": parent,
-                "child_frame_id": child,
-                "is_static": True,
-                "exact_sample": None,
-                "interpolated": False,
-            })
-            continue
-        records = dynamic.get(edge, {})
-        stamps = sorted(records)
-        index = bisect_left(stamps, capture_stamp_ns)
-        exact = index < len(stamps) and stamps[index] == capture_stamp_ns
-        previous_ns = capture_stamp_ns if exact else (stamps[index - 1] if index else None)
-        next_ns = capture_stamp_ns if exact else (stamps[index] if index < len(stamps) else None)
-        bracketed = exact or (previous_ns is not None and next_ns is not None)
-        span_ns = (
-            int(next_ns - previous_ns)
-            if previous_ns is not None and next_ns is not None
-            else None
-        )
-        ratio = (
-            float(capture_stamp_ns - previous_ns) / float(span_ns)
-            if span_ns not in (None, 0) and previous_ns is not None
-            else 0.0 if exact else None
-        )
-        all_bracketed = all_bracketed and bracketed
-        all_exact = all_exact and exact
-        any_interpolated = any_interpolated or (bracketed and not exact)
-        maximum_span_ns = max(maximum_span_ns, span_ns or 0)
-        topics = set()
-        if previous_ns is not None:
-            topics.update(records.get(previous_ns, []))
-        if next_ns is not None:
-            topics.update(records.get(next_ns, []))
-        edge_records.append({
-            "parent_frame_id": parent,
-            "child_frame_id": child,
-            "is_static": False,
-            "exact_sample": exact,
-            "interpolated": bracketed and not exact,
-            "previous_stamp_ns": previous_ns,
-            "next_stamp_ns": next_ns,
-            "interpolation_span_ns": span_ns,
-            "interpolation_ratio": ratio,
-            "source_topics": sorted(topics),
-        })
-    return {
-        "capture_stamp_ns": int(capture_stamp_ns),
-        "target_frame_id": target_frame,
-        "source_frame_id": source_frame,
-        "path_available": True,
-        "all_dynamic_edges_bracket_capture": all_bracketed,
-        "exact_transform": all_exact,
-        "interpolated": any_interpolated,
-        "maximum_interpolation_span_ns": int(maximum_span_ns),
-        "edges": edge_records,
-    }
-
-
-def _transform_difference(
-    left: TransformStamped,
-    right: TransformStamped,
-) -> tuple[float, float]:
-    """두 stamped transform의 위치 norm과 quaternion 각도 차이를 반환한다."""
-    left_t = left.transform.translation
-    right_t = right.transform.translation
-    position_difference_m = math.sqrt(
-        (float(left_t.x) - float(right_t.x)) ** 2
-        + (float(left_t.y) - float(right_t.y)) ** 2
-        + (float(left_t.z) - float(right_t.z)) ** 2
-    )
-    left_q = np.array([
-        left.transform.rotation.x,
-        left.transform.rotation.y,
-        left.transform.rotation.z,
-        left.transform.rotation.w,
-    ], dtype=float)
-    right_q = np.array([
-        right.transform.rotation.x,
-        right.transform.rotation.y,
-        right.transform.rotation.z,
-        right.transform.rotation.w,
-    ], dtype=float)
-    left_q /= np.linalg.norm(left_q)
-    right_q /= np.linalg.norm(right_q)
-    dot = min(1.0, max(-1.0, abs(float(np.dot(left_q, right_q)))))
-    return position_difference_m, float(2.0 * math.acos(dot))
-
-
-def _capture_tf_quality_metadata(
-    self,
-    live_transform: TransformStamped,
-    target_frame: str,
-    source_frame: str,
-    capture_stamp_ns: int,
-) -> tuple[bool, dict[str, Any]]:
-    """독립 raw TF 재구성과 live TF가 허용 오차 안인지 검사한다."""
-    result = {
-        "position_tolerance_m": TF_RECONSTRUCTION_POSITION_TOLERANCE_M,
-        "angle_tolerance_rad": TF_RECONSTRUCTION_ANGLE_TOLERANCE_RAD,
-        "valid": False,
-    }
-    try:
-        reconstructed = self._tf_quality_buffer.lookup_transform(
-            target_frame,
-            source_frame,
-            Time(nanoseconds=int(capture_stamp_ns)),
-            timeout=Duration(seconds=self.collect_sync_wait_timeout_sec),
-        )
-    except TransformException as exc:
-        result["provenance"] = _tf_interpolation_provenance(
-            self, target_frame, source_frame, capture_stamp_ns
-        )
-        result["reconstruction_error"] = str(exc)
-        result["rejection_reason"] = "raw_tf_reconstruction_unavailable"
-        return False, result
-
-    provenance = _tf_interpolation_provenance(
-        self, target_frame, source_frame, capture_stamp_ns
-    )
-    result["provenance"] = provenance
-    position_difference_m, angle_difference_rad = _transform_difference(
-        live_transform, reconstructed
-    )
-    result.update({
-        "position_difference_m": position_difference_m,
-        "angle_difference_rad": angle_difference_rad,
-        "reconstructed_transform": {
-            "translation_m": {
-                "x": float(reconstructed.transform.translation.x),
-                "y": float(reconstructed.transform.translation.y),
-                "z": float(reconstructed.transform.translation.z),
-            },
-            "rotation_xyzw": {
-                "x": float(reconstructed.transform.rotation.x),
-                "y": float(reconstructed.transform.rotation.y),
-                "z": float(reconstructed.transform.rotation.z),
-                "w": float(reconstructed.transform.rotation.w),
-            },
-        },
-    })
-    if not provenance["path_available"] or not provenance[
-        "all_dynamic_edges_bracket_capture"
-    ]:
-        result["rejection_reason"] = "raw_tf_bracketing_unavailable"
-        return False, result
-    valid = (
-        position_difference_m <= TF_RECONSTRUCTION_POSITION_TOLERANCE_M
-        and angle_difference_rad <= TF_RECONSTRUCTION_ANGLE_TOLERANCE_RAD
-    )
-    result["valid"] = valid
-    if not valid:
-        result["rejection_reason"] = "tf_reconstruction_difference_exceeded"
-    return valid, result
 
 
 def _collect_log_text(self, message: str, color: str, *, bold: bool = True) -> str:

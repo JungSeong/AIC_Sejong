@@ -12,11 +12,186 @@ from geometry_msgs.msg import Pose
 
 from final_policy.config import FinalPolicyConfig
 from final_policy.geometry import project_3d_to_pixel
-from final_policy.vision import VisionPortEstimator
+from final_policy.vision import VisionPortEstimator, observation_camera_timing
 
 
 class FinalPolicyDebugMixin:
     """정책 제어와 분리된 TF 조회 및 디버그 이미지 저장 기능."""
+
+    def _create_detection_debug_image_publishers(self) -> dict:
+        """RViz Image display용 camera별 YOLO detection publisher를 만든다."""
+        if not FinalPolicyConfig.DETECTION_DEBUG_RVIZ_ENABLED:
+            return {}
+
+        from sensor_msgs.msg import Image
+
+        prefix = str(
+            FinalPolicyConfig.DETECTION_DEBUG_IMAGE_TOPIC_PREFIX or ""
+        ).strip().rstrip("/")
+        if not prefix:
+            prefix = "/final_policy/detection_debug"
+        publishers = {}
+        topics = []
+        for camera, _frame in VisionPortEstimator.CAMERAS:
+            topic = f"{prefix}/{camera}/image"
+            publishers[camera] = self._parent_node.create_publisher(Image, topic, 10)
+            topics.append(topic)
+        self.get_logger().info("[Detection RViz] image topics: " + ", ".join(topics))
+        return publishers
+
+    def _publish_detection_debug_image(
+        self,
+        camera: str,
+        debug_image: np.ndarray,
+        source_image_msg,
+    ) -> None:
+        """YOLO overlay를 원본 camera header를 보존해 해당 camera topic에 발행한다."""
+        publisher = getattr(self, "_detection_debug_image_pubs", {}).get(camera)
+        if publisher is None:
+            return
+        publisher.publish(
+            self._bgr_debug_image_message(debug_image, source_image_msg)
+        )
+
+    def _create_triangulation_debug_marker_publisher(self):
+        """RViz 3D display용 prediction/GT/error MarkerArray publisher를 만든다."""
+        if not FinalPolicyConfig.TRIANGULATION_DEBUG_RVIZ_ENABLED:
+            return None
+
+        from visualization_msgs.msg import MarkerArray
+
+        topic = str(FinalPolicyConfig.TRIANGULATION_DEBUG_MARKER_TOPIC or "").strip()
+        if not topic:
+            topic = "/final_policy/triangulation_debug/markers"
+        publisher = self._parent_node.create_publisher(MarkerArray, topic, 10)
+        self.get_logger().info(f"[Triangulation RViz] marker topic: {topic}")
+        return publisher
+
+    def _create_triangulation_debug_image_publishers(self) -> dict:
+        """RViz Image display용 camera별 triangulation overlay publisher를 만든다."""
+        if not FinalPolicyConfig.TRIANGULATION_DEBUG_RVIZ_ENABLED:
+            return {}
+
+        from sensor_msgs.msg import Image
+
+        prefix = str(
+            FinalPolicyConfig.TRIANGULATION_DEBUG_IMAGE_TOPIC_PREFIX or ""
+        ).strip().rstrip("/")
+        if not prefix:
+            prefix = "/final_policy/triangulation_debug"
+        publishers = {}
+        topics = []
+        for camera, _frame in VisionPortEstimator.CAMERAS:
+            topic = f"{prefix}/{camera}/image"
+            publishers[camera] = self._parent_node.create_publisher(Image, topic, 10)
+            topics.append(topic)
+        self.get_logger().info(
+            "[Triangulation RViz] image topics: " + ", ".join(topics)
+        )
+        return publishers
+
+    @staticmethod
+    def _bgr_debug_image_message(image: np.ndarray, source_image_msg):
+        """OpenCV BGR 이미지를 원본 header를 보존한 sensor_msgs/Image로 바꾼다."""
+        from sensor_msgs.msg import Image
+
+        bgr = np.ascontiguousarray(image, dtype=np.uint8)
+        if bgr.ndim != 3 or bgr.shape[2] != 3:
+            raise ValueError(f"Expected HxWx3 BGR image, got shape={bgr.shape}")
+
+        message = Image()
+        message.header.stamp.sec = int(source_image_msg.header.stamp.sec)
+        message.header.stamp.nanosec = int(source_image_msg.header.stamp.nanosec)
+        message.header.frame_id = str(source_image_msg.header.frame_id)
+        message.height = int(bgr.shape[0])
+        message.width = int(bgr.shape[1])
+        message.encoding = "bgr8"
+        message.is_bigendian = 0
+        message.step = int(bgr.shape[1] * 3)
+        message.data = bgr.tobytes()
+        return message
+
+    @staticmethod
+    def _triangulation_marker_array(
+        predicted_port: np.ndarray,
+        gt_port: Optional[np.ndarray],
+        stamp,
+        label: str,
+    ):
+        """base_link 기준 prediction, GT 및 오차선을 MarkerArray로 구성한다."""
+        from geometry_msgs.msg import Point
+        from visualization_msgs.msg import Marker, MarkerArray
+
+        def point(values: np.ndarray) -> Point:
+            return Point(
+                x=float(values[0]),
+                y=float(values[1]),
+                z=float(values[2]),
+            )
+
+        def marker(marker_id: int, marker_type: int) -> Marker:
+            item = Marker()
+            item.header.frame_id = "base_link"
+            item.header.stamp.sec = int(stamp.sec)
+            item.header.stamp.nanosec = int(stamp.nanosec)
+            item.ns = "final_policy_triangulation"
+            item.id = marker_id
+            item.type = marker_type
+            item.action = Marker.ADD
+            item.pose.orientation.w = 1.0
+            return item
+
+        predicted = np.asarray(predicted_port, dtype=np.float64).reshape(3)
+        pred_marker = marker(0, Marker.SPHERE)
+        pred_marker.pose.position = point(predicted)
+        pred_marker.scale.x = pred_marker.scale.y = pred_marker.scale.z = 0.012
+        pred_marker.color.r = 1.0
+        pred_marker.color.g = 1.0
+        pred_marker.color.a = 1.0
+        pred_marker.text = f"PRED {label}"
+
+        markers = [pred_marker]
+        if gt_port is None:
+            for marker_id in (1, 2):
+                delete_marker = marker(marker_id, Marker.SPHERE)
+                delete_marker.action = Marker.DELETE
+                markers.append(delete_marker)
+            return MarkerArray(markers=markers)
+
+        gt = np.asarray(gt_port, dtype=np.float64).reshape(3)
+        gt_marker = marker(1, Marker.SPHERE)
+        gt_marker.pose.position = point(gt)
+        gt_marker.scale.x = gt_marker.scale.y = gt_marker.scale.z = 0.012
+        gt_marker.color.r = 1.0
+        gt_marker.color.b = 1.0
+        gt_marker.color.a = 1.0
+        gt_marker.text = "GT port entrance"
+
+        error_line = marker(2, Marker.LINE_LIST)
+        error_line.scale.x = 0.003
+        error_line.color.r = 1.0
+        error_line.color.g = 1.0
+        error_line.color.b = 1.0
+        error_line.color.a = 1.0
+        error_line.points = [point(predicted), point(gt)]
+        markers.extend([gt_marker, error_line])
+        return MarkerArray(markers=markers)
+
+    def _publish_triangulation_debug_markers(
+        self,
+        predicted_port: np.ndarray,
+        gt_port: Optional[np.ndarray],
+        stamp,
+        label: str,
+    ) -> bool:
+        """현재 triangulation의 3D prediction/GT/error MarkerArray를 발행한다."""
+        publisher = getattr(self, "_triangulation_debug_marker_pub", None)
+        if publisher is None:
+            return False
+        publisher.publish(
+            self._triangulation_marker_array(predicted_port, gt_port, stamp, label)
+        )
+        return True
 
     def _align_debug_save_dir(self) -> Optional[Path]:
         """align 디버그 이미지를 저장할 디렉토리를 반환한다."""
@@ -48,9 +223,10 @@ class FinalPolicyDebugMixin:
         self,
         target_frame: str,
         *,
+        stamp=None,
         warn_on_failure: bool = True,
     ) -> Optional[np.ndarray]:
-        """TF에서 base_link 기준 target_frame 좌표를 조회한다."""
+        """TF에서 camera stamp와 동기화된 target frame의 base 좌표를 조회한다."""
         buffer = getattr(self._parent_node, "_tf_buffer", None)
         if buffer is None:
             if warn_on_failure:
@@ -58,11 +234,12 @@ class FinalPolicyDebugMixin:
                     "[Triangulation Debug] parent node has no TF buffer"
                 )
             return None
-        try:
-            from rclpy.duration import Duration
-            from rclpy.time import Time
 
-            transform = buffer.lookup_transform("base_link", target_frame, Time()).transform
+        from rclpy.duration import Duration
+        from rclpy.time import Time
+
+        def translation_array(transform_msg) -> np.ndarray:
+            transform = transform_msg.transform
             return np.array(
                 [
                     float(transform.translation.x),
@@ -71,47 +248,78 @@ class FinalPolicyDebugMixin:
                 ],
                 dtype=np.float64,
             )
-        except Exception as direct_exc:
-            fixed_frame = str(
-                FinalPolicyConfig.TRIANGULATION_DEBUG_FIXED_FRAME or ""
-            ).strip()
-            if fixed_frame:
-                try:
-                    transform = buffer.lookup_transform_full(
-                        "base_link",
-                        Time(),
-                        target_frame,
-                        Time(),
-                        fixed_frame,
-                        timeout=Duration(seconds=0.2),
-                    ).transform
-                    return np.array(
-                        [
-                            float(transform.translation.x),
-                            float(transform.translation.y),
-                            float(transform.translation.z),
-                        ],
-                        dtype=np.float64,
-                    )
-                except Exception as full_exc:
-                    if warn_on_failure:
-                        self.get_logger().warn(
-                            f"[Triangulation Debug] GT lookup failed: base_link <- "
-                            f"{target_frame} via {fixed_frame}: {full_exc} "
-                            f"(direct: {direct_exc})"
-                        )
-                    return None
-            if warn_on_failure:
-                self.get_logger().warn(
-                    f"[Triangulation Debug] GT lookup failed: base_link <- "
-                    f"{target_frame}: {direct_exc}"
-                )
-            return None
 
-    def _lookup_gt_port_base(self) -> tuple[str, Optional[np.ndarray]]:
+        query_time = Time() if stamp is None else Time.from_msg(stamp)
+        errors = []
+        try:
+            transform_msg = buffer.lookup_transform(
+                "base_link",
+                target_frame,
+                query_time,
+                timeout=Duration(seconds=0.2),
+            )
+            return translation_array(transform_msg)
+        except Exception as direct_exc:
+            errors.append(f"direct={direct_exc}")
+
+        fixed_frame = str(
+            FinalPolicyConfig.TRIANGULATION_DEBUG_FIXED_FRAME or ""
+        ).strip()
+        if fixed_frame and stamp is not None:
+            try:
+                transform_msg = buffer.lookup_transform_full(
+                    "base_link",
+                    query_time,
+                    target_frame,
+                    query_time,
+                    fixed_frame,
+                    timeout=Duration(seconds=0.2),
+                )
+                return translation_array(transform_msg)
+            except Exception as full_exc:
+                errors.append(f"fixed={full_exc}")
+
+        if stamp is not None:
+            try:
+                latest_msg = buffer.lookup_transform(
+                    "base_link",
+                    target_frame,
+                    Time(),
+                    timeout=Duration(seconds=0.2),
+                )
+                requested_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+                latest_ns = (
+                    int(latest_msg.header.stamp.sec) * 1_000_000_000
+                    + int(latest_msg.header.stamp.nanosec)
+                )
+                delta_ms = abs(latest_ns - requested_ns) / 1_000_000.0
+                threshold_ms = max(
+                    0.0,
+                    FinalPolicyConfig.TRIANGULATION_SYNC_THRESHOLD_MS,
+                )
+                if latest_ns > 0 and delta_ms <= threshold_ms:
+                    self.get_logger().warn(
+                        "[Triangulation Debug] exact GT TF unavailable; "
+                        f"using nearby TF delta={delta_ms:.3f}ms"
+                    )
+                    return translation_array(latest_msg)
+                errors.append(
+                    f"latest_delta={delta_ms:.3f}ms threshold={threshold_ms:.3f}ms"
+                )
+            except Exception as latest_exc:
+                errors.append(f"latest={latest_exc}")
+
+        if warn_on_failure:
+            self.get_logger().warn(
+                f"[Triangulation Debug] synchronized GT lookup failed: "
+                f"base_link <- {target_frame}: {'; '.join(errors)}"
+            )
+        return None
+
+    def _lookup_gt_port_base(self, *, stamp=None) -> tuple[str, Optional[np.ndarray]]:
         """TF에서 base_link 기준 실제 포트 entrance 좌표를 조회한다."""
         target_frame = self._target_port_entrance_frame()
-        return target_frame, self._lookup_frame_base(target_frame)
+        return target_frame, self._lookup_frame_base(target_frame, stamp=stamp)
 
     @staticmethod
     def _projected_point_visible(point_px: np.ndarray, image_shape: tuple[int, ...]) -> bool:
@@ -183,19 +391,35 @@ class FinalPolicyDebugMixin:
         predicted_port: np.ndarray,
         label: str,
     ) -> None:
-        """PRED triangulation 좌표와 GT 좌표를 카메라 이미지에 투영해 저장한다."""
+        """PRED/GT overlay를 파일로 저장하고 timestamp를 보존해 RViz에 발행한다."""
         save_dir = self._triangulation_debug_save_dir()
-        if save_dir is None or obs is None or vision is None:
+        image_publishers = getattr(self, "_triangulation_debug_image_pubs", {})
+        marker_publisher = getattr(self, "_triangulation_debug_marker_pub", None)
+        if (
+            save_dir is None
+            and not image_publishers
+            and marker_publisher is None
+        ) or obs is None or vision is None:
             return
 
         try:
             import cv2
 
             predicted_port = np.asarray(predicted_port, dtype=np.float64).reshape(3)
-            target_frame, gt_port = self._lookup_gt_port_base()
+            camera_timing = observation_camera_timing(obs)
+            if camera_timing is None:
+                self.get_logger().warn(
+                    "[Triangulation Debug] missing or zero camera timestamp"
+                )
+                return
+            _reference_ns, camera_stamps_ns, sync_span_ms = camera_timing
+            reference_stamp = obs.center_image.header.stamp
+            target_frame, gt_port = self._lookup_gt_port_base(
+                stamp=reference_stamp
+            )
             frame_id = self._triangulation_debug_call_count
             self._triangulation_debug_call_count += 1
-            if frame_id == 0:
+            if frame_id == 0 and save_dir is not None:
                 self.get_logger().info(f"[Triangulation Debug] dir: {save_dir}")
 
             task_label = VisionPortEstimator._sanitize_debug_token(
@@ -206,7 +430,14 @@ class FinalPolicyDebugMixin:
             error_norm_mm = (
                 None if error is None else float(np.linalg.norm(error) * 1000.0)
             )
+            marker_published = self._publish_triangulation_debug_markers(
+                predicted_port,
+                gt_port,
+                reference_stamp,
+                label,
+            )
             saved_count = 0
+            published_count = 0
 
             for cam_name, _ in VisionPortEstimator.CAMERAS:
                 img_msg = getattr(obs, f"{cam_name}_image", None)
@@ -264,6 +495,12 @@ class FinalPolicyDebugMixin:
                     f"task={task_label} source={label} cam={cam_name}",
                     f"target_gt={target_frame_short}",
                     (
+                        "stamp="
+                        f"{img_msg.header.stamp.sec}."
+                        f"{img_msg.header.stamp.nanosec:09d} "
+                        f"sync_span={sync_span_ms:.3f}ms"
+                    ),
+                    (
                         "pred_xyz="
                         f"({predicted_port[0]:+.4f}, "
                         f"{predicted_port[1]:+.4f}, "
@@ -297,28 +534,45 @@ class FinalPolicyDebugMixin:
                     )
 
                 VisionPortEstimator._put_text_lines(debug_img, text_lines, 10, 24)
-                fname = (
-                    save_dir
-                    / VisionPortEstimator._sanitize_debug_token(cam_name or "camera")
-                    / f"{task_label}__triangulation_{frame_id:04d}.jpg"
-                )
-                os.makedirs(fname.parent, exist_ok=True)
-                if cv2.imwrite(str(fname), debug_img):
-                    saved_count += 1
-                    self.get_logger().info(
-                        f"\033[1;92m[Triangulation Debug] saved: {fname}\033[0m"
+                publisher = image_publishers.get(cam_name)
+                if publisher is not None:
+                    publisher.publish(
+                        self._bgr_debug_image_message(debug_img, img_msg)
                     )
-                else:
-                    self.get_logger().warn(
-                        f"[Triangulation Debug] save failed: {fname}"
+                    published_count += 1
+
+                if save_dir is not None:
+                    fname = (
+                        save_dir
+                        / VisionPortEstimator._sanitize_debug_token(
+                            cam_name or "camera"
+                        )
+                        / f"{task_label}__triangulation_{frame_id:04d}.jpg"
                     )
-            if saved_count == 0:
+                    os.makedirs(fname.parent, exist_ok=True)
+                    if cv2.imwrite(str(fname), debug_img):
+                        saved_count += 1
+                        self.get_logger().info(
+                            f"\033[1;92m[Triangulation Debug] saved: {fname}\033[0m"
+                        )
+                    else:
+                        self.get_logger().warn(
+                            f"[Triangulation Debug] save failed: {fname}"
+                        )
+            if save_dir is not None and saved_count == 0:
                 self.get_logger().warn(
                     "[Triangulation Debug] no images saved "
                     f"(task={task_label}, source={label})"
                 )
+            if image_publishers:
+                self.get_logger().info(
+                    "\033[1;32m[Triangulation RViz] "
+                    f"published={published_count}, "
+                    f"marker={marker_published}, "
+                    f"sync_span={sync_span_ms:.3f}ms\033[0m"
+                )
         except Exception as exc:
-            self.get_logger().warn(f"[Triangulation Debug] save failed: {exc}")
+            self.get_logger().warn(f"[Triangulation Debug] processing failed: {exc}")
 
     @staticmethod
     def _pose_position_array(pose: Pose) -> np.ndarray:
@@ -642,4 +896,3 @@ class FinalPolicyDebugMixin:
                     self.get_logger().warn(f"[Align Debug] save failed: {fname}")
         except Exception as exc:
             self.get_logger().warn(f"[Align Debug] save failed: {exc}")
-

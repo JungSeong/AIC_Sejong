@@ -1,6 +1,6 @@
 # ais_auto_capture
 
-## 스크립트 구성
+## 스크립트 설명
 
 | 파일 | 환경 | 역할 |
 |---|---|---|
@@ -44,6 +44,17 @@ pixi run python ais/ais_auto_capture/collect_portoffset_randomization_data.py \
 | `--samples-per-trial` | `24 samples/trial` | trial별 offset sample 시도 수 |
 | `--time-limit-s` | `600 s` | 생성되는 AIC task 제한 시간 |
 | `--trial-timeout-s` | 미지정(`s`) | collector 완료 대기시간 override; 미지정 시 `time-limit-s + 180 s` |
+
+#### Task Board와 target module randomization
+
+PortOffset 수집기의 scene 범위는 `portoffset_randomization/constants.py`의 `LIMITS`가 기준입니다. Task Board translation은 world X/Y만 랜덤화하고 Z는 고정하며, rotation은 yaw만 랜덤화하고 roll/pitch는 고정합니다.
+
+| 대상 | Translation | Rotation | 선택 범위 |
+|---|---|---|---|
+| SFP Task Board | world X `0.13 ~ 0.17 m`, Y `-0.25 ~ -0.20 m`, Z `1.14 m` 고정 | roll/pitch `0 rad` 고정, yaw `3.10 ~ 3.1415 rad` | NIC rail `0~4`, SFP port `0~1` |
+| SC Task Board | world X `0.15 ~ 0.19 m`, Y `-0.05 ~ 0.05 m`, Z `1.14 m` 고정 | roll/pitch `0 rad` 고정, yaw `3.10 ~ 3.1415 rad` | SC rail `0~1` |
+| SFP NIC module | rail translation `-0.0215 ~ 0.0234 m` | local yaw `-10 ~ +10 deg` | 선택된 NIC rail 하나만 활성화 |
+| SC port module | rail translation `-0.06 ~ 0.055 m` | local yaw `0 rad` 고정 | 선택된 SC rail 하나만 활성화 |
 
 #### 로봇 초기 자세 randomization
 
@@ -138,7 +149,7 @@ center image `header.stamp`가 sample 기준 시각입니다. collector는 최�
 
 포트는 trial 중 움직이지 않는다는 시나리오 조건을 사용해 trial 시작 시 최신 TF를 한 번 `port_tf_snapshot`으로 저장합니다. 이 snapshot은 `is_static_snapshot=true`로 기록하고 시각 차이 계산에서 제외하므로, 1 Hz port TF 발행 주기를 각 capture 시각에 맞추기 위해 기다리지 않습니다. 한편 플러그는 위치가 계속 변화하므로 선택된 center image 시각의 TF를 최대 동일 timeout 동안 기다려 조회합니다.
 
-collector는 별도 raw TF cache에 `/tf`, `/scoring/tf`, `/tf_static`을 보존합니다. `base_link`에서 plug까지 경로의 동적 edge마다 exact raw stamp 또는 앞뒤 stamp, 보간 구간·비율을 기록하고, raw cache의 독립 재구성 결과가 실시간 TF와 위치 `0.1 mm`, 회전 `0.001 rad` 이내에서 일치할 때만 sample을 저장합니다.
+`_lookup_transform_at()`은 별도 TF cache를 만들지 않고 policy의 메인 TF2 buffer에서 `center_image.header.stamp`를 지정해 `base_link <- plug` transform을 한 번 조회합니다. TF2가 해당 시각의 transform을 반환하지 못하면 sample을 저장하지 않습니다.
 
 ```text
 동작 방식:
@@ -155,13 +166,11 @@ trial 시작:
   camera_time_difference <= sync_tolerance
   controller_time_difference <= sync_tolerance
   dynamic plug TF time_difference <= sync_tolerance
-  raw TF reconstruction position_difference <= 0.1 mm
-  raw TF reconstruction angle_difference <= 0.001 rad
 ```
 
 timeout이나 허용 오차를 넘긴 sample은 JPEG, 카메라별 sample metadata JSON 및 `metadata.jsonl`을 쓰지 않고 저장 count도 증가시키지 않습니다.
 
-카메라별 sample metadata JSON과 `metadata.jsonl`의 `timestamps`에는 `capture_stamp_ns`, camera별 stamp, `controller_stamp_ns`, port/plug TF stamp, `is_static_snapshot`, `skew_ns`, `wait_ns`, `sync_tolerance_ns`, `sync_valid`, `dataset_write_stamp_ns`가 기록됩니다. `timestamps.tf.plug.quality.provenance`에는 TF 경로별 `previous_stamp_ns`, `next_stamp_ns`, `interpolation_span_ns`, `interpolation_ratio`, `exact_sample`, `interpolated`가 기록되며 모든 시각 값의 단위는 `ns`입니다. 호환성을 위해 유지하는 `skew_ns`는 source 사이의 최대 시각 차이를 `ns` 단위로 저장하는 필드입니다.
+카메라별 sample metadata JSON과 `metadata.jsonl`의 `timestamps`에는 `capture_stamp_ns`, camera별 stamp, `controller_stamp_ns`, port/plug TF stamp, `is_static_snapshot`, `skew_ns`, `wait_ns`, `sync_tolerance_ns`, `sync_valid`, `dataset_write_stamp_ns`가 기록되며 모든 시각 값의 단위는 `ns`입니다. 호환성을 위해 유지하는 `skew_ns`는 source 사이의 최대 시각 차이를 `ns` 단위로 저장하는 필드입니다.
 
 | 함수 | 현재 역할 |
 |---|---|
@@ -169,9 +178,7 @@ timeout이나 허용 오차를 넘긴 sample은 JPEG, 카메라별 sample metada
 | `init_runtime()` | 허용 오차와 최대 대기시간을 초기화합니다. |
 | `insert_cable()` / `_lookup_latest_transform_stamped()` | trial 시작 시 고정 포트 TF를 한 번 snapshot합니다. |
 | `_wait_for_synchronized_observation()` | timeout 동안 Image/ControllerState 조건을 만족하는 Observation을 선택합니다. |
-| `_lookup_transform_at()` / `_tf_sync_metadata()` | center image 시각의 동적 plug TF를 기다리고 port snapshot과 함께 metadata를 검증합니다. |
-| `_record_tf_quality_message()` / `_tf_interpolation_provenance()` | raw TF를 독립 cache에 보존하고 TF 경로별 exact/보간 stamp를 `ns` 단위로 계산합니다. |
-| `_capture_tf_quality_metadata()` | 실시간 TF와 raw TF 재구성값이 위치 `0.1 mm`, 회전 `0.001 rad` 이내일 때만 승인합니다. |
+| `_lookup_transform_at()` / `_tf_sync_metadata()` | 메인 TF2 buffer에서 center image 시각의 동적 plug TF를 한 번 조회하고 port snapshot과 함께 metadata를 검증합니다. |
 | `_stage_collect()` | 정지 속도 판정 없이 수집 시각 일치 조건을 통과한 sample만 저장기로 전달합니다. |
 | `_save_xyz_rpy_sample()` | 이미지·label·timestamp metadata가 모두 기록된 뒤에만 count를 증가시키고 성공 여부와 이유를 반환합니다. |
 
@@ -182,7 +189,7 @@ timeout이나 허용 오차를 넘긴 sample은 JPEG, 카메라별 sample metada
 | `CAPTURE SAVED` | 초록색 bold | JPEG와 metadata가 실제로 기록되고 저장 count가 증가함 |
 | `CAPTURE FAILED` | 빨간색 bold | 시각 차이 초과, TF 조회 실패, visibility 부족 또는 파일 저장 실패로 sample이 저장되지 않음 |
 
-시각 관련 실패 로그에는 camera/controller/plug TF의 실제 시각 차이와 허용 범위를 `ms` 단위로 표시합니다. TF 재구성 실패 로그에는 실제 위치 차이와 한계는 `mm`, 회전 차이와 한계는 `rad`로 표시합니다. 파일 저장 도중 실패하면 해당 시도에서 생성한 부분 JPEG와 metadata JSON을 삭제합니다.
+시각 관련 실패 로그에는 camera/controller/plug TF의 실제 시각 차이와 허용 범위를 `ms` 단위로 표시합니다. 파일 저장 도중 실패하면 해당 시도에서 생성한 부분 JPEG와 metadata JSON을 삭제합니다.
 
 ### 1-4. Offline sample 일치 검사
 

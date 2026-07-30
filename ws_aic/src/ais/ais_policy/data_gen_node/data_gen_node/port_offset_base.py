@@ -15,7 +15,6 @@ from data_gen_node.port_offset_labels import (
     _transform_translation_array,
 )
 from data_gen_node.port_offset_runtime import (
-    _capture_tf_quality_metadata,
     _collect_log_text,
     _lookup_latest_transform_stamped,
     _lookup_transform,
