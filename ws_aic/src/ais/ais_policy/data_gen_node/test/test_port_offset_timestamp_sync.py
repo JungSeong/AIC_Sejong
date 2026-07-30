@@ -1,7 +1,5 @@
 """PortOffsetCollect 수집 시각 일치 조건의 회귀 테스트."""
 
-import math
-from threading import Lock
 from types import SimpleNamespace
 
 from data_gen_node.port_offset_dataset import (
@@ -11,9 +9,8 @@ from data_gen_node.port_offset_dataset import (
     _wait_for_synchronized_observation,
 )
 from data_gen_node.port_offset_runtime import (
-    _capture_tf_quality_metadata,
     _collect_log_text,
-    _tf_interpolation_provenance,
+    _lookup_transform_at,
 )
 from data_gen_node.port_offset_stage_motion import (
     _capture_failure_reason,
@@ -240,114 +237,44 @@ def test_save_result_explains_missing_observation() -> None:
     assert reason == "Observation을 받지 못함"
 
 
-def _tf_quality_policy(*, reconstructed_x_m: float = 0.0):
-    """raw TF provenance와 독립 재구성 gate용 최소 policy를 만든다."""
-    reconstructed = _message(1_500_000_000)
-    reconstructed.transform.translation.x = reconstructed_x_m
-    return SimpleNamespace(
-        _tf_quality_lock=Lock(),
-        _tf_quality_dynamic_stamps={
-            ("world", "plug"): {
-                1_000_000_000: {"/tf"},
-                2_000_000_000: {"/scoring/tf"},
-            },
-        },
-        _tf_quality_static_edges={("world", "base_link")},
-        _tf_quality_buffer=SimpleNamespace(
-            lookup_transform=lambda *_args, **_kwargs: reconstructed
-        ),
+def test_lookup_transform_at_uses_requested_camera_timestamp() -> None:
+    """plug TF는 별도 cache 없이 지정한 camera 시각으로 메인 TF2에서 조회한다."""
+    calls = {}
+    expected = _message(1_500_000_000)
+
+    class FakeBuffer:
+        """요청받은 TF2 인자를 기록하는 최소 가짜 buffer."""
+
+        def can_transform(self, *_args):
+            """테스트에서는 지정 시각 TF를 즉시 사용할 수 있다고 응답한다."""
+            return True
+
+        def lookup_transform(self, target, source, query_time, *, timeout):
+            """조회 시각과 frame을 기록하고 준비된 transform을 반환한다."""
+            calls.update({
+                "target": target,
+                "source": source,
+                "query_time_ns": query_time.nanoseconds,
+                "timeout_ns": timeout.nanoseconds,
+            })
+            return expected
+
+    policy = SimpleNamespace(
+        _parent_node=SimpleNamespace(_tf_buffer=FakeBuffer()),
         collect_sync_wait_timeout_sec=1.0,
     )
 
-
-def test_tf_interpolation_provenance_records_bracketing_ns() -> None:
-    """capture 시각을 감싼 raw TF stamp와 보간 비율을 ns 단위로 기록한다."""
-    metadata = _tf_interpolation_provenance(
-        _tf_quality_policy(),
-        "base_link",
-        "plug",
-        1_500_000_000,
-    )
-
-    dynamic_edge = next(edge for edge in metadata["edges"] if not edge["is_static"])
-    assert metadata["path_available"] is True
-    assert metadata["all_dynamic_edges_bracket_capture"] is True
-    assert metadata["interpolated"] is True
-    assert metadata["exact_transform"] is False
-    assert dynamic_edge["previous_stamp_ns"] == 1_000_000_000
-    assert dynamic_edge["next_stamp_ns"] == 2_000_000_000
-    assert dynamic_edge["interpolation_span_ns"] == 1_000_000_000
-    assert dynamic_edge["interpolation_ratio"] == 0.5
-
-
-def test_tf_quality_gate_accepts_difference_within_point_one_mm() -> None:
-    """독립 재구성 위치 차이가 0.1 mm 이내이면 sample을 승인한다."""
-    live = _message(1_500_000_000)
-    valid, metadata = _capture_tf_quality_metadata(
-        _tf_quality_policy(reconstructed_x_m=0.00009),
-        live,
-        "base_link",
-        "plug",
-        1_500_000_000,
-    )
-
-    assert valid is True
-    assert metadata["valid"] is True
-    assert metadata["position_tolerance_m"] == 1e-4
-    assert metadata["angle_tolerance_rad"] == 1e-3
-
-
-def test_tf_quality_gate_rejects_difference_over_point_one_mm() -> None:
-    """독립 재구성 위치 차이가 0.1 mm를 넘으면 sample을 거부한다."""
-    live = _message(1_500_000_000)
-    valid, metadata = _capture_tf_quality_metadata(
-        _tf_quality_policy(reconstructed_x_m=0.00011),
-        live,
-        "base_link",
-        "plug",
-        1_500_000_000,
-    )
-
-    assert valid is False
-    assert metadata["valid"] is False
-    assert metadata["rejection_reason"] == "tf_reconstruction_difference_exceeded"
-
-
-def test_tf_interpolation_provenance_marks_exact_raw_sample() -> None:
-    """Capture 시각과 같은 raw TF가 있으면 exact로 기록한다."""
-    policy = _tf_quality_policy()
-    policy._tf_quality_dynamic_stamps[("world", "plug")] = {
-        1_500_000_000: {"/tf", "/scoring/tf"}
-    }
-
-    metadata = _tf_interpolation_provenance(
-        policy, "base_link", "plug", 1_500_000_000
-    )
-
-    dynamic_edge = next(edge for edge in metadata["edges"] if not edge["is_static"])
-    assert metadata["exact_transform"] is True
-    assert metadata["interpolated"] is False
-    assert dynamic_edge["exact_sample"] is True
-    assert dynamic_edge["previous_stamp_ns"] == 1_500_000_000
-    assert dynamic_edge["next_stamp_ns"] == 1_500_000_000
-
-
-def test_tf_quality_gate_rejects_angle_over_point_zero_zero_one_rad() -> None:
-    """독립 재구성 회전 차이가 0.001 rad를 넘으면 sample을 거부한다."""
-    angle_rad = 0.0011
-    policy = _tf_quality_policy()
-    reconstructed = policy._tf_quality_buffer.lookup_transform()
-    reconstructed.transform.rotation.z = math.sin(angle_rad / 2.0)
-    reconstructed.transform.rotation.w = math.cos(angle_rad / 2.0)
-
-    valid, metadata = _capture_tf_quality_metadata(
+    result = _lookup_transform_at(
         policy,
-        _message(1_500_000_000),
         "base_link",
         "plug",
-        1_500_000_000,
+        _stamp(1_500_000_000),
     )
 
-    assert valid is False
-    assert metadata["angle_difference_rad"] > 1e-3
-    assert metadata["rejection_reason"] == "tf_reconstruction_difference_exceeded"
+    assert result is expected
+    assert calls == {
+        "target": "base_link",
+        "source": "plug",
+        "query_time_ns": 1_500_000_000,
+        "timeout_ns": 1_000_000_000,
+    }

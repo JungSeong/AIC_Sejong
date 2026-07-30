@@ -57,15 +57,6 @@ def _capture_failure_reason(reason: str) -> str:
         "tf_time_difference_exceeded": (
             "plug TF와 center camera의 시각 차이가 허용 범위를 초과함"
         ),
-        "raw_tf_reconstruction_unavailable": (
-            "독립 raw TF buffer에서 capture 시각의 plug 자세를 재구성하지 못함"
-        ),
-        "raw_tf_bracketing_unavailable": (
-            "TF 경로의 동적 edge에 capture 시각을 감싸는 앞뒤 raw TF가 없음"
-        ),
-        "tf_reconstruction_difference_exceeded": (
-            "실시간 plug TF와 raw TF 재구성 결과의 위치 또는 회전 차이가 허용 범위를 초과함"
-        ),
     }
     detail = descriptions.get(base_reason, base_reason.replace("_", " "))
     return f"대기시간 내 일치하는 Observation을 찾지 못함: {detail}" if timed_out else detail
@@ -275,46 +266,6 @@ def _stage_collect(
                         f"reason={_capture_failure_reason(str(timestamps.get('rejection_reason', 'TF 확인 실패')))}; "
                         f"time_differences={_time_difference_text(timestamps)}; "
                         f"tolerance={self.collect_sync_tolerance_ns / 1_000_000.0:.3f} ms",
-                        "red",
-                        bold=True,
-                    )
-                )
-                self.sleep_for(self.step_sleep_sec)
-                continue
-
-            tf_quality_valid, tf_quality = self._capture_tf_quality_metadata(
-                save_raw_plug_stamped,
-                "base_link",
-                ctx["cable_tip_frame"],
-                int(timestamps["capture_stamp_ns"]),
-            )
-            timestamps["tf"]["plug"]["quality"] = tf_quality
-            if not tf_quality_valid:
-                timestamps["sync_valid"] = False
-                rejection_reason = str(tf_quality.get(
-                    "rejection_reason",
-                    "tf_reconstruction_difference_exceeded",
-                ))
-                timestamps["rejection_reason"] = rejection_reason
-                position_difference_mm = (
-                    float(tf_quality.get("position_difference_m", float("nan")))
-                    * 1000.0
-                )
-                position_limit_mm = (
-                    float(tf_quality["position_tolerance_m"]) * 1000.0
-                )
-                angle_difference_rad = float(
-                    tf_quality.get("angle_difference_rad", float("nan"))
-                )
-                angle_limit_rad = float(tf_quality["angle_tolerance_rad"])
-                self.get_logger().error(
-                    self._collect_log_text(
-                        "[PortOffsetCollect] CAPTURE FAILED: "
-                        f"reason={_capture_failure_reason(rejection_reason)}; "
-                        f"position_difference={position_difference_mm:.4f} mm "
-                        f"(limit={position_limit_mm:.4f} mm); "
-                        f"angle_difference={angle_difference_rad:.6f} rad "
-                        f"(limit={angle_limit_rad:.6f} rad)",
                         "red",
                         bold=True,
                     )

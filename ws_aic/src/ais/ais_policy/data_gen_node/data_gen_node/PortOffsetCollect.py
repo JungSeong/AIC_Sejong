@@ -29,7 +29,6 @@ class PortOffsetCollect(Policy):
     _lookup_transform = runtime._lookup_transform
     _lookup_latest_transform_stamped = runtime._lookup_latest_transform_stamped
     _lookup_transform_at = runtime._lookup_transform_at
-    _capture_tf_quality_metadata = runtime._capture_tf_quality_metadata
     _collect_log_text = runtime._collect_log_text
     _select_port_frame = runtime._select_port_frame
     _select_cable_tip_frame = runtime._select_cable_tip_frame
