@@ -2,15 +2,15 @@
   "cases": {
     "trial_0000_sfp": {
       "count": 1,
-      "max_error_3d_mm": 3.1514463466075093,
-      "mean_error_3d_mm": 3.1514463466075093
+      "max_error_3d_mm": 1.1749853970732933,
+      "mean_error_3d_mm": 1.1749853970732933
     }
   },
   "count": 1,
-  "max_error_3d_mm": 3.1514463466075093,
-  "mean_abs_dx_mm": 0.39379214801943396,
-  "mean_abs_dy_mm": 0.7380739603156661,
-  "mean_abs_dz_mm": 3.0383858623960203,
-  "mean_error_3d_mm": 3.1514463466075093,
-  "median_error_3d_mm": 3.1514463466075093
+  "max_error_3d_mm": 1.1749853970732933,
+  "mean_abs_dx_mm": 0.6528212496274555,
+  "mean_abs_dy_mm": 0.049385487968178765,
+  "mean_abs_dz_mm": 0.9756926631621643,
+  "mean_error_3d_mm": 1.1749853970732933,
+  "median_error_3d_mm": 1.1749853970732933
 }

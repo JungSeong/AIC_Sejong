@@ -7,7 +7,7 @@
 | `run_triangulation_cases.py` | host Pixi → Distrobox | PortOffset와 동일한 범위에서 case YAML을 생성하고 `aic_eval` simulator를 실행 |
 | `evaluate_triangulation_euclidean.py` | host Pixi + ROS 2 | prediction XYZ와 port entrance GT TF의 축별 오차 및 3D Euclidean 오차를 계산·저장 |
 
-전체 워크플로우 : `run_triangulation_cases.py`로 환경을 생성 및 실행하고, `evaluate_triangulation_euclidean.py`로 FinalPolicy의 multi-camera triangulation 결과를 평가하는 구조
+전체 워크플로우 : `run_triangulation_cases.py`로 Gazebo Simulator 환경을 생성 및 실행하고, `evaluate_triangulation_euclidean.py`로 FinalPolicy의 multi-camera triangulation 결과를 평가하는 구조
 
 ## 1. run_triangulation_cases.py - Test Cases 생성 및 simulator 실행
 
@@ -17,9 +17,9 @@
 cd /home/swlinux/Desktop/workspace/AIC_Sejong/ws_aic/src
 
 pixi run python ais/ais_triangulation/run_triangulation_cases.py \
-  --seed 42 \
-  --num_cases 2 \
-  --launch_rviz true
+  --seed 20 \
+  --num_cases 50 \
+  --launch_rviz false
 ```
 
 
@@ -88,7 +88,7 @@ Robot home pose는 모든 trial에 공유된다. Task Board, target module, cabl
 
 ## 3. evaluate_triangulation_euclidean.py - Triangulation XYZ 오차 평가
 
-`evaluate_triangulation_euclidean.py`는 case YAML의 `port_type`, `target_module_name`, `port_name`을 읽어 평가 대상 포트의 entrance TF frame 이름을 구성한다. 이후 해당 frame의 실제 XYZ를 ROS TF에서 조회해 prediction과 비교한다. GT port entrance도 같은 timestamp와 base frame에서 조회한 뒤 `dx/dy/dz` 및 3D Euclidean distance를 계산한다.
+`evaluate_triangulation_euclidean.py`는 ROS 2 evaluator node를 실행하는 Python script다. `--prediction-topic`으로 지정한 `/final_policy/triangulated_port_xyz` Topic을 구독하고, prediction timestamp에 해당하는 port entrance GT TF를 조회하여 XYZ 오차를 계산한다. 이때 case YAML의 `port_type`, `target_module_name`, `port_name`으로 평가 대상 entrance TF frame 이름을 구성한다. Prediction과 GT를 같은 timestamp와 base frame으로 맞춘 뒤 `dx/dy/dz` 및 3D Euclidean distance를 계산한다.
 
 Prediction의 `header.frame_id`가 비어 있거나 `header.stamp`가 0이면 해당 sample은 평가하지 않는다. 정확한 timestamp의 TF를 얻지 못하면 `--sync-threshold-ms` 이내인 최신 TF만 대체값으로 허용하고, threshold를 넘으면 결과를 저장하지 않는다.
 
@@ -100,11 +100,12 @@ cd /home/swlinux/Desktop/workspace/AIC_Sejong/ws_aic/src
 pixi run python ais/ais_triangulation/evaluate_triangulation_euclidean.py \
   --all-cases \
   --prediction-topic /final_policy/triangulated_port_xyz \
-  --fixed-frame base_link \
+  --base-frame base_link \
+  --fixed-frame world \
   --overwrite
 ```
 
-다른 터미널에서 FinalPolicy의 평가 출력을 활성화한다.
+다른 터미널에서 FinalPolicy를 활성화한다.
 
 ```bash
 cd /home/swlinux/Desktop/workspace/AIC_Sejong/ws_aic/src
@@ -119,6 +120,7 @@ export AIC_DETECTION_DEBUG_IMAGE_TOPIC_PREFIX=/final_policy/detection_debug
 export AIC_TRIANGULATION_DEBUG_RVIZ=1
 export AIC_TRIANGULATION_DEBUG_IMAGE_TOPIC_PREFIX=/final_policy/triangulation_debug
 export AIC_TRIANGULATION_DEBUG_MARKER_TOPIC=/final_policy/triangulation_debug/markers
+export AIC_DEBUG_IMAGE_REPUBLISH_HZ=1
 export AIC_TRIANGULATION_SYNC_THRESHOLD_MS=30
 
 pixi run ros2 run aic_model aic_model \
@@ -163,6 +165,14 @@ pixi run python ais/ais_triangulation/evaluate_triangulation_euclidean.py \
 | `--output-dir PATH` | `ais_triangulation/results` | CSV, JSONL, summary JSON 저장 디렉터리 |
 | `--overwrite` | 꺼짐 | 기존 CSV를 읽어 누적하지 않고 새 결과로 시작 |
 
+#### 3-1-1. `--base-frame`과 `--fixed-frame`의 차이
+
+`--base-frame`은 prediction과 GT를 변환하여 오차를 계산·저장하는 최종 좌표계다. 기본값은 `base_link`다.
+
+`--fixed-frame`은 지정 timestamp의 direct TF 조회가 실패했을 때 `lookup_transform_full()`이 경유하는 기준 frame이다. Direct 조회가 성공하면 사용되지 않으며, 결과 좌표계도 변경하지 않는다. 따라서 `--base-frame base_link --fixed-frame world`는 결과를 `base_link` 기준으로 비교하되 exact-time TF fallback에서 `world`를 고정 기준으로 사용한다는 의미다.
+
+Prediction과 GT를 같은 timestamp에서 조회하므로 TF tree가 정상이라면 `--fixed-frame world`와 `--fixed-frame base_link`의 XYZ 결과는 일반적으로 같다. `world`가 안정적으로 연결된 simulator에서는 `world`를 권장하며, `world` TF가 없거나 조회할 수 없을 때만 `base_link`를 사용한다.
+
 Offline 모드에서는 입력 record마다 `case_name` 또는 `target_frame`, prediction XYZ와 GT XYZ가 모두 필요하다. 지원 필드명은 코드의 `prediction_xyz_from_record()`와 `gt_xyz_from_record()`에 정의되어 있다.
 
 ```bash
@@ -175,6 +185,30 @@ pixi run python ais/ais_triangulation/evaluate_triangulation_euclidean.py \
 ### 3-2. vision.py 및 debug.py - RViz detection·triangulation debug 실시간 발행
 
 `vision.py`와 `debug.py`는 YOLO detection overlay와 triangulation 재투영 결과를 원본 camera timestamp와 optical frame을 유지한 `sensor_msgs/Image`로 발행한다. 최종 prediction, GT 및 두 점 사이의 오차선은 `base_link` 기준 `visualization_msgs/MarkerArray`로도 발행한다.
+
+#### 3-2-1. Camera pair 선택과 재투영 RMS
+
+`vision.py`는 검출 가능한 `left-center`, `center-right`, `left-right` 중 사용할 수 있는 모든 pair와 같은 `point_name`의 detection 조합을 각각 DLT로 triangulation한다.
+
+각 3D 후보를 해당 point가 검출된 모든 camera에 다시 투영하고, 실제 YOLO UV와 재투영 UV 사이의 pixel distance를 계산한다.
+
+```text
+e_camera = sqrt((u_detect - u_projected)^2 + (v_detect - v_projected)^2)
+reprojection_rms = sqrt(mean(e_camera^2))
+```
+
+Camera별 오차가 `30 px`를 넘는 후보는 폐기한다. 남은 후보는 전체 camera의 `reprojection_rms`가 작은 순서로 정렬하며, 값이 같을 때만 board center 거리와 detection confidence 기반 score를 보조 기준으로 사용한다. 서로 `10 mm` 이내인 중복 3D 후보는 이 정렬 뒤 제거하므로 여러 pair가 같은 포트를 계산했을 때 재투영 RMS가 가장 작은 pair의 결과가 남는다.
+
+```text
+모든 사용 가능한 camera pair
+→ pair별 DLT 3D 후보
+→ 검출된 모든 camera에 재투영
+→ camera별 30 px gate
+→ 재투영 RMS 최소 후보 선택
+→ 10 mm 중복 제거
+```
+
+이 방식은 가장 정확한 two-view pair를 고르는 로직이다. 세 camera 관측을 하나의 최적화 식으로 다시 계산하는 three-view refinement는 수행하지 않는다.
 
 FinalPolicy는 center camera timestamp를 기준 시각으로 사용하고, left/center/right 전체 timestamp span이 `AIC_TRIANGULATION_SYNC_THRESHOLD_MS` 이내인 Observation만 triangulation한다. 기본 threshold는 `30 ms`다. 범위를 넘은 Observation은 경고 로그를 남기고 버리며 다음 관측을 기다린다. OpenCV debug의 GT TF도 center camera timestamp에서 조회한다.
 
@@ -193,6 +227,8 @@ YOLO detection topic은 JPEG로 저장되는 detection debug와 같은 bbox, key
 | Right | `/final_policy/triangulation_debug/right/image` |
 
 3D debug topic은 `/final_policy/triangulation_debug/markers`다. RViz에서 `Add` → `By topic`을 선택해 각 image topic은 `Image`, 3D topic은 `MarkerArray` display로 추가한다. RViz의 `Fixed Frame`은 `base_link` 또는 `world`로 설정한다.
+
+Detection과 triangulation debug image는 마지막 frame을 camera별로 캐시하고, RViz 구독자가 있는 동안 기본 `1 Hz`로 계속 재발행한다. 따라서 계산이 끝난 뒤 RViz display를 추가해도 마지막 결과를 볼 수 있다. 재발행 메시지는 원본 camera `header.stamp`와 `frame_id`를 유지하므로 새로운 관측처럼 timestamp를 변경하지 않는다. 주기는 `AIC_DEBUG_IMAGE_REPUBLISH_HZ`로 조절하며 `0` 이하이면 재발행을 끈다.
 
 Marker 색상은 다음과 같다.
 

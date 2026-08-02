@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+from builtin_interfaces.msg import Time as TimeMessage
+
 from data_gen_node.port_offset_dataset import (
     _observation_sync_metadata,
     _save_xyz_rpy_sample,
@@ -268,7 +270,7 @@ def test_lookup_transform_at_uses_requested_camera_timestamp() -> None:
         policy,
         "base_link",
         "plug",
-        _stamp(1_500_000_000),
+        TimeMessage(sec=1, nanosec=500_000_000),
     )
 
     assert result is expected

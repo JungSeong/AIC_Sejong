@@ -49,9 +49,9 @@ class FinalPolicyDebugMixin:
         publisher = getattr(self, "_detection_debug_image_pubs", {}).get(camera)
         if publisher is None:
             return
-        publisher.publish(
-            self._bgr_debug_image_message(debug_image, source_image_msg)
-        )
+        message = self._bgr_debug_image_message(debug_image, source_image_msg)
+        self._latest_detection_debug_images[camera] = message
+        publisher.publish(message)
 
     def _create_triangulation_debug_marker_publisher(self):
         """RViz 3D display용 prediction/GT/error MarkerArray publisher를 만든다."""
@@ -89,6 +89,40 @@ class FinalPolicyDebugMixin:
             "[Triangulation RViz] image topics: " + ", ".join(topics)
         )
         return publishers
+
+    def _create_debug_image_republish_timer(self):
+        """RViz가 늦게 연결돼도 마지막 debug image를 볼 수 있게 재발행한다."""
+        if not (
+            self._detection_debug_image_pubs
+            or self._triangulation_debug_image_pubs
+        ):
+            return None
+        hz = float(FinalPolicyConfig.DEBUG_IMAGE_REPUBLISH_HZ)
+        if hz <= 0.0:
+            return None
+        self.get_logger().info(f"[RViz Debug] image republish rate: {hz:g} Hz")
+        return self._parent_node.create_timer(
+            1.0 / hz,
+            self._republish_debug_images,
+        )
+
+    def _republish_debug_images(self) -> None:
+        """구독자가 있는 debug topic에 마지막 원본 timestamp 이미지를 재발행한다."""
+        streams = (
+            (
+                self._detection_debug_image_pubs,
+                self._latest_detection_debug_images,
+            ),
+            (
+                self._triangulation_debug_image_pubs,
+                self._latest_triangulation_debug_images,
+            ),
+        )
+        for publishers, latest_messages in streams:
+            for camera, publisher in publishers.items():
+                message = latest_messages.get(camera)
+                if message is not None and publisher.get_subscription_count() > 0:
+                    publisher.publish(message)
 
     @staticmethod
     def _bgr_debug_image_message(image: np.ndarray, source_image_msg):
@@ -536,9 +570,9 @@ class FinalPolicyDebugMixin:
                 VisionPortEstimator._put_text_lines(debug_img, text_lines, 10, 24)
                 publisher = image_publishers.get(cam_name)
                 if publisher is not None:
-                    publisher.publish(
-                        self._bgr_debug_image_message(debug_img, img_msg)
-                    )
+                    message = self._bgr_debug_image_message(debug_img, img_msg)
+                    self._latest_triangulation_debug_images[cam_name] = message
+                    publisher.publish(message)
                     published_count += 1
 
                 if save_dir is not None:

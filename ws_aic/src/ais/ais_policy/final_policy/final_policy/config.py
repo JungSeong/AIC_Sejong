@@ -106,6 +106,10 @@ class FinalPolicyConfig:
         "AIC_DETECTION_DEBUG_IMAGE_TOPIC_PREFIX",
         "/final_policy/detection_debug",
     )
+    DEBUG_IMAGE_REPUBLISH_HZ: float = _env_float(
+        "AIC_DEBUG_IMAGE_REPUBLISH_HZ",
+        1.0,
+    )
     TRIANGULATION_SYNC_THRESHOLD_MS: float = _env_float(
         "AIC_TRIANGULATION_SYNC_THRESHOLD_MS",
         30.0,

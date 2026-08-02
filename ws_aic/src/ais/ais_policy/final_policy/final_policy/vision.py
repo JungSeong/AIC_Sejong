@@ -932,84 +932,120 @@ class VisionPortEstimator:
         pixel_match_thresh = 30.0
         candidates = []
 
-        cam_a, cam_b = available_pairs[-1]
-        for det_a in detections[cam_a]:
-            for det_b in detections[cam_b]:
-                if det_a.get("point_name") != det_b.get("point_name"):
-                    continue
-                port_3d = self._triangulate(
-                    det_a["u"],
-                    det_a["v"],
-                    k[cam_a],
-                    t_base_to[cam_a],
-                    det_b["u"],
-                    det_b["v"],
-                    k[cam_b],
-                    t_base_to[cam_b],
-                )
-                dist = float(np.linalg.norm(port_3d - board_center))
-                if dist > FinalPolicyConfig.BOARD_RADIUS:
-                    continue
-                if not (FinalPolicyConfig.Z_RANGE[0] <= port_3d[2] <= FinalPolicyConfig.Z_RANGE[1]):
-                    continue
-
-                camera_points = {
-                    cam_a: (float(det_a["u"]), float(det_a["v"])),
-                    cam_b: (float(det_b["u"]), float(det_b["v"])),
-                }
-
-                third_cam = None
-                for name in ["center", "left", "right"]:
-                    if name not in (cam_a, cam_b) and name in detections:
-                        third_cam = name
-                        break
-
-                consistent = True
-                if third_cam and detections[third_cam]:
-                    u_proj, v_proj = project_3d_to_pixel(
-                        port_3d,
-                        k[third_cam],
-                        t_base_to[third_cam],
-                    )
-                    same_point_dets = [
-                        det
-                        for det in detections[third_cam]
-                        if det.get("point_name") == det_a.get("point_name")
-                    ]
-                    if not same_point_dets:
+        for cam_a, cam_b in available_pairs:
+            for det_a in detections[cam_a]:
+                for det_b in detections[cam_b]:
+                    if det_a.get("point_name") != det_b.get("point_name"):
                         continue
-                    min_px_dist, nearest_det = min(
-                        (
-                            float(np.hypot(det["u"] - u_proj, det["v"] - v_proj)),
-                            det,
-                        )
-                        for det in same_point_dets
+                    port_3d = self._triangulate(
+                        det_a["u"],
+                        det_a["v"],
+                        k[cam_a],
+                        t_base_to[cam_a],
+                        det_b["u"],
+                        det_b["v"],
+                        k[cam_b],
+                        t_base_to[cam_b],
                     )
-                    if min_px_dist > pixel_match_thresh:
-                        consistent = False
-                    else:
-                        camera_points[third_cam] = (
-                            float(nearest_det["u"]),
-                            float(nearest_det["v"]),
+                    if not np.isfinite(port_3d).all():
+                        continue
+                    dist = float(np.linalg.norm(port_3d - board_center))
+                    if dist > FinalPolicyConfig.BOARD_RADIUS:
+                        continue
+                    if not (
+                        FinalPolicyConfig.Z_RANGE[0]
+                        <= port_3d[2]
+                        <= FinalPolicyConfig.Z_RANGE[1]
+                    ):
+                        continue
+
+                    pair_detections = {cam_a: det_a, cam_b: det_b}
+                    matched_detections = {}
+                    camera_points = {}
+                    reprojection_errors_px = {}
+                    consistent = True
+                    for camera_name in cams_with_dets:
+                        u_proj, v_proj = project_3d_to_pixel(
+                            port_3d,
+                            k[camera_name],
+                            t_base_to[camera_name],
                         )
+                        matched_det = pair_detections.get(camera_name)
+                        if matched_det is None:
+                            same_point_dets = [
+                                det
+                                for det in detections[camera_name]
+                                if det.get("point_name")
+                                == det_a.get("point_name")
+                            ]
+                            if not same_point_dets:
+                                consistent = False
+                                break
+                            matched_det = min(
+                                same_point_dets,
+                                key=lambda det: float(
+                                    np.hypot(
+                                        det["u"] - u_proj,
+                                        det["v"] - v_proj,
+                                    )
+                                ),
+                            )
+                        pixel_error = float(
+                            np.hypot(
+                                matched_det["u"] - u_proj,
+                                matched_det["v"] - v_proj,
+                            )
+                        )
+                        if (
+                            not np.isfinite(pixel_error)
+                            or pixel_error > pixel_match_thresh
+                        ):
+                            consistent = False
+                            break
+                        matched_detections[camera_name] = matched_det
+                        camera_points[camera_name] = (
+                            float(matched_det["u"]),
+                            float(matched_det["v"]),
+                        )
+                        reprojection_errors_px[camera_name] = pixel_error
 
-                if not consistent:
-                    continue
+                    if not consistent:
+                        continue
 
-                conf_sum = det_a["conf"] + det_b["conf"]
-                score = dist - 0.1 * conf_sum
-                candidates.append(
-                    {
-                        "pos": port_3d,
-                        "score": score,
-                        "conf_sum": conf_sum,
-                        "point_name": det_a.get("point_name"),
-                        "port_index": det_a.get("port_index"),
-                        "camera_points": camera_points,
-                    }
-                )
+                    reprojection_rms_px = float(
+                        np.sqrt(
+                            np.mean(
+                                np.square(
+                                    list(reprojection_errors_px.values())
+                                )
+                            )
+                        )
+                    )
+                    conf_sum = sum(
+                        float(det["conf"])
+                        for det in matched_detections.values()
+                    )
+                    score = dist - 0.1 * conf_sum
+                    candidates.append(
+                        {
+                            "pos": port_3d,
+                            "score": score,
+                            "conf_sum": conf_sum,
+                            "point_name": det_a.get("point_name"),
+                            "port_index": det_a.get("port_index"),
+                            "camera_pair": (cam_a, cam_b),
+                            "camera_points": camera_points,
+                            "reprojection_error_px": reprojection_rms_px,
+                            "reprojection_errors_px": reprojection_errors_px,
+                        }
+                    )
 
-        candidates.sort(key=lambda candidate: candidate["score"])
+        candidates.sort(
+            key=lambda candidate: (
+                candidate["reprojection_error_px"],
+                candidate["score"],
+            )
+        )
 
         unique = []
         for candidate in candidates:
@@ -1028,6 +1064,8 @@ class VisionPortEstimator:
                 f"{unique[0]['pos'][1]:+.3f}, {unique[0]['pos'][2]:+.3f}), "
                 f"point={unique[0].get('point_name')}, "
                 f"port_index={unique[0].get('port_index')}, "
+                f"pair={unique[0].get('camera_pair')}, "
+                f"reproj_rms={unique[0].get('reprojection_error_px'):.2f}px, "
                 f"target_port_index={target_port_index})"
             )
 

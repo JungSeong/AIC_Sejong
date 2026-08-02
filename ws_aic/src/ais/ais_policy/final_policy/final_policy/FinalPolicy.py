@@ -64,6 +64,12 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
         self._vision_debug_save_enabled = False
         self._align_debug_call_count = 0
         self._triangulation_debug_call_count = 0
+        self._latest_detection_debug_images = {
+            camera: None for camera, _frame in VisionPortEstimator.CAMERAS
+        }
+        self._latest_triangulation_debug_images = {
+            camera: None for camera, _frame in VisionPortEstimator.CAMERAS
+        }
         self._yolo_download_threads: dict[str, threading.Thread] = {}
         self._yolo_download_lock = threading.Lock()
         self._vision_offset_predictor_by_port_type: dict[str, VisionOffsetPredictor] = {}
@@ -78,6 +84,9 @@ class FinalPolicy(FinalPolicyDebugMixin, Policy):
         )
         self._triangulation_debug_marker_pub = (
             self._create_triangulation_debug_marker_publisher()
+        )
+        self._debug_image_republish_timer = (
+            self._create_debug_image_republish_timer()
         )
         self._send_feedback: Optional[SendFeedbackCallback] = None
         self.get_logger().info(

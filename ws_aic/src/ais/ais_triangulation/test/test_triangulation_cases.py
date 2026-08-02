@@ -267,6 +267,41 @@ def test_rviz_debug_image_preserves_source_timestamp_and_frame() -> None:
     assert len(published.data) == debug_image.size
 
 
+def test_rviz_debug_image_is_republished_with_original_header() -> None:
+    final_policy_root = AIS_ROOT / "ais_policy" / "final_policy"
+    sys.path.insert(0, str(final_policy_root))
+
+    from sensor_msgs.msg import Image
+    from final_policy.debug import FinalPolicyDebugMixin
+
+    class Publisher:
+        def __init__(self) -> None:
+            self.messages = []
+
+        @staticmethod
+        def get_subscription_count() -> int:
+            return 1
+
+        def publish(self, message) -> None:
+            self.messages.append(message)
+
+    message = Image()
+    message.header.stamp.sec = 123
+    message.header.stamp.nanosec = 456_789
+    detection_publisher = Publisher()
+    debug = FinalPolicyDebugMixin()
+    debug._detection_debug_image_pubs = {"left": detection_publisher}
+    debug._triangulation_debug_image_pubs = {}
+    debug._latest_detection_debug_images = {"left": message}
+    debug._latest_triangulation_debug_images = {}
+
+    debug._republish_debug_images()
+
+    assert detection_publisher.messages == [message]
+    assert detection_publisher.messages[0].header.stamp.sec == 123
+    assert detection_publisher.messages[0].header.stamp.nanosec == 456_789
+
+
 def test_yolo_detection_overlay_callback_receives_source_image() -> None:
     final_policy_root = AIS_ROOT / "ais_policy" / "final_policy"
     sys.path.insert(0, str(final_policy_root))
@@ -536,6 +571,118 @@ def test_tf_fallback_must_stay_inside_sync_threshold() -> None:
             stamp=requested_stamp,
             sync_threshold_ms=10.0,
         )
+
+
+def test_best_camera_pair_is_selected_by_reprojection_rms(monkeypatch) -> None:
+    """마지막 pair가 아니라 전체 camera 재투영 RMS가 가장 작은 pair를 선택한다."""
+    final_policy_root = AIS_ROOT / "ais_policy" / "final_policy"
+    sys.path.insert(0, str(final_policy_root))
+
+    from sensor_msgs.msg import CameraInfo, Image
+    import final_policy.vision as vision_module
+    from final_policy.vision import VisionPortEstimator
+
+    def image_at() -> Image:
+        image = Image()
+        image.header.stamp.sec = 1
+        return image
+
+    camera_info = CameraInfo()
+    camera_info.k = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    observation = type(
+        "Observation",
+        (),
+        {
+            "left_image": image_at(),
+            "center_image": image_at(),
+            "right_image": image_at(),
+            "left_camera_info": camera_info,
+            "center_camera_info": camera_info,
+            "right_camera_info": camera_info,
+        },
+    )()
+    detections = {
+        "left": [
+            {
+                "class_id": 0,
+                "point_name": "port",
+                "port_index": 0,
+                "u": 10.0,
+                "v": 10.0,
+                "conf": 0.9,
+            }
+        ],
+        "center": [
+            {
+                "class_id": 0,
+                "point_name": "port",
+                "port_index": 0,
+                "u": 20.0,
+                "v": 20.0,
+                "conf": 0.9,
+            }
+        ],
+        "right": [
+            {
+                "class_id": 0,
+                "point_name": "port",
+                "port_index": 0,
+                "u": 30.0,
+                "v": 30.0,
+                "conf": 0.9,
+            }
+        ],
+    }
+    pair_points = {
+        (10.0, 20.0): np.array([-0.380, 0.22, 0.10]),
+        (20.0, 30.0): np.array([-0.378, 0.22, 0.10]),
+        (10.0, 30.0): np.array([-0.376, 0.22, 0.10]),
+    }
+    reprojection_error = {
+        -0.380: 4.0,
+        -0.378: 1.0,
+        -0.376: 8.0,
+    }
+    camera_uv = {
+        0: (10.0, 10.0),
+        1: (20.0, 20.0),
+        2: (30.0, 30.0),
+    }
+
+    estimator = VisionPortEstimator.__new__(VisionPortEstimator)
+    estimator._logger = None
+    estimator._loaded = True
+    estimator._ensure_loaded = lambda: None
+    estimator._image_from_msg = lambda _image: np.zeros((2, 2, 3))
+    estimator._detect = (
+        lambda _image, *, cam_name, **_kwargs: detections[cam_name]
+    )
+
+    def camera_matrix(_observation, camera_name):
+        matrix = np.eye(4)
+        matrix[0, 3] = {"left": 0, "center": 1, "right": 2}[camera_name]
+        return matrix
+
+    estimator._base_to_camera_optical_matrix = camera_matrix
+    estimator._triangulate = (
+        lambda u_a, _v_a, _k_a, _t_a, u_b, _v_b, _k_b, _t_b:
+        pair_points[(u_a, u_b)].copy()
+    )
+
+    def fake_project(point, _k_matrix, camera_matrix):
+        camera_index = int(camera_matrix[0, 3])
+        u, v = camera_uv[camera_index]
+        error = reprojection_error[round(float(point[0]), 3)]
+        return u + error, v
+
+    monkeypatch.setattr(vision_module, "project_3d_to_pixel", fake_project)
+
+    candidates = estimator._estimate_all_sync(observation, target_class_id=0)
+
+    assert len(candidates) == 1
+    assert candidates[0]["camera_pair"] == ("center", "right")
+    assert candidates[0]["reprojection_error_px"] == pytest.approx(1.0)
+    assert np.array_equal(candidates[0]["pos"], pair_points[(20.0, 30.0)])
 
 
 def test_generated_yaml_is_engine_readable(tmp_path: Path) -> None:
