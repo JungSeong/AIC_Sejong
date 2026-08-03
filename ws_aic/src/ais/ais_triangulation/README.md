@@ -11,7 +11,7 @@
 
 ## 1. run_triangulation_cases.py - Test Cases 생성 및 simulator 실행
 
-`run_triangulation_cases.py`는 PortOffsetCollector와 동일한 randomization 범위에서 지정한 seed와 case 수만큼 case YAML을 생성한 뒤, 생성한 YAML을 `aic_engine_config_file`로 전달하여 `aic_eval` simulator를 실행한다.
+`run_triangulation_cases.py`는 PortOffsetCollector의 Task Board, module, cable randomization 범위에서 지정한 seed와 case 수만큼 case YAML을 생성한 뒤, 생성한 YAML을 `aic_engine_config_file`로 전달하여 `aic_eval` simulator를 실행한다. Robot은 camera common FOV 계산이 가능한 고정 observation pose를 사용한다.
 
 ```bash
 cd /home/swlinux/Desktop/workspace/AIC_Sejong/ws_aic/src
@@ -25,8 +25,9 @@ pixi run python ais/ais_triangulation/run_triangulation_cases.py \
 
 한편 위 명령은 아래의 두 작업을 연속으로 수행한다.
 
-1. `ais_auto_capture/portoffset_randomization/scenario.py`의 `make_trial_config()`로 case를 생성한다.
-2. `ais_triangulation/cases/YYYYMMDD_triangulation_cases.yaml`에 저장한 뒤, 그 절대 경로를 `aic_engine_config_file`로 넘겨 `aic_eval` Distrobox를 실행한다.
+1. `ais_auto_capture/portoffset_randomization/scenario.py | make_trial_config()`로 candidate case를 생성한다.
+2. 고정 robot home에서 target entrance가 최소 두 camera의 안전 margin 안에 투영되는 candidate만 채택한다.
+3. `ais_triangulation/cases/YYYYMMDD_triangulation_cases.yaml`에 저장한 뒤, 그 절대 경로를 `aic_engine_config_file`로 넘겨 `aic_eval` Distrobox를 실행한다.
 
 위 runner가 실제로 실행하는 simulator 명령은 아래와 같다.
 
@@ -54,8 +55,10 @@ distrobox enter aic_eval -- /entrypoint.sh \
 | `--port-types` | `sfp,sc` | 생성할 port 종류 |
 | `--port-order` | `round_robin` | `round_robin` 또는 `random` |
 | `--time-limit-s` | `600` | 각 task 제한 시간 |
-| `--robot-joint-noise-deg` | `4` | robot home joint별 uniform noise |
+| `--robot-joint-noise-deg` | `0` | common-FOV 보장을 위해 `0`만 허용 |
 | `--cable-rpy-noise-deg` | `20` | cable roll/pitch/yaw별 uniform noise |
+| `--min-visible-cameras` | `2` | target entrance가 들어와야 하는 최소 camera 수, `2` 또는 `3` |
+| `--visibility-margin-px` | `64` | image 경계에서 제외할 안전 margin |
 | `--distrobox` | `aic_eval` | 실행할 Distrobox 이름 |
 | `--headless` | 꺼짐 | 사용 시 `gazebo_gui:=false` |
 | `--ground_truth {true,false}` | `true` | `ground_truth:=...`를 entrypoint에 전달 |
@@ -67,6 +70,37 @@ distrobox enter aic_eval -- /entrypoint.sh \
 | `--sim-arg NAME=VALUE` | 없음 | 그 밖의 entrypoint launch parameter 전달. 반복 가능 |
 | `--output PATH` | 날짜 기반 경로 | 생성 YAML 경로를 직접 지정 |
 | `--generate-only` | 꺼짐 | YAML 생성 후 Distrobox를 실행하지 않음 |
+
+### 1-2. 고정 observation pose와 camera common FOV 보장
+
+Runner는 Task Board 중심이 아니라 YAML의 board, rail/module, port entrance transform을 모두 합성해 실제 target entrance의 `base_link` XYZ를 계산한다. SFP와 SC의 계산 chain은 각각 다음과 같다.
+
+```text
+SFP: world → task_board → nic_card_mount → nic_card → sfp_port → entrance
+SC : world → task_board → sc_port → sc_port_base → entrance
+```
+
+고정 `BASE_ROBOT_HOME`에서 URDF로 산출한 `base_link → {left,center,right}_camera/optical` transform과 simulator camera 설정인 `1152×1024`, horizontal FOV `0.8718 rad`, near clip `0.07 m`를 사용한다. 각 camera에서는 다음 식으로 entrance를 pixel에 투영한다.
+
+```text
+p_camera = inverse(T_base_camera) · p_base
+u = fx · X / Z + cx
+v = fy · Y / Z + cy
+fx = fy = width / (2 · tan(horizontal_fov / 2))
+```
+
+기본 채택 조건은 다음과 같다.
+
+```text
+0.07 m ≤ Z ≤ 20 m
+64 ≤ u < 1152 - 64
+64 ≤ v < 1024 - 64
+위 조건을 만족하는 camera 수 ≥ 2
+```
+
+조건을 통과하지 못한 candidate는 YAML에 넣지 않고 같은 port 순서로 다시 sampling한다. 한 case에서 10,000회 연속 실패하면 무한 loop 대신 오류로 종료한다. `--sim-arg robot_x=...`처럼 robot world pose를 바꾸면 같은 값이 visibility 계산에도 반영된다.
+
+이 필터가 보장하는 것은 **target entrance 중심점의 기하학적 common FOV**다. Mesh 가림, 조명, lens distortion, YOLO confidence까지 보장하지는 않으므로 실제 detection 성공률은 별도 batch 결과로 확인해야 한다.
 
 ## 2. constants.py 및 scenario.py - Test Case randomization 범위 정의
 
@@ -80,11 +114,11 @@ distrobox enter aic_eval -- /entrypoint.sh \
 | SC port module | rail translation `-0.06 ~ 0.055 m` | local roll/pitch/yaw `0` |
 | Cable gripper offset | port별 기준 X/Y/Z에서 각 축 `±2 mm` | 해당 없음 |
 | Cable pose | 해당 없음 | 기준 roll/pitch/yaw에서 각 축 기본 `±20 deg` |
-| Robot home | 해당 없음 | 각 joint 기본 `±4 deg` |
+| Robot home | 해당 없음 | `BASE_ROBOT_HOME` 고정, joint noise 없음 |
 
 SFP는 NIC rail 5개와 port 2개, SC는 rail 2개 중 target을 선택한다. Task Board의 translation과 rotation도 매 case에서 새로 추출된다.
 
-Robot home pose는 모든 trial에 공유된다. Task Board, target module, cable pose는 각 trial마다 독립적으로 다시 추출된다. PortOffset의 조명 randomization은 YAML scene 필드가 아니라 수집 runner가 world 파일을 trial별로 수정하는 기능이므로 이 runner에는 포함되지 않는다.
+고정 Robot home pose는 모든 trial에 공유된다. Task Board, target module, cable pose는 각 trial마다 독립적으로 다시 추출되며 common-FOV 조건을 통과한 조합만 채택된다. PortOffset의 조명 randomization은 YAML scene 필드가 아니라 수집 runner가 world 파일을 trial별로 수정하는 기능이므로 이 runner에는 포함되지 않는다.
 
 ## 3. evaluate_triangulation_euclidean.py - Triangulation XYZ 오차 평가
 
@@ -169,11 +203,11 @@ pixi run python ais/ais_triangulation/evaluate_triangulation_euclidean.py \
 
 `--base-frame`은 prediction과 GT를 변환하여 오차를 계산·저장하는 최종 좌표계다. 기본값은 `base_link`다.
 
-`--fixed-frame`은 지정 timestamp의 direct TF 조회가 실패했을 때 `lookup_transform_full()`이 경유하는 기준 frame이다. Direct 조회가 성공하면 사용되지 않으며, 결과 좌표계도 변경하지 않는다. 따라서 `--base-frame base_link --fixed-frame world`는 결과를 `base_link` 기준으로 비교하되 exact-time TF fallback에서 `world`를 고정 기준으로 사용한다는 의미다.
+`--fixed-frame`은 `ais_triangulation/evaluate_triangulation_euclidean.py | lookup_synced_transform()`에서 direct TF 조회가 실패했을 때 TF2 full lookup이 경유하는 기준 frame이다. Direct 조회가 성공하면 사용되지 않으며, 결과 좌표계도 변경하지 않는다. 따라서 `--base-frame base_link --fixed-frame world`는 결과를 `base_link` 기준으로 비교하되 exact-time TF fallback에서 `world`를 고정 기준으로 사용한다는 의미다.
 
 Prediction과 GT를 같은 timestamp에서 조회하므로 TF tree가 정상이라면 `--fixed-frame world`와 `--fixed-frame base_link`의 XYZ 결과는 일반적으로 같다. `world`가 안정적으로 연결된 simulator에서는 `world`를 권장하며, `world` TF가 없거나 조회할 수 없을 때만 `base_link`를 사용한다.
 
-Offline 모드에서는 입력 record마다 `case_name` 또는 `target_frame`, prediction XYZ와 GT XYZ가 모두 필요하다. 지원 필드명은 코드의 `prediction_xyz_from_record()`와 `gt_xyz_from_record()`에 정의되어 있다.
+Offline 모드에서는 입력 record마다 `case_name` 또는 `target_frame`, prediction XYZ와 GT XYZ가 모두 필요하다. 지원 필드명은 `ais_triangulation/evaluate_triangulation_euclidean.py | prediction_xyz_from_record()`와 `ais_triangulation/evaluate_triangulation_euclidean.py | gt_xyz_from_record()`에 정의되어 있다.
 
 ```bash
 pixi run python ais/ais_triangulation/evaluate_triangulation_euclidean.py \
@@ -275,7 +309,7 @@ ros2 bag record \
 - Detection debug: YOLO keypoint group의 2D 중심점이며 triangulation의 입력이다.
 - Triangulation debug: 최종 3D triangulation 결과를 각 camera로 재투영한 `PRED` 점이다.
 
-FinalPolicy의 `_cache_detected_port()`는 최종 base-link 3D 값 `self._cached_port_base` 하나를 `_publish_triangulated_port_xyz()`와 `_save_triangulation_debug_images(predicted_port=...)`에 동일하게 전달한다. evaluator의 `pred_x_m/pred_y_m/pred_z_m`은 이 publish 값을 저장하고, triangulation debug는 같은 값을 `project_3d_to_pixel()`로 표시한다. 따라서 결과 파일의 prediction과 triangulation debug의 `PRED` 계산 원점은 동일하다.
+`ais_policy/final_policy/final_policy/FinalPolicy.py | _cache_detected_port()`는 최종 base-link 3D 값 `self._cached_port_base` 하나를 `ais_policy/final_policy/final_policy/FinalPolicy.py | _publish_triangulated_port_xyz()`와 `ais_policy/final_policy/final_policy/debug.py | _save_triangulation_debug_images()`에 동일하게 전달한다. evaluator의 `pred_x_m/pred_y_m/pred_z_m`은 이 publish 값을 저장하고, triangulation debug는 같은 값을 `ais_policy/final_policy/final_policy/geometry.py | project_3d_to_pixel()`로 표시한다. 따라서 결과 파일의 prediction과 triangulation debug의 `PRED` 계산 원점은 동일하다.
 
 최종 결과와 좌표 cache 로그는 **볼드 시안**, RViz image publish 요약은 **볼드 초록**으로 표시된다.
 

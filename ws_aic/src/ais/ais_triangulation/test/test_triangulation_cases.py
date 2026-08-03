@@ -35,6 +35,8 @@ from run_triangulation_cases import (  # noqa: E402
     generate_cases,
     parse_args,
     simulator_command,
+    target_camera_projections,
+    target_entrance_in_base,
 )
 from evaluate_triangulation_euclidean import (  # noqa: E402
     lookup_synced_transform,
@@ -49,7 +51,7 @@ def _scenario_args(**overrides) -> argparse.Namespace:
         "port_types": CLI_DEFAULTS["port_types"],
         "port_order": CLI_DEFAULTS["port_order"],
         "time_limit_s": CLI_DEFAULTS["time_limit_s"],
-        "robot_joint_noise_deg": CLI_DEFAULTS["robot_joint_noise_deg"],
+        "robot_joint_noise_deg": 0.0,
         "cable_rpy_noise_deg": CLI_DEFAULTS["cable_rpy_noise_deg"],
     }
     values.update(overrides)
@@ -97,6 +99,7 @@ def test_generated_cases_use_portoffset_ranges() -> None:
 
     joint_noise = math.radians(CLI_DEFAULTS["robot_joint_noise_deg"])
     for joint, value in config["robot"]["home_joint_positions"].items():
+        assert value == BASE_ROBOT_HOME[joint]
         _assert_in_range(
             value,
             (
@@ -106,6 +109,10 @@ def test_generated_cases_use_portoffset_ranges() -> None:
         )
 
     for trial in config["trials"].values():
+        assert sum(
+            projection["visible"]
+            for projection in target_camera_projections(trial).values()
+        ) >= 2
         task = next(iter(trial["tasks"].values()))
         port_type = task["port_type"]
         prefix = "sc" if port_type == "sc" else "sfp"
@@ -138,6 +145,22 @@ def test_generated_cases_use_portoffset_ranges() -> None:
         for axis in ("roll", "pitch", "yaw"):
             base = LIMITS[f"cable_{axis}"]
             _assert_in_range(cable[axis], (base - rpy_noise, base + rpy_noise))
+
+
+def test_target_transform_matches_strict_smoke_gt() -> None:
+    """YAML asset chain으로 계산한 entrance XYZ가 simulator GT와 같아야 한다."""
+    smoke_path = (
+        TRIANGULATION_ROOT
+        / "cases"
+        / "20260801_smoke_triangulation_cases.yaml"
+    )
+    config = yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
+    trial = config["trials"]["trial_0000_sfp"]
+    actual = target_entrance_in_base(trial)
+    expected = np.array(
+        [-0.460892229247717, 0.2632038711264272, 0.17927239721709465]
+    )
+    assert np.allclose(actual, expected, atol=1e-6)
 
 
 def test_cli_alias_output_name_and_simulator_command() -> None:

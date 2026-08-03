@@ -1,15 +1,21 @@
 # Triangulation Development Status Report
 
-- 작성일: 2026-08-01
-- 코드 기준: HEAD <code>dc0f420</code> + 2026-08-01 working tree
+- 작성일: 2026-08-02
+- 코드 기준: HEAD <code>38d0619</code> + 2026-08-02 working tree
 - 대상: randomized case 생성, FinalPolicy multi-camera triangulation, ROS 평가, OpenCV/RViz debug
-- 결론: **Strict timestamp SFP smoke test는 통과했지만, 정확도와 시간 정합성을 production 수준으로 검증한 단계는 아니다.**
+- 결론: **고정 home의 camera common-FOV 생성 조건과 strict timestamp SFP smoke는 통과했지만, YOLO 검출률과 정확도를 production 수준으로 검증한 단계는 아니다.**
+
+### Why?
+
+기존 워크플로우는 randomized case 생성, multi-camera 3D 계산, policy 사용, GT 평가와 시각 디버깅이 하나의 검증 가능한 경로로 연결돼 있지 않았다. 특히 기존 case generator는 PortOffset 범위에서 만든 candidate를 camera 가시성 검사 없이 모두 채택했고, evaluator와 debug 경로도 prediction의 frame과 관측 timestamp를 일관되게 증명하기 어려웠다.
+
+따라서 실제 target entrance가 고정 observation pose의 공통 FOV에 들어오는 case를 생성하고, 동일한 triangulation 결과를 policy·ROS topic·OpenCV/RViz debug에 공유하며, prediction timestamp와 frame을 기준으로 GT를 비교하는 통합 경로가 필요했다. 이 작업의 목적은 기하 가시성과 시간·좌표계가 명시된 평가 가능성을 확보하는 것이며, YOLO 검출이나 production 정확도를 이미 보장한다고 주장하는 것이 아니다.
 
 ### What I Made
 
 현재 triangulation은 단순 계산 함수만 있는 상태가 아니라 다음 실행 경로까지 연결돼 있다.
 
-1. PortOffsetCollector와 같은 randomization 범위에서 case YAML 생성
+1. PortOffsetCollector 범위에서 candidate를 생성하고 fixed-home common FOV를 통과한 case만 YAML에 저장
 2. 생성한 YAML을 Distrobox simulator에 전달
 3. 세 camera의 YOLO 관측으로 포트 3D 위치 계산
 4. 결과를 FinalPolicy 접근·정렬 단계에 사용
@@ -21,7 +27,7 @@
 
 | 영역 | 현재 상태 | 근거 |
 |---|---|---|
-| Random case 생성 | 구현 완료 | <code>--seed</code>, <code>--num_cases</code>, PortOffset generator 재사용 |
+| Random case 생성 | 구현 완료 | <code>--seed</code>, <code>--num_cases</code>, PortOffset generator와 bounded rejection sampling |
 | Simulator 실행 | 구현 완료 | Distrobox entrypoint parameter 전달 및 추가 <code>--sim-arg</code> 지원 |
 | YOLO detection | 구현 완료 | left/center/right detection과 port index filtering |
 | 3D triangulation | 구현 완료 | 모든 two-view pair DLT와 전체 camera 재투영 RMS 비교 |
@@ -35,48 +41,35 @@
 | 수학 정확도 회귀 테스트 | 미구현 | synthetic camera geometry의 정답 3D 복원 테스트 없음 |
 | Random batch 성능 검증 | 초기 | strict timestamp SFP smoke 1건 검증, SC 결과 없음 |
 | 완전 자동 E2E 평가 | 미구현 | runner와 evaluator를 별도 terminal에서 실행하며 case는 수신 순서로 대응 |
-| 초기 target 가시성 보장 | 미구현 | 모든 randomized pose에서 로봇이 처음부터 target port를 multi-camera로 보도록 spawn하는 로직 없음 |
+| 초기 target 기하 가시성 | 구현 완료 | fixed home에서 target entrance가 margin 내부 camera 2개 이상인 case만 채택 |
+| 초기 YOLO 검출 보장 | 미구현 | 가림, 조명, confidence는 생성 단계 pinhole projection으로 보장할 수 없음 |
 
-#### 2026-08-01 Smoke Test
+#### 2026-08-02 Fixed Observation Common-FOV
 
-Smoke test는 random batch 성능 평가가 아니라 YAML 생성부터 simulator, FinalPolicy, prediction topic, strict timestamp evaluator와 결과 저장까지 한 번 연결되는지 확인하는 목적으로 실행했다.
+Robot home joint noise를 0으로 고정하고, YAML의 board/module/port asset transform으로 실제 target entrance의 <code>base_link</code> XYZ를 계산한다. 이 점을 URDF에서 산출한 fixed-home camera optical transform으로 투영해 기본 64 px margin 안에 들어오는 camera가 두 개 이상인 candidate만 채택한다.
 
-| 항목 | 설정 또는 결과 |
-|---|---|
-| Case | <code>trial_0000_sfp</code>, seed <code>20</code>, <code>nic_card_mount_1/sfp_port_1</code> |
-| 실행 모드 | headless, RViz off, <code>AIC_TRIANGULATION_EVAL_ONLY=1</code> |
-| YOLO | CPU, 로그에서 <code>YOLO device override: cpu</code> 확인 |
-| Evaluator frame | prediction/GT 모두 <code>base_link</code> |
-| Timestamp 조건 | <code>--sync-threshold-ms 0</code> |
-| Camera timing | <code>sync_span=0.000 ms</code> |
-| 선택 pair | <code>center-right</code>, 최초 선택 시 재투영 RMS <code>0.29 px</code> |
-| Trial 상태 | engine <code>Successful: 1, Failed: 0</code> |
+~~~text
+# ais_triangulation/run_triangulation_cases.py | target_camera_projections()
+# ais_triangulation/run_triangulation_cases.py | generate_cases()
+p_camera = inverse(T_base_camera) · p_base
+u = fx · X / Z + cx
+v = fy · Y / Z + cy
 
-<code>results/triangulation_xyz_results.jsonl</code>과 summary를 다시 읽어 다음을 검증했다.
+accept ⇔ visible_camera_count ≥ 2
+~~~
 
-| 값 | Smoke result |
-|---|---:|
-| Prediction timestamp | <code>17.150000 s</code> |
-| GT TF timestamp | <code>17.15 s</code> |
-| GT sync delta | <code>0.000 ms</code> |
-| Prediction TF mode/delta | <code>identity / 0.000 ms</code> |
-| dx | <code>+0.653 mm</code> |
-| dy | <code>-0.049 mm</code> |
-| dz | <code>-0.976 mm</code> |
-| 3D Euclidean error | <code>1.175 mm</code> |
+조건에 맞지 않으면 같은 case index를 다시 sampling하며 10,000회 실패 시 오류로 종료한다. Seed 30으로 생성한 SFP/SC 20건은 19건이 세 camera, 1건이 center-right 공통 FOV를 만족했다. 100건 회귀 검사도 모두 camera 두 개 이상 조건을 통과했고, YAML transform 계산은 기존 smoke simulator GT와 각 축 1 µm 이내에서 일치했다.
 
-따라서 이 sample은 prediction header 시각과 GT 조회 시각이 같고, 인접 TF fallback 없이 저장됐다. 단, TF2가 요청 시각의 값을 내부 보간했을 가능성까지 배제한다는 의미는 아니다.
-
-첫 smoke 시도인 seed <code>30</code>의 rail-4 case는 left camera만 검출되고 center/right가 검출되지 않아 triangulation이 생성되지 않았다. 이는 timestamp 또는 evaluator 실패가 아니라 randomized pose에 따른 multi-camera visibility 실패이며 정확도 표본에서 제외했다.
-
-성공 trial 이후 launch stack은 자동 종료되지 않아 SIGINT로 정리했다. 이때 Gazebo component가 <code>corrupted size vs. prev_size</code>로 종료됐으므로 기능 smoke는 통과했지만 clean teardown은 통과하지 못했다.
+상세 계산식과 asset 출처는 <code>report/map_generation_with_ports_visible.md</code>에 정리했다.
 
 #### 전체 실행 워크플로우
 
 ~~~mermaid
 flowchart TB
-    A["run_triangulation_cases.py"] --> B["PortOffset 범위에서 randomized YAML 생성"]
-    B --> C["Distrobox /entrypoint.sh 실행"]
+    A["run_triangulation_cases.py"] --> B["PortOffset 범위에서 candidate 생성"]
+    B --> B2{"fixed-home common FOV camera ≥ 2?"}
+    B2 -->|No| B
+    B2 -->|Yes| C["YAML 저장 후 Distrobox 실행"]
     C --> D["AIC simulator + FinalPolicy"]
 
     D --> E["left / center / right Image"]
@@ -110,19 +103,22 @@ flowchart TB
 - case 개수 가변 생성
 - SFP/SC port type 및 순서 선택
 - Task Board translation/yaw randomization
-- module rail, cable pose, robot home randomization
+- module rail과 cable pose randomization
+- <code>BASE_ROBOT_HOME</code> 고정과 target entrance common-FOV 검사
+- <code>--min-visible-cameras</code>, <code>--visibility-margin-px</code>
 - <code>gazebo_gui</code>, <code>launch_rviz</code> 등 명시적 simulator parameter 전달
 - 반복 가능한 <code>--sim-arg NAME=VALUE</code>
 - YAML만 생성하는 <code>--generate-only</code>
 - YAML 생성은 bold magenta, simulator 시작은 bold green 로그
 
-다만 multi-trial schema에서 robot section이 전역 하나이므로 robot home은 첫 draw를 모든 trial이 공유한다. Task Board, module, cable은 trial마다 다시 sampling한다.
+Multi-trial schema의 전역 robot section은 고정 <code>BASE_ROBOT_HOME</code>을 모든 trial이 공유한다. Task Board, module, cable은 trial마다 다시 sampling하며 common-FOV 조건을 통과한 조합만 채택한다.
 
 #### 2. 현재 3D 계산 로직
 
-핵심 구현은 <code>final_policy/vision.py</code>의 <code>_estimate_all_sync()</code>와 <code>_triangulate()</code>다.
+핵심 구현은 <code>ais_policy/final_policy/final_policy/vision.py | _estimate_all_sync()</code>와 <code>ais_policy/final_policy/final_policy/vision.py | _triangulate()</code>다.
 
 ~~~python
+# ais_policy/final_policy/final_policy/vision.py | _triangulate()
 p_a = k_a @ t_base_to_optA[:3, :]
 p_b = k_b @ t_base_to_optB[:3, :]
 
@@ -153,6 +149,7 @@ port_3d = (pts_4d[:3] / pts_4d[3]).flatten()
 카메라 projection matrix는 TF2에서 optical frame을 직접 조회하지 않는다. Observation의 <code>controller_state.tcp_pose</code>와 코드에 고정된 <code>tool0 -&gt; optical</code> calibration을 조합한다.
 
 ~~~text
+# ais_policy/final_policy/final_policy/vision.py | _base_to_camera_optical_matrix()
 T_base_tcp
 → T_base_tool0
 → T_base_optical
@@ -165,14 +162,15 @@ T_base_tcp
 초기 <code>lift_up_detect</code>에서 triangulation 성공 시 다음 하나의 cache에 저장한다.
 
 ~~~python
+# ais_policy/final_policy/final_policy/FinalPolicy.py | _cache_detected_port()
 self._cached_port_base = np.asarray(port, dtype=np.float64)
 ~~~
 
 같은 cache 값이 다음 경로로 전달된다.
 
-- <code>_publish_triangulated_port_xyz()</code>: evaluator 입력 topic
-- <code>_save_triangulation_debug_images()</code>: OpenCV/RViz의 PRED
-- <code>_stage_approach()</code>: 포트 앞 접근 목표
+- <code>ais_policy/final_policy/final_policy/FinalPolicy.py | _publish_triangulated_port_xyz()</code>: evaluator 입력 topic
+- <code>ais_policy/final_policy/final_policy/debug.py | _save_triangulation_debug_images()</code>: OpenCV/RViz의 PRED
+- <code>ais_policy/final_policy/final_policy/FinalPolicy.py | _stage_approach()</code>: 포트 앞 접근 목표
 
 Align은 초기 cache를 재사용하지 않는다. Vision-offset 모델이 안정화된 뒤 새 Observation으로 port와 tip triangulation을 다시 계산해 잔차를 확인한다. 기본 설정은 triangulation 사용이 켜져 있고, 잔차 6 mm 이하이면 정렬 완료로 인정한다. 6 mm를 넘으면 gain 0.5, 최대 3 mm step으로 XY를 추가 이동한다. Triangulation을 얻지 못했을 때 반드시 실패시키는 옵션은 기본적으로 꺼져 있다.
 
@@ -202,6 +200,7 @@ Debug는 다음을 제공한다.
 <code>evaluate_triangulation_euclidean.py</code>는 YAML task의 port type, module name, port name으로 entrance frame을 구성한다.
 
 ~~~text
+# ais_triangulation/evaluate_triangulation_euclidean.py | target_frame_from_task()
 SC:
 task_board/{target_module}/sc_port_base_link_entrance
 
@@ -214,7 +213,7 @@ ROS mode에서 evaluator는 다음을 수행한다.
 1. prediction의 <code>header.frame_id</code>와 <code>header.stamp</code>를 필수로 확인한다.
 2. prediction frame이 base frame과 다르면 prediction timestamp의 TF로 XYZ를 변환한다.
 3. 같은 prediction timestamp에서 base frame 기준 GT entrance TF를 조회한다.
-4. exact lookup이 실패하면 <code>lookup_transform_full()</code>을 시도한다.
+4. <code>ais_triangulation/evaluate_triangulation_euclidean.py | lookup_synced_transform()</code>은 exact lookup이 실패하면 TF2 full lookup을 시도한다.
 5. 그래도 실패하면 기본 30 ms 이내의 latest TF만 <code>nearby_latest</code>로 허용한다.
 6. <code>dx/dy/dz</code>와 3D Euclidean error를 mm 단위로 저장한다.
 
@@ -237,17 +236,19 @@ CSV, JSONL과 summary JSON에는 prediction frame, TF 변환 mode, prediction/GT
 | 실시간 debug 확인이 어려움 | camera Image topic과 MarkerArray 제공 |
 | 결과 발행 뒤 RViz를 연결하면 Image가 비어 있음 | 마지막 Image를 원본 header로 cache하고 subscriber가 있을 때 기본 1 Hz 재발행 |
 | 사용 가능한 pair 중 마지막 pair가 선택됨 | 모든 camera pair의 전체-view 재투영 RMS를 비교해 최저 오차 pair 선택 |
+| 기존 generator가 candidate 가시성을 검사하지 않음 | fixed home에서 entrance가 margin 내부 camera 2개 이상인 candidate만 채택 |
 | GPU 호환 오류 시 실행 불가 | <code>AIC_YOLO_DEVICE=cpu</code>를 inference device로 전달 |
 
 그러나 다음 문제는 아직 남아 있다.
 
 #### 1. ControllerState와 camera의 시간차를 검사하지 않음
 
-Triangulation의 camera extrinsic은 <code>controller_state.tcp_pose</code>에서 계산하지만 <code>_estimate_all_sync()</code>은 세 image timestamp만 검사한다.
+Triangulation의 camera extrinsic은 <code>controller_state.tcp_pose</code>에서 계산하지만 <code>ais_policy/final_policy/final_policy/vision.py | _estimate_all_sync()</code>은 세 image timestamp만 검사한다.
 
 Adapter는 newest-first deque에서 image보다 늦지 않은 첫 ControllerState를 선택하므로 가장 가까운 과거 sample을 고른다. 하지만 최대 허용 시간차는 검사하지 않는다.
 
 ~~~text
+# aic/aic_adapter/src/aic_adapter.cpp | AicAdapterNode::image_callback()
 center image at T
 + controller TCP pose at T - delta
 → camera extrinsic 계산
@@ -259,7 +260,7 @@ delta에 명시적 상한 없음
 
 #### 2. Lens distortion 보정이 없음
 
-Triangulation과 재투영은 CameraInfo의 K matrix를 사용하지만 distortion coefficient D와 <code>cv2.undistortPoints()</code>를 사용하지 않는다. 입력 image가 이미 rectified라는 명시적 보장이 없다면 화면 가장자리에서 오차가 커질 수 있다.
+Triangulation과 재투영은 CameraInfo의 K matrix를 사용하지만 distortion coefficient D와 OpenCV distortion 보정 API를 사용하지 않는다. 입력 image가 이미 rectified라는 명시적 보장이 없다면 화면 가장자리에서 오차가 커질 수 있다.
 
 #### 3. 실제 계산은 pair별 two-view이며 세 camera 동시 최적화는 없음
 
@@ -279,7 +280,7 @@ Pair 선택은 재투영 RMS를 기준으로 개선됐지만 baseline이나 ray 
 
 #### 5. 수학 정확도 test와 E2E test가 없음
 
-현재 19개 test는 배선, metadata, frame, timestamp gate와 camera pair 선택을 확인한다. 하지만 알려진 camera matrix와 3D 정답을 사용해 <code>_triangulate()</code>가 정답을 복원하는 synthetic test는 없다.
+현재 20개 test는 배선, metadata, frame, timestamp gate, camera pair 선택과 common-FOV 생성을 확인한다. 하지만 알려진 camera matrix와 3D 정답을 사용해 <code>ais_policy/final_policy/final_policy/vision.py | _triangulate()</code>가 정답을 복원하는 synthetic test는 없다.
 
 또한 Gazebo를 실행해 SFP/SC randomized case 전체를 생성부터 evaluator 결과까지 자동 검증하는 test도 없다.
 
@@ -307,6 +308,10 @@ Publisher는 <code>_cached_port_base</code> 값을 그대로 쓰면서 <code>AIC
 
 Smoke trial은 engine 기준 성공했고 evaluator 결과도 저장됐지만, trial 종료 뒤 launch stack이 스스로 끝나지 않았다. 수동 SIGINT 정리 중 Gazebo component에서 <code>corrupted size vs. prev_size</code>가 발생해 runner exit code를 성공으로 볼 수 없었다. 계산 결과 검증과 별개로, 자동 batch 운용 전에 정상 종료 조건과 Gazebo process cleanup을 수정해야 한다.
 
+#### 10. Common-FOV는 YOLO 검출을 보장하지 않음
+
+생성 filter는 target entrance 중심점의 pinhole projection만 확인한다. Port mesh 전체 포함, 다른 물체에 의한 가림, 조명, distortion, YOLO confidence는 판정하지 않는다. 실제 검출까지 보장하려면 simulator 시작 직후 동일 target이 camera 두 개 이상에서 검출되는지 확인하는 runtime gate가 별도로 필요하다.
+
 ### How it changed
 
 현재 개발 흐름은 다음 단계까지 진행됐다.
@@ -314,7 +319,7 @@ Smoke trial은 engine 기준 성공했고 evaluator 결과도 저장됐지만, t
 ~~~mermaid
 flowchart LR
     A["초기: two-camera triangulation 계산"] --> B["YOLO port index와 task hint 연결"]
-    B --> C["PortOffset 범위 randomized case runner"]
+    B --> C["PortOffset 범위 + fixed-home common-FOV case runner"]
     C --> D["PointStamped publish + evaluator"]
     D --> E["prediction frame/timestamp 기반 TF 동기화"]
     E --> F["OpenCV/RViz PRED·GT debug + latest Image 1 Hz"]
@@ -326,7 +331,7 @@ flowchart LR
 
 | 파일 | 현재 책임 |
 |---|---|
-| <code>run_triangulation_cases.py</code> | randomized YAML 생성과 simulator subprocess 실행 |
+| <code>run_triangulation_cases.py</code> | target entrance projection, common-FOV rejection sampling, YAML 생성과 simulator 실행 |
 | <code>vision.py</code> | camera timing, YOLO, DLT, 후보 검증과 target 선택 |
 | <code>geometry.py</code> | base 3D 점의 camera pixel 재투영 |
 | <code>FinalPolicy.py</code> | cache, publish, approach와 align 제어 연결 |
@@ -337,6 +342,7 @@ flowchart LR
 현재 바로 사용할 수 있는 범위:
 
 - 단일 또는 소수 case를 생성해 simulator 실행
+- fixed home에서 target entrance가 camera 두 개 이상의 안전 margin 안에 있는 case 생성
 - triangulation 결과를 RViz/OpenCV에서 실시간 확인
 - prediction과 같은 timestamp/base frame의 GT 오차 저장
 - FinalPolicy의 접근과 align 보조값으로 사용
@@ -349,6 +355,7 @@ flowchart LR
 - lens distortion까지 포함한 calibrated multi-view reconstruction
 - 누락/중복 prediction에 안전한 자동 batch 평가
 - insertion 성공률 개선의 통계적 증명
+- common-FOV를 통과한 case의 YOLO 검출 성공 보장
 
 따라서 현재 상태는 **prototype을 넘어 실제 정책과 평가 도구까지 연결된 integration-complete 단계**이지만, **accuracy-validated 또는 production-ready 단계는 아니다.**
 

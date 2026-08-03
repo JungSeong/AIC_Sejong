@@ -89,8 +89,8 @@ CLI_DEFAULTS = {
     "rpy_norm_max_rad": None,
     "actual_rpy_norm_max_rad": None,
     "base_z_offset_mm": 0.0,
-    "min_visible_cameras": 1,
-    "visibility_margin_px": 8.0,
+    "min_visible_cameras": 2,
+    "visibility_margin_px": 64.0,
     # Capture timestamp synchronization.
     "sync_tolerance_ms": 30.0,
     "sync_wait_timeout_s": 1.0,

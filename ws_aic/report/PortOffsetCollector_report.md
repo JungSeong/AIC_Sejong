@@ -4,6 +4,12 @@
 - 대상: PortOffsetCollector의 camera, ControllerState, plug TF 수집 흐름
 - 결론: center camera timestamp를 기준으로 메인 TF2 buffer에서 plug TF를 한 번만 조회한다. 별도 raw TF cache와 동일 transform 재조회는 제거했다.
 
+### Why?
+
+학습 sample의 image와 plug label은 같은 시점의 상태를 나타내야 한다. 기존 최초 구현은 TCP 정지 후 Observation을 얻고 조회 시점의 최신 plug TF를 저장했기 때문에, image timestamp와 label timestamp가 달라질 수 있었다. 이후 같은 center timestamp를 두 TF2 buffer에서 중복 조회하는 검사가 추가됐지만 두 buffer가 같은 TF source와 TF2 계산을 사용해 독립적인 정확성 증명이 되지 않았다.
+
+따라서 center image timestamp를 sample 기준 시각으로 고정하고, 그 시각의 plug TF를 기존 메인 TF2 buffer에서 직접 조회하는 단일 경로가 필요했다. 이 목적은 camera와 label의 시간 기준을 일치시키는 것이며, 별도 raw TF 재구성이나 MCAP 사후 증명을 유지하는 것이 아니다.
+
 ### What I Made
 
 PortOffsetCollector의 sample 기준 시각은 center image의 <code>header.stamp</code>다. left/right image와 ControllerState가 설정된 허용오차 안에 있는 Observation을 선택한 뒤, 같은 center timestamp를 지정해 <code>base_link &lt;- cable_tip_frame</code> TF를 메인 TF2 buffer에서 조회한다.
@@ -56,6 +62,7 @@ flowchart TB
 최초 구현은 TCP 정지 후 Observation을 얻고 최신 TF를 별도로 조회했다.
 
 ~~~python
+# ais_policy/data_gen_node/data_gen_node/port_offset_stage_motion.py | _stage_collect()
 save_obs = get_observation()
 plug_tf = self._lookup_transform(
     "base_link",
@@ -68,6 +75,7 @@ plug_tf = self._lookup_transform(
 이를 해결하는 과정에서 center image timestamp의 TF를 메인 buffer에서 조회한 다음, 동일한 TF topic을 받는 별도 buffer에서도 같은 timestamp를 다시 조회하는 로직이 추가됐다.
 
 ~~~python
+# ais_policy/data_gen_node/data_gen_node/port_offset_stage_motion.py | _stage_collect()
 live_tf = self._lookup_transform_at(
     "base_link",
     cable_tip_frame,
@@ -101,6 +109,7 @@ position_error, angle_error = _transform_difference(
 현재 핵심 로직은 다음과 같다.
 
 ~~~python
+# ais_policy/data_gen_node/data_gen_node/port_offset_stage_motion.py | _stage_collect()
 capture_stamp = save_obs.center_image.header.stamp
 
 save_raw_plug_stamped = self._lookup_transform_at(
@@ -110,9 +119,10 @@ save_raw_plug_stamped = self._lookup_transform_at(
 )
 ~~~
 
-<code>_lookup_transform_at()</code>은 전달받은 stamp를 ROS time으로 변환해 policy가 이미 사용하는 메인 TF2 buffer에 직접 전달한다.
+<code>ais_policy/data_gen_node/data_gen_node/port_offset_runtime.py | _lookup_transform_at()</code>은 전달받은 stamp를 ROS time으로 변환해 policy가 이미 사용하는 메인 TF2 buffer에 직접 전달한다.
 
 ~~~python
+# ais_policy/data_gen_node/data_gen_node/port_offset_runtime.py | _lookup_transform_at()
 def _lookup_transform_at(
     self,
     target_frame: str,
@@ -130,12 +140,12 @@ def _lookup_transform_at(
 
 최종 저장 흐름은 다음 순서다.
 
-1. <code>_wait_for_synchronized_observation()</code>이 left/center/right image와 ControllerState timestamp를 검사한다.
+1. <code>ais_policy/data_gen_node/data_gen_node/port_offset_dataset.py | _wait_for_synchronized_observation()</code>이 left/center/right image와 ControllerState timestamp를 검사한다.
 2. center image timestamp를 <code>capture_stamp_ns</code>로 선택한다.
 3. camera 간 최대 차이와 ControllerState 대 center 차이가 기본 30 ms를 넘으면 sample을 폐기한다.
-4. <code>_lookup_transform_at()</code>이 메인 TF2 buffer에서 center timestamp의 plug TF를 최대 설정 timeout 동안 조회한다.
+4. <code>ais_policy/data_gen_node/data_gen_node/port_offset_runtime.py | _lookup_transform_at()</code>이 메인 TF2 buffer에서 center timestamp의 plug TF를 최대 설정 timeout 동안 조회한다.
 5. 조회가 실패하면 예외가 수집 단계의 기존 실패 처리로 전달되어 sample을 저장하지 않는다.
-6. 조회에 성공하면 <code>_tf_sync_metadata()</code>가 실제 저장할 transform과 timestamp metadata를 구성한다.
+6. 조회에 성공하면 <code>ais_policy/data_gen_node/data_gen_node/port_offset_dataset.py | _tf_sync_metadata()</code>가 실제 저장할 transform과 timestamp metadata를 구성한다.
 7. 모든 조건을 통과한 Observation, plug TF와 label만 함께 저장한다.
 
 현재 보장 범위는 다음과 같다.

@@ -18,17 +18,16 @@
 ```bash
 pixi run python ais/ais_auto_capture/collect_portoffset_randomization_data.py \
   --trials 2 \
-  --samples-per-trial 100 \
+  --samples-per-trial 20 \
   --port-types sfp,sc \
-  --dataset-version 0726-001 \
+  --dataset-version 0803-001 \
   --push-to-hub false \
   --vision-offset-repo-id aic-sejong-team/aic-vision-offset-dataset \
   --vision-offset-hf-revision 0726-001 \
   --upload-on-port-type sc \
   --record-rosbag true \
-  --headless \
   --cleanup \
-  --seed 2
+  --seed 42
 ```
 
 ### 1-1. 파라미터
@@ -83,10 +82,24 @@ PortOffset 수집기의 scene 범위는 `portoffset_randomization/constants.py`�
 
 | CLI 옵션 | 기본값 | 조정 목적 |
 |---|---:|---|
-| `--min-visible-cameras` | `1 camera` | 포트가 보여야 하는 최소 camera 수 |
-| `--visibility-margin-px` | `8 px` | image 경계에서 제외할 pixel margin |
+| `--min-visible-cameras` | `2 cameras` | sample을 저장하기 위해 포트가 보여야 하는 최소 camera 수 |
+| `--visibility-margin-px` | `64 px` | image 경계에서 제외할 pixel margin |
 | `--sync-tolerance-ms` | `30 ms` | center image 기준 camera·ControllerState·동적 plug TF의 최대 시각 차이 |
 | `--sync-wait-timeout-s` | `1 s` | 유효 Observation과 capture 시각 plug TF의 최대 대기시간 |
+
+#### Dataset sample visibility 적용 범위
+
+common-FOV 조건은 triangulation에만 적용되는 것이 아니다. 다만 적용 시점이 다르다.
+
+| 경로 | 적용 시점 | 동작 |
+|---|---|---|
+| `ais_triangulation/run_triangulation_cases.py | generate_cases()` | simulator 실행 전 YAML 생성 | fixed home 기준 common-FOV를 통과한 candidate만 trial로 채택 |
+| `ais_policy/data_gen_node/data_gen_node/port_offset_dataset.py | _port_projection_for_camera()` | PortOffset sample capture 시점 | 실제 ControllerState camera pose, CameraInfo와 port TF로 camera별 pixel·depth 계산 |
+| `ais_policy/data_gen_node/data_gen_node/port_offset_dataset.py | _save_xyz_rpy_sample()` | JPEG·metadata 쓰기 직전 | 기본 64 px margin 안에 port가 보이는 camera가 두 개 이상일 때만 sample 저장 |
+
+PortOffset sample이 visibility 또는 timestamp 조건을 통과하지 못하면 JPEG, camera metadata JSON과 `metadata.jsonl`을 쓰지 않으며 저장 count도 증가시키지 않는다. 일부 camera 파일을 쓴 뒤 최소 camera 수를 충족하지 못한 경우 생성된 부분 파일도 삭제한다.
+
+이 검사는 실제 capture 시점의 기하학적 port 중심 가시성을 보장한다. Mesh 가림, 조명, lens distortion과 YOLO confidence 통과까지 보장하지는 않는다. `--min-visible-cameras` 또는 `--visibility-margin-px`를 명시하면 기본 승인 조건을 override한다.
 
 #### 조명과 배경 randomization
 
@@ -228,7 +241,7 @@ MCAP topic 자체가 없으면 `pixi run ros2 bag info <trial-dir>`로 message c
 └── metadata/<train|val>/<SFP|SC>/<left|center|right>/*.json
 ```
 
-포트가 보이는 카메라마다 JPEG 한 장과 같은 이름의 sample metadata JSON 한 개를 저장합니다. 예를 들어 `..._center.jpg`의 label·timestamp 정보는 `..._center.json`에 있습니다. 기본 `--min-visible-cameras 1`에서는 반드시 세 카메라가 모두 저장되는 것은 아닙니다.
+포트가 보이는 카메라마다 JPEG 한 장과 같은 이름의 sample metadata JSON 한 개를 저장합니다. 예를 들어 `..._center.jpg`의 label·timestamp 정보는 `..._center.json`에 있습니다. 기본값에서는 64 px margin 안쪽에 포트가 보이는 camera가 두 개 이상일 때만 sample을 저장하며, 반드시 세 camera가 모두 저장되는 것은 아닙니다.
 
 각 카메라별 sample metadata JSON의 핵심 필드는 다음과 같습니다.
 

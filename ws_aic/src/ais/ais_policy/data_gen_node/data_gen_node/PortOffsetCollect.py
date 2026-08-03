@@ -110,10 +110,10 @@ class PortOffsetCollect(Policy):
             os.environ.get("AIC_RPY_RANDOMIZATION_VAL_RATIO", "0.3")
         )
         self._rpy_visibility_margin_px = float(
-            os.environ.get("AIC_RPY_VISIBILITY_MARGIN_PX", "8.0")
+            os.environ.get("AIC_RPY_VISIBILITY_MARGIN_PX", "64.0")
         )
         self._rpy_min_visible_cameras = max(
-            1, int(os.environ.get("AIC_RPY_MIN_VISIBLE_CAMERAS", "1"))
+            1, int(os.environ.get("AIC_RPY_MIN_VISIBLE_CAMERAS", "2"))
         )
         self.collect_pattern = "port_offset_xyz_rpy"
         xy_limit_m = _env_mm("AIC_PORT_COLLECT_XY_LIMIT_MM", 50.0)
